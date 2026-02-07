@@ -1,0 +1,141 @@
+{
+  "generated_at": "2026-02-07T14:14:36.555299+00:00",
+  "items": [
+    {
+      "category": "official",
+      "file": "references/waveshare/downloads/official/ESP32-S3-PhotoPainter-Demo.zip",
+      "url": "https://files.waveshare.net/wiki/ESP32-S3-PhotoPainter/ESP32-S3-PhotoPainter-Demo.zip",
+      "size": 11435414,
+      "sha256": "bc89bc85440b55f087bf025f6635063de40ab137289fe513da503a6b1f76ee7d",
+      "status": "cached"
+    },
+    {
+      "category": "official",
+      "file": "references/waveshare/downloads/official/ESP32-S3-PhotoPainter-Schematic.pdf",
+      "url": "https://www.waveshare.net/w/upload/0/05/ESP32-S3-PhotoPainter-Schematic.pdf",
+      "size": 1251764,
+      "sha256": "82472764688ed346dcb264a71b0260bb74de4efa6fc8843f8da0417e9f99c6ec",
+      "status": "cached"
+    },
+    {
+      "category": "official",
+      "file": "references/waveshare/downloads/official/PhotoPainter_dimension.pdf",
+      "url": "https://www.waveshare.net/w/upload/a/a8/PhotoPainter_dimension.pdf",
+      "size": 18840,
+      "sha256": "6f6e6b1251f9a5b432646519c643d0b6fb19ba95f567da7b0b0829f235e75985",
+      "status": "cached"
+    },
+    {
+      "category": "official",
+      "file": "references/waveshare/downloads/official/7.3inch-e-Paper-%28E%29-user-manual.pdf",
+      "url": "https://www.waveshare.net/w/upload/5/5b/7.3inch-e-Paper-%28E%29-user-manual.pdf",
+      "size": 1769141,
+      "sha256": "28243726fb6c99ddbc6106ba91dff15ece1e9d9b6183ecd042a63f327ae5265c",
+      "status": "cached"
+    },
+    {
+      "category": "samples",
+      "file": "references/waveshare/downloads/samples/PhotoPainter_B-BMP.zip",
+      "url": "https://www.waveshare.net/w/upload/3/37/PhotoPainter_B-BMP.zip",
+      "size": 926896,
+      "sha256": "2a46acdb2543402a0302073e5e82e8e55998f6d285ae3f14d9cb80a21811bbb3",
+      "status": "cached"
+    },
+    {
+      "category": "tools",
+      "file": "references/waveshare/downloads/tools/ConverTo6c_bmp-7.3.zip",
+      "url": "https://www.waveshare.net/w/upload/5/5b/ConverTo6c_bmp-7.3.zip",
+      "size": 26800103,
+      "sha256": "82b34215d6d5c9759b82dedc329b78d7e79d73fee1d177bb3287674ce98613d7",
+      "status": "cached"
+    },
+    {
+      "category": "datasheets",
+      "file": "references/waveshare/downloads/datasheets/ES7210_DS.pdf",
+      "url": "https://www.waveshare.net/w/upload/4/48/ES7210_DS.pdf",
+      "size": 903709,
+      "sha256": "e95f49299e8bc11f1bdc711c912c76879410f2201412849a201ed708188208ec",
+      "status": "cached"
+    },
+    {
+      "category": "datasheets",
+      "file": "references/waveshare/downloads/datasheets/ES8311.user.Guide.pdf",
+      "url": "https://www.waveshare.net/w/upload/5/56/ES8311.user.Guide.pdf",
+      "size": 2288778,
+      "sha256": "601320b63290526af8c684ab1a12592231f8cbd68014222e86d4d21b0ea904fe",
+      "status": "cached"
+    },
+    {
+      "category": "datasheets",
+      "file": "references/waveshare/downloads/datasheets/ES8311.DS.pdf",
+      "url": "https://www.waveshare.net/w/upload/6/65/ES8311.DS.pdf",
+      "size": 729315,
+      "sha256": "be42a2cb09093378feaccf55c227be579edc5a17786a11cc34254ea91264538a",
+      "status": "cached"
+    },
+    {
+      "category": "datasheets",
+      "file": "references/waveshare/downloads/datasheets/SHTC3_Datasheet.pdf",
+      "url": "https://www.waveshare.net/w/upload/3/33/SHTC3_Datasheet.pdf",
+      "size": 928256,
+      "sha256": "d315fe3d00282ece1d8901c0936f8bcbaa87b159bcd0e71f9002d1f03b57a8f1",
+      "status": "cached"
+    },
+    {
+      "category": "datasheets",
+      "file": "references/waveshare/downloads/datasheets/Pcf85063atl1118-NdPQpTGE-loeW7GbZ7.pdf",
+      "url": "https://www.waveshare.net/w/upload/c/c0/Pcf85063atl1118-NdPQpTGE-loeW7GbZ7.pdf",
+      "size": 535722,
+      "sha256": "93b384873539e770305b8982bcfa6387eac695650063b6a11279beae7a20602a",
+      "status": "cached"
+    },
+    {
+      "category": "datasheets",
+      "file": "references/waveshare/downloads/datasheets/Esp32-s3_datasheet_cn.pdf",
+      "url": "https://www.waveshare.net/w/upload/5/58/Esp32-s3_datasheet_cn.pdf",
+      "size": 1705750,
+      "sha256": "79ebbdd0c9ddab20b6d413b9ef97013aa4f61476625e2630b8d3e50432bbf00c",
+      "status": "cached"
+    },
+    {
+      "category": "datasheets",
+      "file": "references/waveshare/downloads/datasheets/Esp32-s3_datasheet_en.pdf",
+      "url": "https://www.waveshare.net/w/upload/b/bd/Esp32-s3_datasheet_en.pdf",
+      "size": 1186331,
+      "sha256": "b79310e52e90599920fb067c9365263a18943c2efc4b9788edffc2b2d6cdefa1",
+      "status": "cached"
+    },
+    {
+      "category": "datasheets",
+      "file": "references/waveshare/downloads/datasheets/Esp32-s3_technical_reference_manual_cn.pdf",
+      "url": "https://www.waveshare.net/w/upload/8/88/Esp32-s3_technical_reference_manual_cn.pdf",
+      "size": 14894673,
+      "sha256": "4f95f882cb170021ae35f2369917c3f5ef68bb6afa2e7209680dab2e44db94eb",
+      "status": "cached"
+    },
+    {
+      "category": "datasheets",
+      "file": "references/waveshare/downloads/datasheets/Esp32-s3_technical_reference_manual_en.pdf",
+      "url": "https://www.waveshare.net/w/upload/1/11/Esp32-s3_technical_reference_manual_en.pdf",
+      "size": 14540185,
+      "sha256": "47bb075de167d8165fc845f4729396080cf0fc92a9f0b793a2527dddae8a2ed9",
+      "status": "cached"
+    },
+    {
+      "category": "espressif",
+      "file": "references/waveshare/downloads/espressif/flash_download_tool.zip",
+      "url": "https://dl.espressif.com/public/flash_download_tool.zip",
+      "size": 24864745,
+      "sha256": "042280a777ca7f812f013035cddf63d64254858dc3fcbea46dc8fe6ae14560b5",
+      "status": "cached"
+    },
+    {
+      "category": "espressif",
+      "file": "references/waveshare/downloads/espressif/idf-driver-esp32-usb-jtag-2021-07-15.zip",
+      "url": "https://dl.espressif.com/dl/idf-driver/idf-driver-esp32-usb-jtag-2021-07-15.zip",
+      "size": 5446239,
+      "sha256": "84e741dbec5526e3152bded421b4f06f990cd2d1d7e83b907c40e81f9db0f30e",
+      "status": "cached"
+    }
+  ]
+}

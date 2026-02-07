@@ -1,0 +1,3 @@
+[submodule "upstream/ESP32-S3-PhotoPainter"]
+	path = upstream/ESP32-S3-PhotoPainter
+	url = https://github.com/wurongmin/ESP32-S3-PhotoPainter.git

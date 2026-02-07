@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html class="client-nojs" lang="zh-Hans-CN" dir="ltr">
+<head>
+<meta charset="UTF-8"/>
+<title>ESP32-S3-PhotoPainter - Waveshare Wiki</title>
+<script>document.documentElement.className="client-js";RLCONF={"wgBreakFrames":!1,"wgSeparatorTransformTable":["",""],"wgDigitTransformTable":["",""],"wgDefaultDateFormat":"zh","wgMonthNames":["","1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"],"wgRequestId":"62b052450b1ebab53b50ad0f","wgCSPNonce":!1,"wgCanonicalNamespace":"","wgCanonicalSpecialPageName":!1,"wgNamespaceNumber":0,"wgPageName":"ESP32-S3-PhotoPainter","wgTitle":"ESP32-S3-PhotoPainter","wgCurRevisionId":140890,"wgRevisionId":140890,"wgArticleId":28867,"wgIsArticle":!0,"wgIsRedirect":!1,"wgAction":"view","wgUserName":null,"wgUserGroups":["*"],"wgCategories":[],"wgPageContentLanguage":"zh-cn","wgPageContentModel":"wikitext","wgRelevantPageName":"ESP32-S3-PhotoPainter","wgRelevantArticleId":28867,"wgIsProbablyEditable":!1,"wgRelevantPageIsProbablyEditable":!1,"wgRestrictionEdit":[],"wgRestrictionMove":[]};RLSTATE={"ext.gadget.tabber":"ready","site.styles":"ready","noscript":
+"ready","user.styles":"ready","user":"ready","user.options":"loading","jquery.makeCollapsible.styles":"ready","mediawiki.toc.styles":"ready","skins.tweeki.styles":"ready","skins.tweeki.bootstraptheme.styles":"ready","skins.tweeki.externallinks.styles":"ready","skins.tweeki.awesome.styles":"ready"};RLPAGEMODULES=["site","mediawiki.page.startup","mediawiki.page.ready","jquery.makeCollapsible","mediawiki.toc","ext.FancyBoxThumbs","ext.gadget.subnavber","ext.gadget.slidenav","ext.HighlightjsIntegration","skins.tweeki.messages","skins.tweeki.scripts"];</script>
+<script>(RLQ=window.RLQ||[]).push(function(){mw.loader.implement("user.options@1hzgi",function($,jQuery,require,module){/*@nomin*/mw.user.tokens.set({"patrolToken":"+\\","watchToken":"+\\","csrfToken":"+\\"});mw.user.options.set({"variant":"zh-cn"});
+});});</script>
+<link rel="stylesheet" href="/w/load.php?lang=zh-cn&amp;modules=jquery.makeCollapsible.styles%7Cmediawiki.toc.styles%7Cskins.tweeki.awesome.styles%7Cskins.tweeki.bootstraptheme.styles%7Cskins.tweeki.externallinks.styles%7Cskins.tweeki.styles&amp;only=styles&amp;skin=tweeki"/>
+<script async="" src="/w/load.php?lang=zh-cn&amp;modules=startup&amp;only=scripts&amp;raw=1&amp;skin=tweeki"></script>
+<meta name="ResourceLoaderDynamicStyles" content=""/>
+<link rel="stylesheet" href="/w/load.php?lang=zh-cn&amp;modules=ext.gadget.tabber&amp;only=styles&amp;skin=tweeki"/>
+<link rel="stylesheet" href="/w/load.php?lang=zh-cn&amp;modules=site.styles&amp;only=styles&amp;skin=tweeki"/>
+<meta name="generator" content="MediaWiki 1.35.5"/>
+<meta property="og:image" content="https://www.waveshare.net/w/upload/thumb/1/1a/ESP32-S3-PhotoPainter-30.jpg/1200px-ESP32-S3-PhotoPainter-30.jpg"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="shortcut icon" href="/favicon.ico"/>
+<link rel="search" type="application/opensearchdescription+xml" href="/w/opensearch_desc.php" title="Waveshare Wiki (zh-cn)"/>
+<link rel="EditURI" type="application/rsd+xml" href="https://www.waveshare.net/w/api.php?action=rsd"/>
+<link rel="alternate" type="application/atom+xml" title="Waveshare Wiki的Atom feed" href="/w/index.php?title=%E7%89%B9%E6%AE%8A:%E6%9C%80%E8%BF%91%E6%9B%B4%E6%94%B9&amp;feed=atom"/>
+<!--[if lt IE 9]><script src="/w/resources/lib/html5shiv/html5shiv.js"></script><![endif]-->
+</head>
+<body class="mediawiki ltr sitedir-ltr mw-hide-empty-elt ns-0 ns-subject page-ESP32-S3-PhotoPainter rootpage-ESP32-S3-PhotoPainter skin-tweeki action-view tweeki-animateLayout tweeki-non-advanced tweeki-user-anon">			<!-- navbar -->
+			<div id="mw-navigation" class="navbar navbar-default navbar-fixed-top navbar-expand-lg fixed-top navbar-light bg-light" role="navigation">
+				<h2>导航菜单</h2>
+				<div id="mw-head" class="navbar-inner">
+					<div class="container">
+
+						<div class="navbar-header">
+							<button type="button" class="navbar-toggle" data-toggle="collapse" data-target=".navbar-collapse">
+								<span class="sr-only">Toggle navigation</span>
+								<span class="icon-bar"></span>
+								<span class="icon-bar"></span>
+								<span class="icon-bar"></span>
+							</button>
+
+							<a href="/wiki/Main_Page" class="navbar-brand"><img src="https://www.waveshare.net/w/upload/b/b6/Waveshare-logo.png" alt="Waveshare Wiki" /></a>
+						</div>
+
+						<div id="navbar" class="navbar-collapse collapse">
+													<ul class="nav navbar-nav">
+							<li class="nav"><a href="https://www.waveshare.net" id="n-https.253A.252F.252Fwww.waveshare.net" rel="nofollow" target="_blank">微雪商城</a></li><li class="nav"><a href="https://www.waveshare.net/study/portal.php" id="n-https.253A.252F.252Fwww.waveshare.net.252Fstudy.252Fportal.php" rel="nofollow" target="_blank">微雪课堂</a></li><li class="nav"><a href="#" id="n-raspberry-pi" class="dropdown-toggle" data-toggle="dropdown">Raspberry Pi <b class="caret"></b></a><ul class="dropdown-menu " role="menu"><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523rpi-boards-.25E4.25B8.25BB.25E6.259D.25BF.252F.25E5.25A5.2597.25E4.25BB.25B6.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#RPi-Boards 主板/套件]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#RPi-Boards">主板/套件</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523rpi-displays-.25E6.2598.25BE.25E7.25A4.25BA.25E5.25B1.258F.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#RPi-Displays 显示屏]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#RPi-Displays">显示屏</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523rpi-cameras-.25E6.2591.2584.25E5.2583.258F.25E5.25A4.25B4.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#RPi-Cameras 摄像头]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#RPi-Cameras">摄像头</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523rpi-expansions-.25E6.2589.25A9.25E5.25B1.2595.25E6.259D.25BF.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#RPi-Expansions 扩展板]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#RPi-Expansions">扩展板</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523rpi-laptops-.25E7.25AC.2594.25E8.25AE.25B0.25E6.259C.25AC.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#RPi-Laptops 笔记本]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#RPi-Laptops">笔记本</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523rpi-robots-.25E6.259C.25BA.25E5.2599.25A8.25E4.25BA.25BA.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#RPi-Robots 机器人]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#RPi-Robots">机器人</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523rpi-games-.25E6.25B8.25B8.25E6.2588.258F.25E6.259C.25BA.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#RPi-Games 游戏机]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#RPi-Games">游戏机</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523android-linux-boards-android.252Flinux.25E4.25B8.25BB.25E6.259D.25BF.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Android-Linux-Boards Android/Linux主板]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Android-Linux-Boards">Android/Linux主板</a></a></li></ul></li><li class="nav"><a href="#" id="n-.25E4.25BA.25BA.25E5.25B7.25A5.25E6.2599.25BA.25E8.2583.25BD" class="dropdown-toggle" data-toggle="dropdown">人工智能 <b class="caret"></b></a><ul class="dropdown-menu " role="menu"><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523jetson-ai-boards-.25E4.25B8.25BB.25E6.259D.25BF.252F.25E5.25A5.2597.25E4.25BB.25B6.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Jetson-AI-Boards 主板/套件]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Jetson-AI-Boards">主板/套件</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523jetson-ai-displays-.25E6.2598.25BE.25E7.25A4.25BA.25E5.25B1.258F.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Jetson-AI-Displays 显示屏]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Jetson-AI-Displays">显示屏</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523jetson-ai-cameras-.25E6.2591.2584.25E5.2583.258F.25E5.25A4.25B4.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Jetson-AI-Cameras 摄像头]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Jetson-AI-Cameras">摄像头</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523jetson-ai-hat-.25E6.2589.25A9.25E5.25B1.2595.25E6.259D.25BF.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Jetson-AI-HAT 扩展板]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Jetson-AI-HAT">扩展板</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523jetson-ai-robots-.25E6.259C.25BA.25E5.2599.25A8.25E4.25BA.25BA.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Jetson-AI-Robots 机器人]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Jetson-AI-Robots">机器人</a></a></li></ul></li><li class="nav"><a href="#" id="n-.25E6.2598.25BE.25E7.25A4.25BA.25E5.25B1.258F" class="dropdown-toggle" data-toggle="dropdown">显示屏 <b class="caret"></b></a><ul class="dropdown-menu " role="menu"><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523display-lcd-oleds-lcd.252Foled.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Display-LCD-OLEDs LCD/OLED]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Display-LCD-OLEDs">LCD/OLED</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523display-e-paper-e-paper.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Display-e-Paper e-Paper]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Display-e-Paper">e-Paper</a></a></li></ul></li><li class="nav"><a href="#" id="n-.25E6.25A8.25A1.25E5.259D.2597" class="dropdown-toggle" data-toggle="dropdown">模块 <b class="caret"></b></a><ul class="dropdown-menu " role="menu"><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523long-range-wireless-comm-.25E8.25BF.259C.25E8.25B7.259D.25E7.25A6.25BB.25E6.2597.25A0.25E7.25BA.25BF.25E9.2580.259A.25E4.25BF.25A1.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Long-range-wireless-comm 远距离无线通信]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Long-range-wireless-comm">远距离无线通信</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523short-range-wireless-comm-.25E8.25BF.2591.25E8.25B7.259D.25E7.25A6.25BB.25E6.2597.25A0.25E7.25BA.25BF.25E9.2580.259A.25E4.25BF.25A1.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Short-range-wireless-comm 近距离无线通信]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Short-range-wireless-comm">近距离无线通信</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523wired-communication-.25E6.259C.2589.25E7.25BA.25BF.25E9.2580.259A.25E4.25BF.25A1.252F.25E6.258E.25A5.25E5.258F.25A3.25E8.25BD.25AC.25E6.258D.25A2.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Wired-communication 有线通信/接口转换]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Wired-communication">有线通信/接口转换</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523misc-cameras-av-.25E6.2591.2584.25E5.2583.258F.25E5.25A4.25B4.252F.25E9.259F.25B3.25E8.25A7.2586.25E9.25A2.2591.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Misc-cameras-av 摄像头/音视频]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Misc-cameras-av">摄像头/音视频</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523misc-sensor-modules-.25E4.25BC.25A0.25E6.2584.259F.25E5.2599.25A8.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Misc-sensor-modules 传感器]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Misc-sensor-modules">传感器</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523misc-servos-motors-.25E7.2594.25B5.25E6.259C.25BA.252F.25E8.2588.25B5.25E6.259C.25BA.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Misc-servos-motors 电机/舵机]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Misc-servos-motors">电机/舵机</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523misc-other-modules-.25E5.25A4.25A7.25E6.259D.2582.25E7.2583.25A9.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Misc-other-modules 大杂烩]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Misc-other-modules">大杂烩</a></a></li></ul></li><li class="nav"><a href="#" id="n-.25E6.259C.25BA.25E5.2599.25A8.25E4.25BA.25BA" class="dropdown-toggle" data-toggle="dropdown">机器人 <b class="caret"></b></a><ul class="dropdown-menu " role="menu"><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523robotics-cars-.25E6.2599.25BA.25E8.2583.25BD.25E8.25BD.25A6.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Robotics-cars 智能车]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Robotics-cars">智能车</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523robotics-drivers-sensors-.25E9.25A9.25B1.25E5.258A.25A8.25E5.2599.25A8.252F.25E4.25BC.25A0.25E6.2584.259F.25E5.2599.25A8.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Robotics-drivers-sensors 驱动器/传感器]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Robotics-drivers-sensors">驱动器/传感器</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523robotics-robot-arms-.25E6.259C.25BA.25E6.25A2.25B0.25E6.2589.258B.252F.25E4.25BA.2591.25E5.258F.25B0.25E6.258E.25A7.25E5.2588.25B6.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Robotics-robot-arms 机械手/云台控制]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Robotics-robot-arms">机械手/云台控制</a></a></li></ul></li><li class="nav"><a href="#" id="n-mcu.252Ffpga" class="dropdown-toggle" data-toggle="dropdown">MCU/FPGA <b class="caret"></b></a><ul class="dropdown-menu " role="menu"><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523arduino-main-boards-arduino.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#Arduino-main-boards Arduino]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#Arduino-main-boards">Arduino</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523micro.253Abit-micro.253Abit.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#micro:bit micro:bit]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#micro:bit">micro:bit</a></a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523mcu.2farm-stm32" class="PIC"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#MCU.2FARM STM32" tabindex="-1">LPC</a></li><li id="n-.255Bhttps.253A.252F.252F.257B.257Bservername.257D.257D.252Fwiki.252Fmain_page.2523fpga-fpga.255D"><a href="INVALID-TITLE:[https://www.waveshare.net/wiki/Main_Page#FPGA FPGA]" tabindex="-1"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Main_Page#FPGA">FPGA</a></a></li></ul></li>							</ul>
+						
+													<ul class="nav navbar-nav navbar-right">
+							</ul>
+				<form class="navbar-form navbar-right" action="/w/index.php" id="searchform">
+					<div class="form-group"><input type="search" name="search" placeholder="搜索" title="搜索Waveshare Wiki[f]" accesskey="f" id="searchInput" class="search-query form-control"/><input type="submit" name="go" value="前往" title="若相同标题存在，则直接前往该页面" id="mw-searchButton" class="searchButton btn hidden"/>
+					</div>
+				</form><ul class="nav navbar-nav navbar-right">							</ul>
+						</div>
+						
+					</div>
+				</div>
+			</div>
+			<!-- /navbar -->
+					<div id="mw-page-base"></div>
+			<div id="mw-head-base"></div>
+			<a id="top"></a>
+
+			<!-- content -->
+			<div id="contentwrapper" class="user-loggedout not-editable container with-navbar with-navbar-fixed">
+
+				
+				<div class="row">
+					<div class="col-md-offset-2 col-md-10" role="main">
+								<div class="mw-body" id="content">
+			<div id="mw-js-message" style="display:none;"></div>
+									<h1 id="firstHeading" class="firstHeading page-header" lang="zh-Hans-CN"><span dir="auto">ESP32-S3-PhotoPainter</span></h1>
+									<!-- bodyContent -->
+			<div id="bodyContent">
+								<div id="siteSub">来自Waveshare Wiki</div>
+								<div id="contentSub"></div>
+												<div id="jump-to-nav" class="mw-jump">
+					跳转至：					<a href="#mw-navigation">导航</a>、					<a href="#p-search">搜索</a>
+				</div>
+				<div id="mw-content-text" lang="zh-Hans-CN" dir="ltr" class="mw-content-ltr"><div class="mw-parser-output"><div class="wiki-pages black-color">
+<div class="tabber">
+<table id="infotable" class="a-r at-c roundy bgd-black bl-black" style="margin-left: 5px; margin-bottom: 5px;">
+
+<tbody><tr>
+<td colspan="2">
+<table class="at-c roundy" style="background: transparent;width:100%;">
+
+<tbody><tr>
+<td class="at-c textwhite" style="display: none;"><span style="font-size:1.5em; line-height: 36px;"><b>PhotoPainter</b></span>
+</td></tr>
+<tr>
+<td class="at-c bgwhite" style="margin:5px;"><div class="subnavber">
+<div class="subnavbertab" title="ESP32-S3-PhotoPainter">
+<p><a href="https://www.waveshare.net/shop/ESP32-S3-PhotoPainter.htm" target="_blank" rel="nofollow noreferrer noopener"><img alt="ESP32-S3-PhotoPainter" src="/w/upload/thumb/1/1a/ESP32-S3-PhotoPainter-30.jpg/360px-ESP32-S3-PhotoPainter-30.jpg" decoding="async" loading="lazy" width="360" height="270" srcset="/w/upload/thumb/1/1a/ESP32-S3-PhotoPainter-30.jpg/540px-ESP32-S3-PhotoPainter-30.jpg 1.5x, /w/upload/thumb/1/1a/ESP32-S3-PhotoPainter-30.jpg/720px-ESP32-S3-PhotoPainter-30.jpg 2x" /></a>
+</p>
+</div></div>
+</td></tr></tbody></table>
+</td></tr>
+<tr style="display:none;">
+<td colspan="2">
+<table class="roundy" style="background: transparent;width:100%;">
+
+<tbody><tr>
+<td class="at-c textwhite"><b>{{{name2}}}</b>
+</td></tr>
+<tr>
+<td class="at-c bgwhite" style="margin:5px;">
+</td></tr></tbody></table>
+</td></tr>
+<tr style="display:none;">
+<td>
+<table class="roundy" style="background: transparent;width:100%;">
+
+<tbody><tr>
+<td class="at-c textwhite"><b>{{{name3}}}</b>
+</td></tr>
+<tr>
+<td class="at-c bgwhite" style="margin:5px;">
+</td></tr></tbody></table>
+</td></tr>
+<tr>
+<td colspan="2">
+<table class="roundy" style="background: transparent; border-collapse:collapse;width:100%;display: none;">
+<tbody><tr>
+<td style="width:2%;">
+</td>
+<td style="width:3%;">
+</td>
+<th colspan="2" width="90%" class="alignt-center roundytop bgl-white">基本信息
+</th>
+<td style="width:3%;">
+</td>
+<td style="width:2%;">
+</td></tr>
+<tr>
+<th colspan="3" width="90px" class="alignt-right roundytl bgwhite b-black" style="border-width: 0 0 1px 0;">分类：
+</th>
+<td colspan="3" class="at-l roundytr b-black bgwhite" style="border-width: 0 0 1px 0;">未知模块
+</td></tr>
+<tr style="display:none;">
+<th colspan="3" width="90px" class="alignt-right bgwhite b-black" style="border-width: 0 0 1px 0;">{{{userDefinedInfo1}}}：
+</th>
+<td colspan="3" class="at-l b-black bgwhite" style="border-width: 0 0 1px 0;">{{{userdefinedvalue1}}}
+</td></tr>
+<tr style="display:none;">
+<th colspan="3" width="90px" class="alignt-right bgwhite b-black" style="border-width: 0 0 1px 0;">{{{userDefinedInfo2}}}：
+</th>
+<td colspan="3" class="at-l b-black bgwhite" style="border-width: 0 0 1px 0;">{{{userdefinedvalue2}}}
+</td></tr>
+<tr style="display:none;">
+<th colspan="3" width="90px" class="alignt-right bgwhite b-black" style="border-width: 0 0 1px 0;">{{{userDefinedInfo3}}}：
+</th>
+<td colspan="3" class="at-l b-black bgwhite" style="border-width: 0 0 1px 0;">{{{userdefinedvalue3}}}
+</td></tr>
+<tr>
+<th colspan="3" width="90px" class="alignt-right roundybl bgwhite">品牌：
+</th>
+<td colspan="3" class="at-l roundybr bgwhite">Waveshare
+</td></tr></tbody></table>
+</td></tr>
+<tr>
+<td colspan="2">
+<table class="align-right roundy" style="background: transparent; border-collapse:collapse;width:100%;">
+<tbody><tr>
+<td style="width:2%;">
+</td>
+<td style="width:3%;">
+</td>
+<th colspan="2" width="90%" class="alignt-center roundytop"><font color="white">功能简介</font>
+</th>
+<td style="width:3%;">
+</td>
+<td style="width:2%;">
+</td></tr>
+<tr>
+<td colspan="6" class="at-c">
+<table class="roundy bd-未知 bgl-未知 textblack bw-1 fulltable">
+
+<tbody><tr>
+<td>
+<table class="roundy bgwhite fulltable" style="text-align:center">
+
+<tbody><tr>
+<td class="roundyleft textwhite bgd-black bl-black bw-1" style="width:25%;opacity: 0.8;padding-bottom: 5px;"><small><b>特性</b></small>
+</td>
+<td class="roundyright bl-black bw-1" colspan="3" style="width:75%;padding-bottom: 5px;color: #666;"><small>E6全彩ESP32墨水屏电子相框</small>
+</td></tr>
+<tr>
+<td class="roundyleft textwhite bgd-black bl-black bw-1" style="width:25%;opacity: 0.8;padding-bottom: 5px;"><small><b>分辨率</b></small>
+</td>
+<td class="roundyright bl-black bw-1" colspan="3" style="width:75%;padding-bottom: 5px;color: #666;"><small>800 × 480</small>
+</td></tr>
+<tr>
+<td class="roundyleft textwhite bgd-black bl-black bw-1" style="width:25%;opacity: 0.8;padding-bottom: 5px;"><small><b>显示颜色</b></small>
+</td>
+<td class="roundyright bl-black bw-1" colspan="3" style="width:75%;padding-bottom: 5px;color: #666;"><small>黑、白、绿、蓝、红、黄</small>
+</td></tr>
+<tr style="display:none;">
+<td class="roundyleft textwhite bgd-black bl-black bw-1" style="width:25%;opacity: 0.8;padding-bottom: 5px;"><small>'<b><i></i></b></small>
+</td>
+<td class="roundyright bl-black bw-1" colspan="3" style="width:75%;padding-bottom: 5px;color: #666;"><small>无特性，不解释</small>
+</td></tr>
+<tr style="display:none;">
+<td class="roundyleft textwhite bgd-black bl-black bw-1" style="width:25%;opacity: 0.8;padding-bottom: 5px;"><small>'<b><i></i></b></small>
+</td>
+<td class="roundyright bl-black bw-1" colspan="3" style="width:75%;padding-bottom: 5px;color: #666;"><small>无特性，不解释</small>
+</td></tr>
+<tr style="display:none;">
+<td class="roundyleft textwhite bgd-black bl-black bw-1" style="width:25%;opacity: 0.8;padding-bottom: 5px;"><small><b>接口</b></small>
+</td>
+<td class="roundyright bl-black bw-1 hide" style="width:25%;padding-bottom: 5px;color: #666;"><small></small>
+</td>
+<td class="roundyright bl-black bw-1 hide" style="width:25%;padding-bottom: 5px;color: #666;"><small></small>
+</td>
+<td class="roundyright bl-black bw-1" style="width:25%;padding-bottom: 5px;color: #666;"><small></small>
+</td></tr></tbody></table>
+</td></tr></tbody></table>
+</td></tr></tbody></table>
+</td></tr>
+<tr>
+<td colspan="2">
+<table class="align-right roundy" style="background: transparent; border-collapse:collapse;width:100%;display:none;">
+<tbody><tr>
+<td style="width:2%;">
+</td>
+<td style="width:3%;">
+</td>
+<th colspan="2" width="90%" class="alignt-center roundytop bgl-white">相关产品
+</th>
+<td style="width:3%;">
+</td>
+<td style="width:2%;">
+</td></tr>
+<tr>
+<td colspan="6" class="at-c">
+<table class="roundy bw-1 fulltable table table-striped table-bordered mw-collapsed align-left">
+
+<tbody><tr>
+<th>
+</th></tr>
+<tr style="display:none;">
+<th>♦   {{{Product1}}}
+</th></tr>
+<tr style="display:none;">
+<th>♦   {{{Product2}}}
+</th></tr>
+<tr style="display:none;">
+<th>♦   {{{Product3}}}
+</th></tr>
+<tr style="display:none;">
+<th>♦   {{{Product4}}}
+</th></tr>
+<tr style="display:none;">
+<th>♦   {{{Product5}}}
+</th></tr>
+<tr style="display:none;">
+<td>—— <span style="font-size:14px;text-align: left;font-weight: bold;">类目1</span> ——
+</td></tr>
+<tr>
+<td>
+<table class="mw-collapsible mw-collapsed align-left">
+
+<tbody><tr style="display:none;">
+<td><span style="font-size:14px;text-align: left;color: #0645ad;font-weight: bold;">♦   类目1</span>
+</td></tr>
+<tr style="font-size:13px; text-align: left;">
+<td>
+<p>列表1
+</p>
+</td></tr></tbody></table>
+</td></tr>
+<tr>
+<td>
+<table class="mw-collapsible mw-collapsed align-left">
+
+<tbody><tr style="display:none;">
+<td><span style="font-size:14px;text-align: left;color: #0645ad;font-weight: bold;">♦   类目2</span>
+</td></tr>
+<tr style="font-size:13px; text-align: left;">
+<td>
+<p>列表2
+</p>
+</td></tr></tbody></table>
+</td></tr>
+<tr>
+<td>
+<table class="mw-collapsible mw-collapsed align-left">
+
+<tbody><tr style="display:none;">
+<td><span style="font-size:14px;text-align: left;color: #0645ad;font-weight: bold;">♦   类目3</span>
+</td></tr>
+<tr style="font-size:13px; text-align: left;">
+<td>
+<p>列表3
+</p>
+</td></tr></tbody></table>
+</td></tr>
+<tr>
+<td>
+<table class="mw-collapsible mw-collapsed align-left">
+
+<tbody><tr style="display:none;">
+<td><span style="font-size:14px;text-align: left;color: #0645ad;font-weight: bold;">♦   类目4</span>
+</td></tr>
+<tr style="font-size:13px; text-align: left;">
+<td>
+<p>列表4
+</p>
+</td></tr></tbody></table>
+</td></tr>
+<tr>
+<td>
+<table class="mw-collapsible mw-collapsed align-left">
+
+<tbody><tr style="display:none;">
+<td><span style="font-size:14px;text-align: left;color: #0645ad;font-weight: bold;">♦   类目5</span>
+</td></tr>
+<tr style="font-size:13px; text-align: left;">
+<td>
+<p>列表5
+</p>
+</td></tr></tbody></table>
+</td></tr></tbody></table>
+</td></tr></tbody></table>
+</td></tr></tbody></table>
+<div class="tabbertab" title="说明" id="myintro">
+<div id="toc" class="toc" role="navigation" aria-labelledby="mw-toc-heading"><input type="checkbox" role="button" id="toctogglecheckbox" class="toctogglecheckbox" style="display:none" /><div class="toctitle" lang="zh-Hans-CN" dir="ltr"><h2 id="mw-toc-heading">目录</h2><span class="toctogglespan"><label class="toctogglelabel" for="toctogglecheckbox"></label></span></div>
+<ul>
+<li class="toclevel-1 tocsection-1"><a href="#.E8.AF.B4.E6.98.8E"><span class="tocnumber">1</span> <span class="toctext"><b>说明</b></span></a>
+<ul>
+<li class="toclevel-2 tocsection-2"><a href="#.E5.90.84.E9.A1.B9.E5.8F.82.E6.95.B0"><span class="tocnumber">1.1</span> <span class="toctext">各项参数</span></a></li>
+</ul>
+</li>
+<li class="toclevel-1 tocsection-3"><a href="#.E7.BB.84.E8.A3.85"><span class="tocnumber">2</span> <span class="toctext"><b>组装</b></span></a></li>
+<li class="toclevel-1 tocsection-4"><a href="#.E5.9F.BA.E7.A1.80.E5.8A.9F.E8.83.BD.E6.BC.94.E7.A4.BA"><span class="tocnumber">3</span> <span class="toctext"><b>基础功能演示</b></span></a></li>
+<li class="toclevel-1 tocsection-5"><a href="#.E4.BD.BF.E7.94.A8"><span class="tocnumber">4</span> <span class="toctext"><b>使用</b></span></a>
+<ul>
+<li class="toclevel-2 tocsection-6"><a href="#.E5.8A.9F.E8.83.BD.E4.BB.8B.E7.BB.8D"><span class="tocnumber">4.1</span> <span class="toctext">功能介绍</span></a></li>
+<li class="toclevel-2 tocsection-7"><a href="#.E4.BA.A7.E5.93.81.E4.BD.BF.E7.94.A8"><span class="tocnumber">4.2</span> <span class="toctext">产品使用</span></a>
+<ul>
+<li class="toclevel-3 tocsection-8"><a href="#.E6.A8.A1.E5.BC.8F1"><span class="tocnumber">4.2.1</span> <span class="toctext">模式1</span></a></li>
+<li class="toclevel-3 tocsection-9"><a href="#.E6.A8.A1.E5.BC.8F2"><span class="tocnumber">4.2.2</span> <span class="toctext">模式2</span></a></li>
+<li class="toclevel-3 tocsection-10"><a href="#.E6.A8.A1.E5.BC.8F3"><span class="tocnumber">4.2.3</span> <span class="toctext">模式3</span></a></li>
+<li class="toclevel-3 tocsection-11"><a href="#.E7.81.AB.E5.B1.B1.E5.BC.95.E6.93.8E.E6.96.87.E7.94.9F.E5.9B.BE.E9.85.8D.E7.BD.AE"><span class="tocnumber">4.2.4</span> <span class="toctext">火山引擎文生图配置</span></a></li>
+</ul>
+</li>
+<li class="toclevel-2 tocsection-12"><a href="#.E5.9B.BE.E7.89.87.E5.88.B6.E4.BD.9C"><span class="tocnumber">4.3</span> <span class="toctext">图片制作</span></a>
+<ul>
+<li class="toclevel-3 tocsection-13"><a href="#Windows.E4.BD.BF.E7.94.A8.E5.B7.A5.E5.85.B7"><span class="tocnumber">4.3.1</span> <span class="toctext">Windows使用工具</span></a></li>
+<li class="toclevel-3 tocsection-14"><a href="#MAC.E4.BD.BF.E7.94.A8.E5.B7.A5.E5.85.B7"><span class="tocnumber">4.3.2</span> <span class="toctext">MAC使用工具</span></a></li>
+</ul>
+</li>
+<li class="toclevel-2 tocsection-15"><a href="#.E7.83.A7.E5.BD.95.E5.9B.BA.E4.BB.B6.E8.AF.B4.E6.98.8E"><span class="tocnumber">4.4</span> <span class="toctext">烧录固件说明</span></a></li>
+<li class="toclevel-2 tocsection-16"><a href="#.E5.BC.80.E5.8F.91.E8.AF.B4.E6.98.8E"><span class="tocnumber">4.5</span> <span class="toctext">开发说明</span></a></li>
+<li class="toclevel-2 tocsection-17"><a href="#ESP-IDF.E7.8E.AF.E5.A2.83.E6.90.AD.E5.BB.BA"><span class="tocnumber">4.6</span> <span class="toctext">ESP-IDF环境搭建</span></a>
+<ul>
+<li class="toclevel-3 tocsection-18"><a href="#.E4.B8.8B.E8.BD.BD.E5.92.8C.E5.AE.89.E8.A3.85_Visual_Studio"><span class="tocnumber">4.6.1</span> <span class="toctext">下载和安装 Visual Studio</span></a></li>
+<li class="toclevel-3 tocsection-19"><a href="#.E5.AE.89.E8.A3.85Espressif_IDF.E6.8F.92.E4.BB.B6"><span class="tocnumber">4.6.2</span> <span class="toctext"><b>安装Espressif IDF插件</b></span></a></li>
+</ul>
+</li>
+<li class="toclevel-2"><a href="#.E8.BF.90.E8.A1.8C.E7.AC.AC.E4.B8.80.E4.B8.AA_ESP-IDF_.E7.A8.8B.E5.BA.8F"><span class="tocnumber">4.7</span> <span class="toctext">运行第一个 ESP-IDF 程序</span></a>
+<ul>
+<li class="toclevel-3"><a href="#.E6.96.B0.E5.BB.BA.E9.A1.B9.E7.9B.AE"><span class="tocnumber">4.7.1</span> <span class="toctext">新建项目</span></a></li>
+<li class="toclevel-3"><a href="#.E5.88.9B.E5.BB.BA.E4.BE.8B.E7.A8.8B"><span class="tocnumber">4.7.2</span> <span class="toctext">创建例程</span></a></li>
+<li class="toclevel-3"><a href="#.E4.BF.AE.E6.94.B9COM.E5.8F.A3"><span class="tocnumber">4.7.3</span> <span class="toctext">修改COM口</span></a></li>
+<li class="toclevel-3"><a href="#.E4.BF.AE.E6.94.B9.E9.A9.B1.E5.8A.A8.E5.AF.B9.E8.B1.A1"><span class="tocnumber">4.7.4</span> <span class="toctext">修改驱动对象</span></a></li>
+<li class="toclevel-3"><a href="#.E5.85.B6.E4.BD.99.E7.8A.B6.E6.80.81.E6.A0.8F.E7.AE.80.E4.BB.8B"><span class="tocnumber">4.7.5</span> <span class="toctext">其余状态栏简介</span></a></li>
+<li class="toclevel-3"><a href="#.E7.BC.96.E8.AF.91.E3.80.81.E7.83.A7.E5.BD.95.E3.80.81.E4.B8.B2.E5.8F.A3.E7.9B.91.E8.A7.86"><span class="tocnumber">4.7.6</span> <span class="toctext">编译、烧录、串口监视</span></a></li>
+<li class="toclevel-3"><a href="#.E4.BD.BF.E7.94.A8IDF_.E7.A4.BA.E4.BE.8B.E7.A8.8B.E5.BA.8F"><span class="tocnumber">4.7.7</span> <span class="toctext">使用IDF 示例程序</span></a>
+<ul>
+<li class="toclevel-4"><a href="#.E8.BD.AF.E4.BB.B6.E5.86.85.E9.83.A8.E6.89.93.E5.BC.80"><span class="tocnumber">4.7.7.1</span> <span class="toctext">软件内部打开</span></a></li>
+<li class="toclevel-4"><a href="#.E8.BD.AF.E4.BB.B6.E5.A4.96.E9.83.A8.E6.89.93.E5.BC.80"><span class="tocnumber">4.7.7.2</span> <span class="toctext">软件外部打开</span></a></li>
+<li class="toclevel-4"><a href="#ESP-IDF.E5.B7.A5.E7.A8.8B.E9.A1.B9.E7.9B.AE.E8.AF.A6.E8.A7.A3"><span class="tocnumber">4.7.7.3</span> <span class="toctext">ESP-IDF工程项目详解</span></a></li>
+</ul>
+</li>
+<li class="toclevel-3"><a href="#.E4.BF.AE.E6.94.B9COM.E5.8F.A3_2"><span class="tocnumber">4.7.8</span> <span class="toctext">修改COM口</span></a></li>
+<li class="toclevel-3"><a href="#.E4.BF.AE.E6.94.B9.E9.A9.B1.E5.8A.A8.E5.AF.B9.E8.B1.A1_2"><span class="tocnumber">4.7.9</span> <span class="toctext">修改驱动对象</span></a></li>
+<li class="toclevel-3"><a href="#.E5.85.B6.E4.BD.99.E7.8A.B6.E6.80.81.E6.A0.8F.E7.AE.80.E4.BB.8B_2"><span class="tocnumber">4.7.10</span> <span class="toctext">其余状态栏简介</span></a></li>
+<li class="toclevel-3"><a href="#.E7.BC.96.E8.AF.91.E3.80.81.E7.83.A7.E5.BD.95.E3.80.81.E4.B8.B2.E5.8F.A3.E7.9B.91.E8.A7.86_2"><span class="tocnumber">4.7.11</span> <span class="toctext">编译、烧录、串口监视</span></a></li>
+<li class="toclevel-3"><a href="#.E4.BD.BF.E7.94.A8IDF_.E7.A4.BA.E4.BE.8B.E7.A8.8B.E5.BA.8F_2"><span class="tocnumber">4.7.12</span> <span class="toctext">使用IDF 示例程序</span></a>
+<ul>
+<li class="toclevel-4"><a href="#.E8.BD.AF.E4.BB.B6.E5.86.85.E9.83.A8.E6.89.93.E5.BC.80_2"><span class="tocnumber">4.7.12.1</span> <span class="toctext">软件内部打开</span></a></li>
+<li class="toclevel-4"><a href="#.E8.BD.AF.E4.BB.B6.E5.A4.96.E9.83.A8.E6.89.93.E5.BC.80_2"><span class="tocnumber">4.7.12.2</span> <span class="toctext">软件外部打开</span></a></li>
+<li class="toclevel-4"><a href="#ESP-IDF.E5.B7.A5.E7.A8.8B.E9.A1.B9.E7.9B.AE.E8.AF.A6.E8.A7.A3_2"><span class="tocnumber">4.7.12.3</span> <span class="toctext">ESP-IDF工程项目详解</span></a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toclevel-1 tocsection-20"><a href="#.E8.B5.84.E6.96.99"><span class="tocnumber">5</span> <span class="toctext"><b>资料</b></span></a>
+<ul>
+<li class="toclevel-2 tocsection-21"><a href="#.E5.8E.9F.E7.90.86.E5.9B.BE"><span class="tocnumber">5.1</span> <span class="toctext">原理图</span></a></li>
+<li class="toclevel-2 tocsection-22"><a href="#.E6.96.87.E6.A1.A3"><span class="tocnumber">5.2</span> <span class="toctext">文档</span></a></li>
+<li class="toclevel-2 tocsection-23"><a href="#.E7.A8.8B.E5.BA.8F"><span class="tocnumber">5.3</span> <span class="toctext">程序</span></a></li>
+<li class="toclevel-2 tocsection-24"><a href="#.E7.9B.B8.E5.85.B3.E6.96.87.E4.BB.B6"><span class="tocnumber">5.4</span> <span class="toctext">相关文件</span></a></li>
+<li class="toclevel-2 tocsection-25"><a href="#.E5.BC.80.E5.8F.91.E8.B5.84.E6.96.99"><span class="tocnumber">5.5</span> <span class="toctext">开发资料</span></a></li>
+<li class="toclevel-2 tocsection-26"><a href="#.E8.BD.AF.E4.BB.B6.E5.B7.A5.E5.85.B7"><span class="tocnumber">5.6</span> <span class="toctext">软件工具</span></a>
+<ul>
+<li class="toclevel-3 tocsection-27"><a href="#Arduino"><span class="tocnumber">5.6.1</span> <span class="toctext">Arduino</span></a></li>
+<li class="toclevel-3 tocsection-28"><a href="#VScode"><span class="tocnumber">5.6.2</span> <span class="toctext">VScode</span></a></li>
+<li class="toclevel-3 tocsection-29"><a href="#.E5.9B.BA.E4.BB.B6.E7.83.A7.E5.BD.95.E5.B7.A5.E5.85.B7"><span class="tocnumber">5.6.3</span> <span class="toctext">固件烧录工具</span></a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toclevel-1 tocsection-30"><a href="#FAQ"><span class="tocnumber">6</span> <span class="toctext">FAQ</span></a></li>
+<li class="toclevel-1 tocsection-31"><a href="#.E5.94.AE.E5.90.8E"><span class="tocnumber">7</span> <span class="toctext"><b>售后</b></span></a></li>
+</ul>
+</div>
+
+<h1><span id="说明"></span><span class="mw-headline" id=".E8.AF.B4.E6.98.8E"><b>说明</b></span></h1>
+<h2><span id="各项参数"></span><span class="mw-headline" id=".E5.90.84.E9.A1.B9.E5.8F.82.E6.95.B0">各项参数</span></h2>
+<table border="1;" style="border:#dddddd; width:600px; line-height:200%" align="center">
+
+<tbody><tr style="background:white; color:black;" align="center">
+<td>显示尺寸</td>
+<td>160.0mm × 96.0mm
+</td></tr>
+<tr style="background:#efefef; color:black;" align="center">
+<td>外形尺寸</td>
+<td>154.0mm × 214.0mm × 32.0mm
+</td></tr>
+<tr style="background:white; color:black;" align="center">
+<td>屏幕像素点距</td>
+<td>0.2mm × 0.2mm
+</td></tr>
+<tr style="background:#efefef; color:black;" align="center">
+<td>屏幕分辨率</td>
+<td>800 × 480
+</td></tr>
+<tr style="background:white; color:black;" align="center">
+<td>显示颜色</td>
+<td>黑、白、绿、蓝、红、黄
+</td></tr>
+<tr style="background:#efefef; color:black;" align="center">
+<td>灰度等级</td>
+<td>2
+</td></tr>
+<tr style="background:white; color:black;" align="center">
+<td>刷新时间</td>
+<td>12s
+</td></tr>
+<tr style="background:#efefef; color:black;" align="center">
+<td>休眠电流</td>
+<td>≤ 1mA
+</td></tr>
+<tr style="background:white; color:black;" align="center">
+<td>充电电压/工作电压</td>
+<td>5V
+</td></tr></tbody></table>
+<ul><li>刷新时间：刷新时间为实验测试数据，实际刷新时间会有误差，以实际效果为准。全局刷新过程中会有闪烁效果，这个是正常现象。<br /></li></ul>
+</div>
+<div class="tabbertab" title="使用教程">
+<h1><span id="组装"></span><span class="mw-headline" id=".E7.BB.84.E8.A3.85"><b>组装</b></span></h1>
+<p><iframe src="////player.bilibili.com/player.html?isOutside=true&amp;aid=115885650026021&amp;bvid=BV1dRrqBvEHP&amp;cid=35353135590&amp;p=1&amp;as_wide=1&amp;high_quality=1&amp;danmaku=1" scrolling="no" border="0" frameborder="no" framespacing="0" allowfullscreen="true" controls="" style="width:1000px;height:750px"></iframe>
+</p>
+<h1><span id="基础功能演示"></span><span class="mw-headline" id=".E5.9F.BA.E7.A1.80.E5.8A.9F.E8.83.BD.E6.BC.94.E7.A4.BA"><b>基础功能演示</b></span></h1>
+<p><iframe src="//player.bilibili.com/player.html?isOutside=true&amp;aid=115904440439229&amp;bvid=BV1qFrkBmE15&amp;cid=35423322237&amp;p=1&amp;as_wide=1&amp;high_quality=1&amp;danmaku=1" scrolling="no" border="0" frameborder="no" framespacing="0" allowfullscreen="true" controls="" style="width:1000px;height:750px"></iframe>
+</p>
+<h1><span id="使用"></span><span class="mw-headline" id=".E4.BD.BF.E7.94.A8"><b>使用</b></span></h1>
+<h2><span id="功能介绍"></span><span class="mw-headline" id=".E5.8A.9F.E8.83.BD.E4.BB.8B.E7.BB.8D">功能介绍</span></h2>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-PhotoPainter-203.png" class="image"><img alt="ESP32-S3-PhotoPainter-203.png" src="/w/upload/3/3f/ESP32-S3-PhotoPainter-203.png" decoding="async" loading="lazy" width="1000" height="714" /></a>
+</p>
+<ol><li>PWR按键：单击该按键可打开系统电源，长按该按键可关闭系统电源；系统电源打开的情况下，单击可进入睡眠模式。</li>
+<li>BOOT按键：切换图片和进入下载模式</li>
+<li>KEY：睡眠模式唤醒，模式切换。</li>
+<li>ACT指示灯：刷屏，闪烁</li>
+<li>PWR指示灯：可操作指示灯，亮起表示可以进行操作</li></ol>
+<h2><span id="产品使用"></span><span class="mw-headline" id=".E4.BA.A7.E5.93.81.E4.BD.BF.E7.94.A8">产品使用</span></h2>
+<p>1.根据自己的方式先下载<a href="#.E7.A8.8B.E5.BA.8F">程序</a>，解压之后，把sdcard目录下的所有文件拷贝到sdcard上<br />
+2.单击PWR按键开机，第一次开机会有一个配网的过程，语音会播报"进入配网模式"，这个时候使用手机连接Xiaozhi-xxx(xxx表示不固定的)<br />
+3.配网成功之后，进入<a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://xiaozhi.me/console/agents">小智控制台</a>，添加对应的设备<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-PhotoPainter-19.png" class="image"><img alt="ESP32-S3-PhotoPainter-19.png" src="/w/upload/thumb/9/96/ESP32-S3-PhotoPainter-19.png/1000px-ESP32-S3-PhotoPainter-19.png" decoding="async" loading="lazy" width="1000" height="321" srcset="/w/upload/9/96/ESP32-S3-PhotoPainter-19.png 1.5x" /></a><br />
+4.本产品有三种工作模式，分别是基础模式（模式1）、局域网服务器模式（模式2）、AI对话模式（模式3），接下来详细描述怎么去使用这三种模式<br />
+</p>
+<h3><span id="模式1"></span><span class="mw-headline" id=".E6.A8.A1.E5.BC.8F1">模式1</span></h3>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:Esp32-s3-photopainter-2.png" class="image"><img alt="Esp32-s3-photopainter-2.png" src="/w/upload/a/a4/Esp32-s3-photopainter-2.png" decoding="async" loading="lazy" width="1000" height="714" /></a> <br />
+1.默认是AI对话模式（模式3），通过长按KEY按键，进入模式选择（语音会播报），然后单击KEY按键表示基础模式（模式1），再次长按KEY按键即可进入该模式<br />
+2.可以把需要显示的照片添加到sd卡06_user_Foundation_img目录下，只能接受800x480或者480x800的位深24位BMP格式的图片,图片是需要经过抖动的，具体可以查看<a href="#.E5.9B.BE.E7.89.87.E5.88.B6.E4.BD.9C">图片制作</a>，如果有兴趣的话，也可以查看我们提供的代码，代码里面也是具备抖动算法的，用户也可以修改加以使用,如下图：<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-PhotoPainter-20.png" class="image"><img alt="ESP32-S3-PhotoPainter-20.png" src="/w/upload/thumb/8/89/ESP32-S3-PhotoPainter-20.png/1000px-ESP32-S3-PhotoPainter-20.png" decoding="async" loading="lazy" width="1000" height="234" srcset="/w/upload/8/89/ESP32-S3-PhotoPainter-20.png 1.5x" /></a><br />
+3.单击BOOT按键即可显示06_user_Foundation_img目录下的图片，显示完图片之后自动进入睡眠模式。<br />
+4.可以通过BOOT按键唤醒和切换图片，也可以单击KEY按键实现唤醒不切图。<br />
+5.在睡眠模式的时候，有定时唤醒，可以通过06_user_Foundation_img目录下的config.txt文件设置，具体代码段和文件位置如下：<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-PhotoPainter-32.png" class="image"><img alt="ESP32-S3-PhotoPainter-32.png" src="/w/upload/thumb/1/10/ESP32-S3-PhotoPainter-32.png/1000px-ESP32-S3-PhotoPainter-32.png" decoding="async" loading="lazy" width="1000" height="211" srcset="/w/upload/1/10/ESP32-S3-PhotoPainter-32.png 1.5x" /></a><br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-PhotoPainter-31.png" class="image"><img alt="ESP32-S3-PhotoPainter-31.png" src="/w/upload/b/b7/ESP32-S3-PhotoPainter-31.png" decoding="async" loading="lazy" width="1000" height="346" /></a><br />
+</p>
+<h3><span id="模式2"></span><span class="mw-headline" id=".E6.A8.A1.E5.BC.8F2">模式2</span></h3>
+<p>1.如果产品处于低功耗模式，需要先单击KEY按键进行唤醒，然后再长按KEY按键，进入模式选择；单击KEY按键两次，再次长按KEY即可进入该模式<br />
+2.使用手机或者电脑连接wifi：esp_network 密码：1234567890，连接成功之后，进入<a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="http://192.168.4.1/index.html">图片选择界面</a>，如图：<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-PhotoPainter-22.png" class="image"><img alt="ESP32-S3-PhotoPainter-22.png" src="/w/upload/thumb/f/f6/ESP32-S3-PhotoPainter-22.png/1000px-ESP32-S3-PhotoPainter-22.png" decoding="async" loading="lazy" width="1000" height="516" srcset="/w/upload/f/f6/ESP32-S3-PhotoPainter-22.png 1.5x" /></a><br />
+3.点击input选择对应的图片（图片必须是24位深的800x480或者480x800的图片，而且还是经过抖动的），具体可以查看<a href="#.E5.9B.BE.E7.89.87.E5.88.B6.E4.BD.9C">图片制作</a>，点击Send即可发送对应的图片到相框<br />
+4.如果需要进入低功耗，可以直接断开WIFI的连接即可，产品会每隔30s唤醒一次，具体代码段如下，用户可以自行修改，连接成功WIFI之后禁止睡眠<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-PhotoPainter-23.png" class="image"><img alt="ESP32-S3-PhotoPainter-23.png" src="/w/upload/thumb/a/a1/ESP32-S3-PhotoPainter-23.png/1000px-ESP32-S3-PhotoPainter-23.png" decoding="async" loading="lazy" width="1000" height="248" srcset="/w/upload/thumb/a/a1/ESP32-S3-PhotoPainter-23.png/1500px-ESP32-S3-PhotoPainter-23.png 1.5x, /w/upload/a/a1/ESP32-S3-PhotoPainter-23.png 2x" /></a><br />
+</p>
+<h3><span id="模式3"></span><span class="mw-headline" id=".E6.A8.A1.E5.BC.8F3">模式3</span></h3>
+<p>1.通过长按KEY按键进入模式选择，单击KEY按键三次，然后再长按KEY按键即可进入该模式<br />
+2.初始化完成之后，会自动获取近4天的天气预报<br />
+3.等待屏幕显示完成即可进行对话，唤醒词是"你好，小智"<br />
+4.唤醒之后即可正常对话<br />
+5.可以通过MCP显示sd卡05_user_ai_img的图片，获取sd卡05_user_ai_img目录的图片数量，还具备图片评分，具体MCP服务对应代码如下，用户可以DIY自己的MCP服务：<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-PhotoPainter-24.png" class="image"><img alt="ESP32-S3-PhotoPainter-24.png" src="/w/upload/thumb/5/5d/ESP32-S3-PhotoPainter-24.png/1000px-ESP32-S3-PhotoPainter-24.png" decoding="async" loading="lazy" width="1000" height="356" srcset="/w/upload/thumb/5/5d/ESP32-S3-PhotoPainter-24.png/1500px-ESP32-S3-PhotoPainter-24.png 1.5x, /w/upload/5/5d/ESP32-S3-PhotoPainter-24.png 2x" /></a><br />
+6.关于AI生成图片的使用，比如可以说"帮我生成一张月球的图片"，如果需要使用这个功能，需要配置火山引擎，具体的配置参考<a href="#.E7.81.AB.E5.B1.B1.E5.BC.95.E6.93.8E.E6.96.87.E7.94.9F.E5.9B.BE.E9.85.8D.E7.BD.AE">火山引擎文生图配置</a><br />
+7.对图片进行评分之后，间隔30分钟轮播一次图片，对应代码如下，可以语音进行重置评分<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-PhotoPainter-25.png" class="image"><img alt="ESP32-S3-PhotoPainter-25.png" src="/w/upload/thumb/c/ce/ESP32-S3-PhotoPainter-25.png/1000px-ESP32-S3-PhotoPainter-25.png" decoding="async" loading="lazy" width="1000" height="496" srcset="/w/upload/thumb/c/ce/ESP32-S3-PhotoPainter-25.png/1500px-ESP32-S3-PhotoPainter-25.png 1.5x, /w/upload/c/ce/ESP32-S3-PhotoPainter-25.png 2x" /></a>
+</p>
+<h3><span id="火山引擎文生图配置"></span><span class="mw-headline" id=".E7.81.AB.E5.B1.B1.E5.BC.95.E6.93.8E.E6.96.87.E7.94.9F.E5.9B.BE.E9.85.8D.E7.BD.AE">火山引擎文生图配置</span></h3>
+<p>1.首先需要得是获取密钥、模型名称、URL，目前使用得是测试模型，后续会停掉的，用户需要自己配置模型，相关代码段和config.txt文件里面相关配置如下：<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-PhotoPainter-33.png" class="image"><img alt="ESP32-S3-PhotoPainter-33.png" src="/w/upload/thumb/b/b1/ESP32-S3-PhotoPainter-33.png/1000px-ESP32-S3-PhotoPainter-33.png" decoding="async" loading="lazy" width="1000" height="165" srcset="/w/upload/b/b1/ESP32-S3-PhotoPainter-33.png 1.5x" /></a><br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-PhotoPainter-35.png" class="image"><img alt="ESP32-S3-PhotoPainter-35.png" src="/w/upload/4/42/ESP32-S3-PhotoPainter-35.png" decoding="async" loading="lazy" width="1000" height="249" /></a><br />
+2.先进入<a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://console.volcengine.com/ark/region:ark+cn-beijing/endpoint?config=%7B%7D">火山引擎控制台</a><br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-PhotoPainter-27.png" class="image"><img alt="ESP32-S3-PhotoPainter-27.png" src="/w/upload/thumb/7/77/ESP32-S3-PhotoPainter-27.png/1000px-ESP32-S3-PhotoPainter-27.png" decoding="async" loading="lazy" width="1000" height="479" srcset="/w/upload/7/77/ESP32-S3-PhotoPainter-27.png 1.5x" /></a><br />
+3.创建对应的模型，记得模型不要选错，如图：<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-PhotoPainter-28.png" class="image"><img alt="ESP32-S3-PhotoPainter-28.png" src="/w/upload/thumb/5/51/ESP32-S3-PhotoPainter-28.png/1000px-ESP32-S3-PhotoPainter-28.png" decoding="async" loading="lazy" width="1000" height="464" srcset="/w/upload/5/51/ESP32-S3-PhotoPainter-28.png 1.5x" /></a><br />
+4.复制对应的key、model、url，如图：<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-PhotoPainter-6210.png" class="image"><img alt="ESP32-S3-PhotoPainter-6210.png" src="/w/upload/thumb/c/cf/ESP32-S3-PhotoPainter-6210.png/1000px-ESP32-S3-PhotoPainter-6210.png" decoding="async" loading="lazy" width="1000" height="329" srcset="/w/upload/thumb/c/cf/ESP32-S3-PhotoPainter-6210.png/1500px-ESP32-S3-PhotoPainter-6210.png 1.5x, /w/upload/thumb/c/cf/ESP32-S3-PhotoPainter-6210.png/2000px-ESP32-S3-PhotoPainter-6210.png 2x" /></a><br />
+5.把复制好的url、model、key粘贴到sdcard-&gt;06_user_Foundation_img目录下的config.txt文件对应键值（步骤1图2）即可（新用户可以免费领取Tokens）
+</p>
+<h2><span id="图片制作"></span><span class="mw-headline" id=".E5.9B.BE.E7.89.87.E5.88.B6.E4.BD.9C">图片制作</span></h2>
+<ul><li>使用PS等工具制作散点图，请参考：<a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/E-Paper-Floyd-Steinberg">使用Photoshop制作散点图</a></li>
+<li>使用我们编写的工具转换图片，应用程序及源代码：<a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/5/5b/ConverTo6c_bmp-7.3.zip">六色抖动图片转换工具</a>
+<ul><li>该程序可将图片转换成合适的分辨率并使用抖动算法进行优化，支持绝大多数格式的图片，会识别图片的方向并自动拉伸和剪裁</li>
+<li>使用方法：直接将图片拖放到“convert.exe”上面可以进行单张转换图片，或者将所有图片放到文件夹中然后双击“converterTo6color_all.cmd”进行批量转换</li>
+<li>注意：该程序仅为了方便客户使用而开发并开源，不对其提供技术支持</li></ul></li></ul>
+<h3><span id="Windows使用工具"></span><span class="mw-headline" id="Windows.E4.BD.BF.E7.94.A8.E5.B7.A5.E5.85.B7">Windows使用工具</span></h3>
+<ul><li>单张图片转换<br /></li></ul>
+<p>将图片拖到 convert.exe 上即可<br />
+</p>
+<ul><li>批量转换图片<br /></li></ul>
+<p>将图片、convert.exe、converterTo6color_all.cmd 放在一个文件夹里面，然后双击converterTo6color_all.cmd 即可<br />
+</p>
+<h3><span id="MAC使用工具"></span><span class="mw-headline" id="MAC.E4.BD.BF.E7.94.A8.E5.B7.A5.E5.85.B7">MAC使用工具</span></h3>
+<p>将图片、convert、converterTo6color_all 放在一个文件夹<br />
+打开终端，进入对应的文件夹<br />
+</p>
+<pre>cd xxxx/xxx/xxx/
+</pre>
+<ul><li>单张图片转换<br /></li></ul>
+<p>输入命令，给予convert可执行权限<br />
+</p>
+<pre>sudo chmod +x convert
+</pre>
+<p>转换图片<br />
+</p>
+<pre>./convert 图片名称
+</pre>
+<ul><li>批量转换图片<br /></li></ul>
+<p>要先对 convert 文件进行权限操作给予后才行<br />
+输入命令，给予converterTo6color_all.sh可执行权限<br />
+</p>
+<pre>sudo chmod +x converterTo6color_all.sh
+</pre>
+<p>转换图片<br />
+</p>
+<pre>./converterTo6color_all.sh
+</pre>
+<div class="toccolours mw-collapsible mw-collapsed">
+<h2><span id="烧录固件说明"></span><span class="mw-headline" id=".E7.83.A7.E5.BD.95.E5.9B.BA.E4.BB.B6.E8.AF.B4.E6.98.8E">烧录固件说明</span></h2>
+<div class="mw-collapsible-content">
+<p>1.先进入<a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://espressif.github.io/esp-launchpad/">烧录固件网页</a>，如图：<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:Esp32-s3-PhotoPainter-falsh-1.png" class="image"><img alt="Esp32-s3-PhotoPainter-falsh-1.png" src="/w/upload/thumb/d/d9/Esp32-s3-PhotoPainter-falsh-1.png/1000px-Esp32-s3-PhotoPainter-falsh-1.png" decoding="async" loading="lazy" width="1000" height="659" srcset="/w/upload/d/d9/Esp32-s3-PhotoPainter-falsh-1.png 1.5x" /></a><br />
+2.通过我们提供的Type-C线把设备连接到电脑，电脑会出现对应的COMx，如果没有出现，可以点击链接下载对应的<a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://dl.espressif.com/dl/idf-driver/idf-driver-esp32-usb-jtag-2021-07-15.zip">驱动</a>，下载完成解压安装即可<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:Esp32-s3-PhotoPainter-falsh-2.png" class="image"><img alt="Esp32-s3-PhotoPainter-falsh-2.png" src="/w/upload/thumb/1/1c/Esp32-s3-PhotoPainter-falsh-2.png/1000px-Esp32-s3-PhotoPainter-falsh-2.png" decoding="async" loading="lazy" width="1000" height="403" srcset="/w/upload/thumb/1/1c/Esp32-s3-PhotoPainter-falsh-2.png/1500px-Esp32-s3-PhotoPainter-falsh-2.png 1.5x, /w/upload/1/1c/Esp32-s3-PhotoPainter-falsh-2.png 2x" /></a><br />
+</p>
+<pre>1.点击连接COMx
+2.选择设备对应的COMx
+</pre>
+<p>3.接下来开始烧录固件，如图：<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:Esp32-s3-PhotoPainter-falsh-3.png" class="image"><img alt="Esp32-s3-PhotoPainter-falsh-3.png" src="/w/upload/thumb/e/ef/Esp32-s3-PhotoPainter-falsh-3.png/1000px-Esp32-s3-PhotoPainter-falsh-3.png" decoding="async" loading="lazy" width="1000" height="463" srcset="/w/upload/e/ef/Esp32-s3-PhotoPainter-falsh-3.png 1.5x" /></a><br />
+</p>
+<pre>1.点击DIY界面
+2.固定flash起始地址0x0
+3.点击选择文件，选择对应的固件
+4.点击开始烧录
+</pre>
+<p>4.等待烧录完成即可，烧录完成之后，点击重启设备，如图：<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:Esp32-s3-PhotoPainter-falsh-4.png" class="image"><img alt="Esp32-s3-PhotoPainter-falsh-4.png" src="/w/upload/thumb/0/01/Esp32-s3-PhotoPainter-falsh-4.png/1000px-Esp32-s3-PhotoPainter-falsh-4.png" decoding="async" loading="lazy" width="1000" height="494" srcset="/w/upload/0/01/Esp32-s3-PhotoPainter-falsh-4.png 1.5x" /></a>
+</p>
+<pre>1.点击重启设备
+</pre>
+</div>
+<h2><span id="开发说明"></span><span class="mw-headline" id=".E5.BC.80.E5.8F.91.E8.AF.B4.E6.98.8E">开发说明</span></h2>
+<ul><li>注意：本程序友情开源，不对其提供技术支持（有bug欢迎反馈）。</li>
+<li>程序基于 ESP-IDF 的 C/C++ SDK 编写，使用 CMAKE 编译，理论支持多平台，相关环境请自行搭建。</li></ul>
+<div class="toccolours mw-collapsible mw-collapsed">
+<h2><span id="ESP-IDF环境搭建"></span><span class="mw-headline" id="ESP-IDF.E7.8E.AF.E5.A2.83.E6.90.AD.E5.BB.BA">ESP-IDF环境搭建</span></h2>
+<div class="mw-collapsible-content">
+<h3><span id="下载和安装_Visual_Studio"></span><span class="mw-headline" id=".E4.B8.8B.E8.BD.BD.E5.92.8C.E5.AE.89.E8.A3.85_Visual_Studio">下载和安装 Visual Studio</span></h3>
+<ul><li>打开<a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://code.visualstudio.com/download">VScode官网</a>的下载页面，选择对应系统和系统位数进行下载<br /><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-VScode-01.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-VScode-01.png" src="/w/upload/9/96/ESP32-S3-AMOLED-1.91-VScode-01.png" decoding="async" loading="lazy" width="803" height="513" /></a></li>
+<li>运行安装包后，其余均可以默认安装，但这里为了后续的体验建议，建议在此处勾选框中的1、2、3项<br /><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-VScode-02.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-VScode-02.png" src="/w/upload/1/19/ESP32-S3-AMOLED-1.91-VScode-02.png" decoding="async" loading="lazy" width="598" height="464" /></a>
+<ul><li>第一二项开启后，可以直接通过鼠标右键文件或者目录打开VSCode，可以提高后续的使用体验.</li>
+<li>第三项开启后，选择打开方式时，可以直接选择VSCode</li></ul></li></ul>
+<style data-mw-deduplicate="TemplateStyles:r75601">.mw-parser-output .note{background-position:left 7px top 50%;padding:0.5em 0.5em 0.5em 40px;margin:0.5em 0;overflow:hidden;background-color:#f8f9fa;background-repeat:no-repeat;border:1px solid #ddd}.mw-parser-output .note-inline{display:inline-block;vertical-align:middle}.mw-parser-output .note-info{background-color:#f6efe5;background-size:25px;border-color:#ac6600;padding-left:40px;min-height:28px}.mw-parser-output .note-reminder{background-color:#fff9ea;background-size:25px;border-color:#fc3;min-height:28px}.mw-parser-output .note-warn{background-color:#fff9ea;background-size:25px;border-color:#fc3;min-height:28px}.mw-parser-output .note-error{background-color:#fee7e6;background-size:25px;border-color:#c33;min-height:28px}</style><div role="note" class="note note-info">环境设置是在 Windows 10 系统下进行，Linux和Mac用户可访问<a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://docs.espressif.com/projects/esp-idf/zh_CN/v5.1.4/esp32s3/get-started/windows-setup.html">ESP-IDF环境搭建</a>参考</div>
+<h3><span id="安装Espressif_IDF插件"></span><span class="mw-headline" id=".E5.AE.89.E8.A3.85Espressif_IDF.E6.8F.92.E4.BB.B6"><b>安装Espressif IDF插件</b></span></h3>
+<ul><li>一般推荐“<b>在线安装</b>”， 若因网络因素无法在线安装，则使用“<b>离线安装</b>”。</li>
+<li>安装Espressif IDF插件教程，详见：<a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/%E5%AE%89%E8%A3%85Espressif_IDF%E6%8F%92%E4%BB%B6%E6%95%99%E7%A8%8B">安装Espressif IDF插件教程</a></li></ul>
+<h2><span id="运行第一个_ESP-IDF_程序"></span><span class="mw-headline" id=".E8.BF.90.E8.A1.8C.E7.AC.AC.E4.B8.80.E4.B8.AA_ESP-IDF_.E7.A8.8B.E5.BA.8F">运行第一个 ESP-IDF 程序</span></h2>
+<div class="toccolours mw-collapsible mw-collapsed">
+<link rel="mw-deduplicated-inline-style" href="mw-data:TemplateStyles:r75601"/><div role="note" class="note note-reminder">如果你刚入门学习ESP32和ESP-IDF，还不知道如何创建、编译、烧录和运行ESP-IDF程序，那么请展开看看，希望可以帮助到你！</div>
+<div class="mw-collapsible-content" style="padding: 10px; background-color: #f9f9f9; border-radius: 10px;">
+<div style="margin-bottom: 10px;">
+<h3><span id="新建项目"></span><span class="mw-headline" id=".E6.96.B0.E5.BB.BA.E9.A1.B9.E7.9B.AE">新建项目</span></h3>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-01.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-01.png" src="/w/upload/9/95/ESP32-S3-AMOLED-1.91-study-01.png" decoding="async" loading="lazy" width="998" height="720" /></a><br /><br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-02.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-02.png" src="/w/upload/2/2d/ESP32-S3-AMOLED-1.91-study-02.png" decoding="async" loading="lazy" width="999" height="721" /></a>
+</p>
+<h3><span id="创建例程"></span><span class="mw-headline" id=".E5.88.9B.E5.BB.BA.E4.BE.8B.E7.A8.8B">创建例程</span></h3>
+<ul><li>使用快捷键 F1 ，输入esp-idf:show examples projects<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-03.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-03.png" src="/w/upload/f/fa/ESP32-S3-AMOLED-1.91-study-03.png" decoding="async" loading="lazy" width="999" height="697" /></a>
+</p>
+<ul><li>选择你当前的IDF版本<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-04.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-04.png" src="/w/upload/d/da/ESP32-S3-AMOLED-1.91-study-04.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<ul><li>以Hello world例程为例</li></ul>
+<p>①选择对应例程<br />
+②其readme会说明该例程适用于什么芯片（下文有介绍例程怎么使用与文件结构，这里略）<br />
+③点击创建例程<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-05.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-05.png" src="/w/upload/b/bc/ESP32-S3-AMOLED-1.91-study-05.png" decoding="async" loading="lazy" width="1000" height="707" /></a>
+</p>
+<ul><li>选择放置例程的路径，要求无例程同名文件夹<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-06.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-06.png" src="/w/upload/0/00/ESP32-S3-AMOLED-1.91-study-06.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<h3><span id="修改COM口"></span><span class="mw-headline" id=".E4.BF.AE.E6.94.B9COM.E5.8F.A3">修改COM口</span></h3>
+<ul><li>此处显示使用对应的COM口，点击可以修改对应COM口</li>
+<li>请根据设备对应COM口进行选择（可通过设备管理器查看）</li>
+<li>若出现下载失败的情况请点击复位按键1秒以上或进入下载模式，等待 PC 端重新识别到设备后再次下载<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-07.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-07.png" src="/w/upload/0/0d/ESP32-S3-AMOLED-1.91-study-07.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<h3><span id="修改驱动对象"></span><span class="mw-headline" id=".E4.BF.AE.E6.94.B9.E9.A9.B1.E5.8A.A8.E5.AF.B9.E8.B1.A1">修改驱动对象</span></h3>
+<ul><li>选择我们需要驱动的对象，也就是我们的主芯片为ESP32S3<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-08.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-08.png" src="/w/upload/b/b2/ESP32-S3-AMOLED-1.91-study-08.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<ul><li>选择openocd的路径，这里对我们没有影响，所以我们随便选择一个即可<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-09.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-09.png" src="/w/upload/1/18/ESP32-S3-AMOLED-1.91-study-09.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p><p><br />
+</p>
+<h3><span id="其余状态栏简介"></span><span class="mw-headline" id=".E5.85.B6.E4.BD.99.E7.8A.B6.E6.80.81.E6.A0.8F.E7.AE.80.E4.BB.8B">其余状态栏简介</span></h3>
+<p>①.ESP-IDF开发环境版本管理器，当我们的工程需要区分开发环境版本时，可以通过安装不同版本的ESP-IDF来分别管理，当工程使用特定版本时，可以通过使用它来切换<br />
+②.设备烧录COM口，选择以将编译好的程序烧录进芯片上<br />
+③.set-target 芯片型号选择，选择对应的芯片型号，如:ESP32-P4-Nano需要选择 esp32p4 为目标芯片<br />
+④.menuconfig，点击修改sdkconfig配置文件内容，<a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/kconfig.html">项目配置详细资料</a><br />
+⑤.fullclean 清理按钮，当工程编译报错或其他操作污染编译内容时，通过点击清理全部编译内容<br />
+⑥. Build 构建工程，当一个工程满足构建时，通过此按钮进行编译<br />
+⑦.当前下载方式，默认为UART<br />
+⑧.flash烧录按钮，当一个工程Build构建通过时，选择对应开发板COM口，点击此按钮可以将编译好的固件烧录至芯片<br />
+⑨.monitor开启烧录口监控，当一个工程Build--&gt;flash后，可通过点击此按钮查看烧录、调试口输出的l0g，以便观察应用程序是否正常工作<br />
+⑩.Debug调试<br />
+⑪.Build Flash Monitor 一键按钮，用于连续执行Build--&gt;Flash--&gt;Monitor，常被称作小火苗<br /><br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-10.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-10.png" src="/w/upload/e/ed/ESP32-S3-AMOLED-1.91-study-10.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<h3><span id="编译、烧录、串口监视"></span><span class="mw-headline" id=".E7.BC.96.E8.AF.91.E3.80.81.E7.83.A7.E5.BD.95.E3.80.81.E4.B8.B2.E5.8F.A3.E7.9B.91.E8.A7.86">编译、烧录、串口监视</span></h3>
+<ul><li>点击我们之前介绍的 编译，烧录，打开串口监视器按键<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-11.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-11.png" src="/w/upload/2/27/ESP32-S3-AMOLED-1.91-study-11.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<ul><li>编译可能需要较长时间才能完成，尤其是在第一次编译时<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-12.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-12.png" src="/w/upload/7/73/ESP32-S3-AMOLED-1.91-study-12.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<ul><li>在此过程中，ESP-IDF可能会占用大量CPU资源，因此可能会导致系统卡顿<br /></li>
+<li>若是新工程首次烧录程序，将需要选择下载方式，选择 UART<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-13.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-13.png" src="/w/upload/4/47/ESP32-S3-AMOLED-1.91-study-13.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<ul><li>后续也可在 下载方式 处进行修改（点击即可弹出选项）<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-14.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-14.png" src="/w/upload/7/71/ESP32-S3-AMOLED-1.91-study-14.png" decoding="async" loading="lazy" width="999" height="697" /></a>
+</p>
+<ul><li>因为板载自动下载电路，无需手动操作即可自动下载</li>
+<li>下载成功后，自动进入串口监视器，可以看到芯片输出对应的信息并提示10S后重启<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-15.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-15.png" src="/w/upload/2/29/ESP32-S3-AMOLED-1.91-study-15.png" decoding="async" loading="lazy" width="998" height="697" /></a>
+</p><p><br />
+</p>
+<h3><span id="使用IDF_示例程序"></span><span class="mw-headline" id=".E4.BD.BF.E7.94.A8IDF_.E7.A4.BA.E4.BE.8B.E7.A8.8B.E5.BA.8F">使用IDF 示例程序</span></h3>
+<link rel="mw-deduplicated-inline-style" href="mw-data:TemplateStyles:r75601"/><div role="note" class="note note-reminder">下文以使用“<b>ESP32-S3-LCD-1.47-Demo</b>”为例介绍工程的两种打开方式及使用的一般步骤、ESP-IDF工程项目详解，若使用其他工程，操作步骤类推。</div>
+<h4><span id="软件内部打开"></span><span class="mw-headline" id=".E8.BD.AF.E4.BB.B6.E5.86.85.E9.83.A8.E6.89.93.E5.BC.80">软件内部打开</span></h4>
+<ul><li>打开 VScode 软件，选择文件夹打开示例<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-16.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-16.png" src="/w/upload/6/6b/ESP32-S3-AMOLED-1.91-study-16.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<ul><li>选择提供的 ESP-IDF 下的示例，点击选择文件(位于 示例程序/Demo/ESP-IDF 路径下)<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-17.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-17.png" src="/w/upload/d/dc/ESP32-S3-AMOLED-1.91-study-17.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p><p><br />
+</p>
+<h4><span id="软件外部打开"></span><span class="mw-headline" id=".E8.BD.AF.E4.BB.B6.E5.A4.96.E9.83.A8.E6.89.93.E5.BC.80">软件外部打开</span></h4>
+<ul><li>正确选择工程目录，打开工程，否则会影响后续程序编译烧录<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-18.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-18.png" src="/w/upload/7/7c/ESP32-S3-AMOLED-1.91-study-18.png" decoding="async" loading="lazy" width="1000" height="280" /></a>
+</p>
+<ul><li>连接设备后，选择好COM口和型号，点击下方编译并烧录即可实现程序控制<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-19.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-19.png" src="/w/upload/9/9e/ESP32-S3-AMOLED-1.91-study-19.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<h4><span id="ESP-IDF工程项目详解"></span><span class="mw-headline" id="ESP-IDF.E5.B7.A5.E7.A8.8B.E9.A1.B9.E7.9B.AE.E8.AF.A6.E8.A7.A3">ESP-IDF工程项目详解</span></h4>
+<ul><li>组件（Component）:ESP-IDF中的组件是构建应用的基本模块，每个组件通常是相对独立的代码库或库，能实现特定的功能或服务，可以被应用程序或是其他组件重复使用，类似于Python开发中的库的定义。
+<ul><li>组件的引用：Python开发环境中引入库只需要“import 库名或路径”即可，而ESP-IDF基于C语言基础，引入库是通过<code>CMakeLists.txt</code>进行配置和定义的。</li>
+<li>CmakeLists.txt的作用：ESP-IDF编译时编译工具<code>CMake</code>会首先通过读取工程目录的顶层<code>CMakeLists.txt</code>的内容来读取构建规则，识别需要编译的内容。当在<code>CMakeLists.txt</code>中引入了需要的组件、程序后，编译工具<code>CMake</code>会根据索引导入每个所需要编译的内容。编译过程如：</li></ul></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-P4_VSCode_ESP-IDF_GettingStart_240906_02.png" class="image"><img alt="ESP32-P4 VSCode ESP-IDF GettingStart 240906 02.png" src="/w/upload/f/f7/ESP32-P4_VSCode_ESP-IDF_GettingStart_240906_02.png" decoding="async" loading="lazy" width="898" height="890" /></a>
+</p>
+</div>
+</div>
+<h3><span id="修改COM口_2"></span><span class="mw-headline" id=".E4.BF.AE.E6.94.B9COM.E5.8F.A3_2">修改COM口</span></h3>
+<ul><li>此处显示使用对应的COM口，点击可以修改对应COM口</li>
+<li>请根据设备对应COM口进行选择（可通过设备管理器查看）</li>
+<li>若出现下载失败的情况请点击复位按键1秒以上或进入下载模式，等待 PC 端重新识别到设备后再次下载<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-07.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-07.png" src="/w/upload/0/0d/ESP32-S3-AMOLED-1.91-study-07.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<h3><span id="修改驱动对象_2"></span><span class="mw-headline" id=".E4.BF.AE.E6.94.B9.E9.A9.B1.E5.8A.A8.E5.AF.B9.E8.B1.A1_2">修改驱动对象</span></h3>
+<ul><li>选择我们需要驱动的对象，下图以主芯片为ESP32S3 以例（用户根据手头实物板子的主控芯片对应设置）<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-08.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-08.png" src="/w/upload/b/b2/ESP32-S3-AMOLED-1.91-study-08.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<ul><li>选择openocd的路径，这里对我们没有影响，所以我们随便选择一个即可<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-09.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-09.png" src="/w/upload/1/18/ESP32-S3-AMOLED-1.91-study-09.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<h3><span id="其余状态栏简介_2"></span><span class="mw-headline" id=".E5.85.B6.E4.BD.99.E7.8A.B6.E6.80.81.E6.A0.8F.E7.AE.80.E4.BB.8B_2">其余状态栏简介</span></h3>
+<p>①.ESP-IDF开发环境版本管理器，当我们的工程需要区分开发环境版本时，可以通过安装不同版本的ESP-IDF来分别管理，当工程使用特定版本时，可以通过使用它来切换<br />
+②.设备烧录COM口，选择以将编译好的程序烧录进芯片上<br />
+③.set-target 芯片型号选择，选择对应的芯片型号，如:ESP32-P4-Nano需要选择 esp32p4 为目标芯片<br />
+④.menuconfig，点击修改sdkconfig配置文件内容，<a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/kconfig.html">项目配置详细资料</a><br />
+⑤.fullclean 清理按钮，当工程编译报错或其他操作污染编译内容时，通过点击清理全部编译内容<br />
+⑥. Build 构建工程，当一个工程满足构建时，通过此按钮进行编译<br />
+⑦.当前下载方式，默认为UART<br />
+⑧.flash烧录按钮，当一个工程Build构建通过时，选择对应开发板COM口，点击此按钮可以将编译好的固件烧录至芯片<br />
+⑨.monitor开启烧录口监控，当一个工程Build--&gt;flash后，可通过点击此按钮查看烧录、调试口输出的l0g，以便观察应用程序是否正常工作<br />
+⑩.Debug调试<br />
+⑪.Build Flash Monitor 一键按钮，用于连续执行Build--&gt;Flash--&gt;Monitor，常被称作小火苗<br /><br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-10.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-10.png" src="/w/upload/e/ed/ESP32-S3-AMOLED-1.91-study-10.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<h3><span id="编译、烧录、串口监视_2"></span><span class="mw-headline" id=".E7.BC.96.E8.AF.91.E3.80.81.E7.83.A7.E5.BD.95.E3.80.81.E4.B8.B2.E5.8F.A3.E7.9B.91.E8.A7.86_2">编译、烧录、串口监视</span></h3>
+<ul><li>点击我们之前介绍的 编译，烧录，打开串口监视器按键<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-11.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-11.png" src="/w/upload/2/27/ESP32-S3-AMOLED-1.91-study-11.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<ul><li>编译可能需要较长时间才能完成，尤其是在第一次编译时<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-12.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-12.png" src="/w/upload/7/73/ESP32-S3-AMOLED-1.91-study-12.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<ul><li>在此过程中，ESP-IDF可能会占用大量CPU资源，因此可能会导致系统卡顿<br /></li>
+<li>若是新工程首次烧录程序，将需要选择下载方式，选择 UART<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-13.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-13.png" src="/w/upload/4/47/ESP32-S3-AMOLED-1.91-study-13.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<ul><li>后续也可在 下载方式 处进行修改（点击即可弹出选项）<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-14.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-14.png" src="/w/upload/7/71/ESP32-S3-AMOLED-1.91-study-14.png" decoding="async" loading="lazy" width="999" height="697" /></a>
+</p>
+<ul><li>因为板载自动下载电路，无需手动操作即可自动下载</li>
+<li>下载成功后，自动进入串口监视器，可以看到芯片输出对应的信息并提示10S后重启<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-15.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-15.png" src="/w/upload/2/29/ESP32-S3-AMOLED-1.91-study-15.png" decoding="async" loading="lazy" width="998" height="697" /></a>
+</p><p><br />
+</p>
+<h3><span id="使用IDF_示例程序_2"></span><span class="mw-headline" id=".E4.BD.BF.E7.94.A8IDF_.E7.A4.BA.E4.BE.8B.E7.A8.8B.E5.BA.8F_2">使用IDF 示例程序</span></h3>
+<link rel="mw-deduplicated-inline-style" href="mw-data:TemplateStyles:r75601"/><div role="note" class="note note-reminder">下文以使用“<b>ESP32-S3-LCD-1.47-Demo</b>”为例介绍工程的两种打开方式及使用的一般步骤、ESP-IDF工程项目详解，若使用其他工程，操作步骤类推。</div>
+<h4><span id="软件内部打开_2"></span><span class="mw-headline" id=".E8.BD.AF.E4.BB.B6.E5.86.85.E9.83.A8.E6.89.93.E5.BC.80_2">软件内部打开</span></h4>
+<ul><li>打开 VScode 软件，选择文件夹打开示例<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-16.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-16.png" src="/w/upload/6/6b/ESP32-S3-AMOLED-1.91-study-16.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<ul><li>选择提供的 ESP-IDF 下的示例，点击选择文件(位于 示例程序/Demo/ESP-IDF 路径下)<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-17.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-17.png" src="/w/upload/d/dc/ESP32-S3-AMOLED-1.91-study-17.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p><p><br />
+</p>
+<h4><span id="软件外部打开_2"></span><span class="mw-headline" id=".E8.BD.AF.E4.BB.B6.E5.A4.96.E9.83.A8.E6.89.93.E5.BC.80_2">软件外部打开</span></h4>
+<ul><li>正确选择工程目录，打开工程，否则会影响后续程序编译烧录<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-18.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-18.png" src="/w/upload/7/7c/ESP32-S3-AMOLED-1.91-study-18.png" decoding="async" loading="lazy" width="1000" height="280" /></a>
+</p>
+<ul><li>连接设备后，选择好COM口和型号，点击下方编译并烧录即可实现程序控制<br /></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-S3-AMOLED-1.91-study-19.png" class="image"><img alt="ESP32-S3-AMOLED-1.91-study-19.png" src="/w/upload/9/9e/ESP32-S3-AMOLED-1.91-study-19.png" decoding="async" loading="lazy" width="999" height="698" /></a>
+</p>
+<h4><span id="ESP-IDF工程项目详解_2"></span><span class="mw-headline" id="ESP-IDF.E5.B7.A5.E7.A8.8B.E9.A1.B9.E7.9B.AE.E8.AF.A6.E8.A7.A3_2">ESP-IDF工程项目详解</span></h4>
+<ul><li>组件（Component）:ESP-IDF中的组件是构建应用的基本模块，每个组件通常是相对独立的代码库或库，能实现特定的功能或服务，可以被应用程序或是其他组件重复使用，类似于Python开发中的库的定义。
+<ul><li>组件的引用：Python开发环境中引入库只需要“import 库名或路径”即可，而ESP-IDF基于C语言基础，引入库是通过<code>CMakeLists.txt</code>进行配置和定义的。</li>
+<li>CmakeLists.txt的作用：ESP-IDF编译时编译工具<code>CMake</code>会首先通过读取工程目录的顶层<code>CMakeLists.txt</code>的内容来读取构建规则，识别需要编译的内容。当在<code>CMakeLists.txt</code>中引入了需要的组件、程序后，编译工具<code>CMake</code>会根据索引导入每个所需要编译的内容。编译过程如：</li></ul></li></ul>
+<p><a href="/wiki/%E6%96%87%E4%BB%B6:ESP32-P4_VSCode_ESP-IDF_GettingStart_240906_02.png" class="image"><img alt="ESP32-P4 VSCode ESP-IDF GettingStart 240906 02.png" src="/w/upload/f/f7/ESP32-P4_VSCode_ESP-IDF_GettingStart_240906_02.png" decoding="async" loading="lazy" width="898" height="890" /></a>
+</p>
+</div>
+</div>
+</div>
+<div class="tabbertab" title="资料">
+<h1><span id="资料"></span><span class="mw-headline" id=".E8.B5.84.E6.96.99"><b>资料</b></span></h1>
+<h2><span id="原理图"></span><span class="mw-headline" id=".E5.8E.9F.E7.90.86.E5.9B.BE">原理图</span></h2>
+<ul><li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/0/05/ESP32-S3-PhotoPainter-Schematic.pdf">ESP32-S3-PhotoPainter 原理图</a></li></ul>
+<h2><span id="文档"></span><span class="mw-headline" id=".E6.96.87.E6.A1.A3">文档</span></h2>
+<ul><li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/5/5b/7.3inch-e-Paper-%28E%29-user-manual.pdf">屏幕数据手册</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/5/58/Esp32-s3_datasheet_cn.pdf">ESP32-S3 数据手册（中文）</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/8/88/Esp32-s3_technical_reference_manual_cn.pdf">ESP32-S3 技术参考手册（中文）</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/b/bd/Esp32-s3_datasheet_en.pdf">ESP32-S3 数据手册（英文）</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/1/11/Esp32-s3_technical_reference_manual_en.pdf">ESP32-S3 技术参考手册（英文）</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/c/c0/Pcf85063atl1118-NdPQpTGE-loeW7GbZ7.pdf">PCF85063数据手册（英）</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/6/65/ES8311.DS.pdf">ES8311 数据手册（英文）</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/5/56/ES8311.user.Guide.pdf">ES8311 用户手册（英文）</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/4/48/ES7210_DS.pdf">ES7210 数据手册（英文）</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/3/33/SHTC3_Datasheet.pdf">SHTC3数据手册（英文）</a></li></ul>
+<h2><span id="程序"></span><span class="mw-headline" id=".E7.A8.8B.E5.BA.8F">程序</span></h2>
+<ul><li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://files.waveshare.net/wiki/ESP32-S3-PhotoPainter/ESP32-S3-PhotoPainter-Demo.zip">程序源代码</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://github.com/wurongmin/ESP32-S3-PhotoPainter">Github</a></li></ul>
+<h2><span id="相关文件"></span><span class="mw-headline" id=".E7.9B.B8.E5.85.B3.E6.96.87.E4.BB.B6">相关文件</span></h2>
+<ul><li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/3/37/PhotoPainter_B-BMP.zip">示例图片</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/5/5b/ConverTo6c_bmp-7.3.zip">六色抖动图片转换工具</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/a/a8/PhotoPainter_dimension.pdf">尺寸图</a></li></ul>
+<h2><span id="开发资料"></span><span class="mw-headline" id=".E5.BC.80.E5.8F.91.E8.B5.84.E6.96.99">开发资料</span></h2>
+<ul><li><a href="/wiki/E-Paper-Floyd-Steinberg" title="E-Paper-Floyd-Steinberg">使用Photoshop制作散点图</a></li>
+<li><a href="/wiki/E-Paper_API%E8%A7%A3%E6%9E%90" title="E-Paper API解析"> API解析</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/c/c6/Zimo221.7z">字摸提取软件</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/E-Paper_Font_Tutorial">墨水屏字库教程</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/w/upload/3/36/Image2Lcd.7z">Image2Lcd图片取模软件</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/Image2Lcd%E5%9B%BE%E7%89%87%E5%8F%96%E6%A8%A1%E6%AD%A5%E9%AA%A4#Image2Lcd">Image2Lcd图片取模步骤</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net/wiki/%E6%A8%A1%E6%9D%BF:E-paper_for_pwnagotchi">pwnagotchi 使用移植</a></li></ul>
+</div>
+<div class="tabbertab" title="FAQ" id="myfaq">
+<h2><span id="软件工具"></span><span class="mw-headline" id=".E8.BD.AF.E4.BB.B6.E5.B7.A5.E5.85.B7">软件工具</span></h2>
+<h3><span class="mw-headline" id="Arduino">Arduino</span></h3>
+<ul><li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.arduino.cc/en/software/">Arduino IDE 官方下载链接</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://docs.espressif.com/projects/arduino-esp32/en/latest/index.html">ESP32-Arduino官方文档</a></li>
+<li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.aliyundrive.com/s/a1wzmiRkZNL">Arduino-ESP32 离线器件包 （提取码：1r4i）</a></li></ul>
+<h3><span class="mw-headline" id="VScode">VScode</span></h3>
+<ul><li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://code.visualstudio.com/download">VScode官网</a></li></ul>
+<h3><span id="固件烧录工具"></span><span class="mw-headline" id=".E5.9B.BA.E4.BB.B6.E7.83.A7.E5.BD.95.E5.B7.A5.E5.85.B7">固件烧录工具</span></h3>
+<ul><li><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://dl.espressif.com/public/flash_download_tool.zip">Flash_download_tool</a></li></ul>
+<h1><span class="mw-headline" id="FAQ">FAQ</span></h1>
+<div class="panel-group">
+				<div class="panel panel-default">
+					<div class="panel-heading">
+						<h4 class="panel-title">
+							<a data-toggle="collapse" data-parent="#accordion" href="#accordion1">
+								<b>问题：</b>识别不到COMx口
+							</a>
+						</h4>
+					</div>
+					<div id="accordion1" class="panel-collapse collapse in">
+						<div class="panel-body">
+<div>
+<p>点击链接下载对应的<a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://dl.espressif.com/dl/idf-driver/idf-driver-esp32-usb-jtag-2021-07-15.zip">驱动</a>，下载完成解压安装即可，具体可参考<a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://docs.espressif.com/projects/esp-iot-solution/zh_CN/latest/usb/usb_overview/usb_serial_jtag.html">官方链接</a><br />
+</p>
+</div>
+<div style="display:none;"></div>
+<div style="display:none;"></div>
+<p><font color="red" style="display:none;"></font>
+</p>
+						</div>
+					</div>
+				</div>
+</div>
+<p><br />
+</p>
+<div class="panel-group">
+				<div class="panel panel-default">
+					<div class="panel-heading">
+						<h4 class="panel-title">
+							<a data-toggle="collapse" data-parent="#accordion" href="#accordion2">
+								<b>问题：</b>TF卡拆卸与安装
+							</a>
+						</h4>
+					</div>
+					<div id="accordion2" class="panel-collapse collapse in">
+						<div class="panel-body">
+<div>
+<p>为了安全起见，需要将USB断开，长按PWR（5s）关机再进行更换<br />
+</p>
+</div>
+<div style="display:none;"></div>
+<div style="display:none;"></div>
+<p><font color="red" style="display:none;"></font>
+</p>
+						</div>
+					</div>
+				</div>
+</div>
+<p><br />
+</p>
+<div class="panel-group">
+				<div class="panel panel-default">
+					<div class="panel-heading">
+						<h4 class="panel-title">
+							<a data-toggle="collapse" data-parent="#accordion" href="#accordion3">
+								<b>问题：</b>typeC接口是否能供电
+							</a>
+						</h4>
+					</div>
+					<div id="accordion3" class="panel-collapse collapse in">
+						<div class="panel-body">
+<div>
+<p>是可以给锂电池供电的。<br />
+</p>
+</div>
+<div style="display:none;"></div>
+<div style="display:none;"></div>
+<p><font color="red" style="display:none;"></font>
+</p>
+						</div>
+					</div>
+				</div>
+</div>
+<p><br />
+</p>
+<div class="panel-group">
+				<div class="panel panel-default">
+					<div class="panel-heading">
+						<h4 class="panel-title">
+							<a data-toggle="collapse" data-parent="#accordion" href="#accordion4">
+								<b>问题：</b>固件下载不进去
+							</a>
+						</h4>
+					</div>
+					<div id="accordion4" class="panel-collapse collapse in">
+						<div class="panel-body">
+<div>
+<p>长按PWR按键（5s），然后按住BOOT按键，再单击PWR按键即可进入下载模式。<br />
+</p>
+</div>
+<div style="display:none;"></div>
+<div style="display:none;"></div>
+<p><font color="red" style="display:none;"></font>
+</p>
+						</div>
+					</div>
+				</div>
+</div>
+<p><br />
+</p>
+<div class="tabbertab" title="售后">
+<h1><span id="售后"></span><span class="mw-headline" id=".E5.94.AE.E5.90.8E"><b>售后</b></span></h1>
+<p>联系人：赵工<br />
+EMAIL：3005223819@qq.com <font color="grey">(邮箱不常用，推荐使用QQ或微信沟通)</font><br />
+QQ：3005223819<br />
+微信：扫下方二维码添加<br />
+<a href="/wiki/%E6%96%87%E4%BB%B6:Zyj-wx.png" class="image"><img alt="Zyj-wx.png" src="/w/upload/thumb/0/08/Zyj-wx.png/200px-Zyj-wx.png" decoding="async" loading="lazy" width="200" height="198" srcset="/w/upload/thumb/0/08/Zyj-wx.png/300px-Zyj-wx.png 1.5x, /w/upload/0/08/Zyj-wx.png 2x" /></a><br />
+</p>
+<link rel="mw-deduplicated-inline-style" href="mw-data:TemplateStyles:r75601"/><div role="note" class="note note-error">说明：进行售后服务前，请准备好客户信息（定货单位、定货人等），以供验证</div>
+</div></div></div></div></div></div>
+<!-- 
+NewPP limit report
+Cached time: 20260207092806
+Cache expiry: 86400
+Dynamic content: false
+Complications: []
+CPU time usage: 0.117 seconds
+Real time usage: 0.138 seconds
+Preprocessor visited node count: 728/1000000
+Post‐expand include size: 23600/2097152 bytes
+Template argument size: 4330/2097152 bytes
+Highest expansion depth: 6/40
+Expensive parser function count: 1/100
+Unstrip recursion depth: 0/20
+Unstrip post‐expand size: 7588/5000000 bytes
+-->
+<!--
+Transclusion expansion time report (%,ms,calls,template)
+100.00%   32.567      1 -total
+ 39.44%   12.846      5 模板:Note
+ 21.00%    6.840      4 模板:FAQ
+ 18.04%    5.876      1 模板:外围模块
+ 10.33%    3.365      1 模板:运行第一个ESP-IDF程序
+  5.61%    1.828      1 模板:Eng72
+  5.38%    1.753      1 模板:Related_Resources
+-->
+
+<!-- Saved in parser cache with key ws_wiki_135_cn:pcache:idhash:28867-0!canonical!groups=* and timestamp 20260207092806 and revision id 140890
+ -->
+</div></div>								<div class="printfooter">
+				取自“<a dir="ltr" href="https://www.waveshare.net/w/index.php?title=ESP32-S3-PhotoPainter&amp;oldid=140890">https://www.waveshare.net/w/index.php?title=ESP32-S3-PhotoPainter&amp;oldid=140890</a>”				</div>
+												<div id="catlinks" class="catlinks catlinks-allhidden" data-mw="interface"></div>												<div class="visualClear"></div>
+							</div>
+			<!-- /bodyContent -->
+		</div>
+						</div>
+				</div>
+			</div>
+			<!-- /content -->
+
+			<!-- sidebar-left -->
+			<div class="sidebar-wrapper sidebar-left-wrapper">
+				<div class="sidebar-container container">
+					<div class="row">
+						<div id="sidebar-left" class="col-md-2 col-md-offset-0">
+							<div id="tweekiTOC"></div>						</div>
+					</div>
+				</div>
+			</div>
+			<!-- /sidebar-left -->
+					<!-- footer -->
+			<div id="footer" role="contentinfo" class="footer container footer-sticky bg-light">
+			<ul id="footer-custom"><li class="dropup"><a href="/w/index.php?title=%E7%89%B9%E6%AE%8A:%E7%94%A8%E6%88%B7%E7%99%BB%E5%BD%95&amp;returnto=ESP32-S3-PhotoPainter" title="我们鼓励您登录；然而，这不是强制性的[o]" accesskey="o">Login / Create Account</a></li><li class="dropup"><a href="INVALID-TITLE:[https://www.waveshare.net Copyright © 2022 深圳市微雪电子有限公司 版权所有]" id="n-.255Bhttps.253A.252F.252Fwww.waveshare.net-copyright-.25C2.25A9-2022-.25E6.25B7.25B1.25E5.259C.25B3.25E5.25B8.2582.25E5.25BE.25AE.25E9.259B.25AA.25E7.2594.25B5.25E5.25AD.2590.25E6.259C.2589.25E9.2599.2590.25E5.2585.25AC.25E5.258F.25B8-.25E7.2589.2588.25E6.259D.2583.25E6.2589.2580.25E6.259C.2589.255D"><a target="_blank" rel="nofollow noreferrer noopener" class="external text" href="https://www.waveshare.net">Copyright © 2022 深圳市微雪电子有限公司 版权所有</a></a></li></ul><div style="clear:both"></div>			</div>
+			<!-- /footer -->
+		
+<script>
+var fbtFancyBoxOptions = {"openEffect":"elastic","closeEffect":"elastic","helpers":{"title":{"type":"inside"}}};
+</script>
+
+<script>(RLQ=window.RLQ||[]).push(function(){mw.config.set({"wgPageParseReport":{"limitreport":{"cputime":"0.117","walltime":"0.138","ppvisitednodes":{"value":728,"limit":1000000},"postexpandincludesize":{"value":23600,"limit":2097152},"templateargumentsize":{"value":4330,"limit":2097152},"expansiondepth":{"value":6,"limit":40},"expensivefunctioncount":{"value":1,"limit":100},"unstrip-depth":{"value":0,"limit":20},"unstrip-size":{"value":7588,"limit":5000000},"timingprofile":["100.00%   32.567      1 -total"," 39.44%   12.846      5 模板:Note"," 21.00%    6.840      4 模板:FAQ"," 18.04%    5.876      1 模板:外围模块"," 10.33%    3.365      1 模板:运行第一个ESP-IDF程序","  5.61%    1.828      1 模板:Eng72","  5.38%    1.753      1 模板:Related_Resources"]},"cachereport":{"timestamp":"20260207092806","ttl":86400,"transientcontent":false}}});mw.config.set({"wgBackendResponseTime":94});});</script>	</body>
+</html>

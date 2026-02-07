@@ -1,0 +1,18 @@
+idf_component_register(
+  SRCS
+    "main.cpp"
+    "config_store.cpp"
+    "portal_server.cpp"
+    "image_client.cpp"
+  INCLUDE_DIRS "."
+  REQUIRES
+    nvs_flash
+    esp_wifi
+    esp_http_client
+    esp_http_server
+    esp_netif
+    json
+    mbedtls
+    lwip
+    photopainter_epd
+)

@@ -4,6 +4,7 @@ idf_component_register(
     "config_store.cpp"
     "portal_server.cpp"
     "image_client.cpp"
+    "orchestrator_client.cpp"
   INCLUDE_DIRS "."
   REQUIRES
     nvs_flash

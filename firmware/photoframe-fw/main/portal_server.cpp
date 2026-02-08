@@ -45,6 +45,13 @@ constexpr const char* kPortalHtml = R"HTML(
   <div class="card">
     <h3>拉图配置</h3>
     <input id="urlTemplate" placeholder="URL 模板，例如 http://host/image/480x800?date=%DATE%" />
+    <select id="orchEnabled">
+      <option value="1">编排服务：启用（推荐）</option>
+      <option value="0">编排服务：关闭（仅按 URL 模板拉图）</option>
+    </select>
+    <input id="orchBaseUrl" placeholder="编排服务地址，例如 http://192.168.58.113:8081" />
+    <input id="deviceId" placeholder="设备 ID（留空则自动生成）" />
+    <input id="orchToken" placeholder="编排服务 Token（可选）" />
     <input id="interval" type="number" min="1" placeholder="刷新间隔（分钟）" />
     <input id="retryBase" type="number" min="1" placeholder="失败重试基数（分钟）" />
     <input id="retryMax" type="number" min="1" placeholder="失败重试上限（分钟）" />
@@ -85,6 +92,10 @@ constexpr const char* kPortalHtml = R"HTML(
       const cfg = await api('/api/config');
       document.getElementById('ssid').value = cfg.wifi_ssid ?? '';
       document.getElementById('urlTemplate').value = cfg.image_url_template ?? '';
+      document.getElementById('orchEnabled').value = String(cfg.orchestrator_enabled ?? 1);
+      document.getElementById('orchBaseUrl').value = cfg.orchestrator_base_url ?? '';
+      document.getElementById('deviceId').value = cfg.device_id ?? '';
+      document.getElementById('orchToken').value = cfg.orchestrator_token ?? '';
       document.getElementById('interval').value = cfg.interval_minutes ?? 60;
       document.getElementById('retryBase').value = cfg.retry_base_minutes ?? 5;
       document.getElementById('retryMax').value = cfg.retry_max_minutes ?? 240;
@@ -124,6 +135,10 @@ constexpr const char* kPortalHtml = R"HTML(
         wifi_ssid: document.getElementById('ssid').value,
         wifi_password: document.getElementById('password').value,
         image_url_template: document.getElementById('urlTemplate').value,
+        orchestrator_enabled: Number(document.getElementById('orchEnabled').value),
+        orchestrator_base_url: document.getElementById('orchBaseUrl').value,
+        device_id: document.getElementById('deviceId').value,
+        orchestrator_token: document.getElementById('orchToken').value,
         interval_minutes: Number(document.getElementById('interval').value),
         retry_base_minutes: Number(document.getElementById('retryBase').value),
         retry_max_minutes: Number(document.getElementById('retryMax').value),
@@ -239,6 +254,10 @@ esp_err_t PortalServer::SendConfigJson(httpd_req_t* req) {
   cJSON* root = cJSON_CreateObject();
   cJSON_AddStringToObject(root, "wifi_ssid", config_->wifi_ssid.c_str());
   cJSON_AddStringToObject(root, "image_url_template", config_->image_url_template.c_str());
+  cJSON_AddNumberToObject(root, "orchestrator_enabled", config_->orchestrator_enabled);
+  cJSON_AddStringToObject(root, "orchestrator_base_url", config_->orchestrator_base_url.c_str());
+  cJSON_AddStringToObject(root, "device_id", config_->device_id.c_str());
+  cJSON_AddStringToObject(root, "orchestrator_token", config_->orchestrator_token.c_str());
   cJSON_AddStringToObject(root, "timezone", config_->timezone.c_str());
   cJSON_AddNumberToObject(root, "interval_minutes", config_->interval_minutes);
   cJSON_AddNumberToObject(root, "retry_base_minutes", config_->retry_base_minutes);
@@ -253,6 +272,8 @@ esp_err_t PortalServer::SendConfigJson(httpd_req_t* req) {
   cJSON_AddBoolToObject(root, "force_refresh", status_->force_refresh);
   cJSON_AddNumberToObject(root, "last_http_status", status_->last_http_status);
   cJSON_AddBoolToObject(root, "image_changed", status_->image_changed);
+  cJSON_AddStringToObject(root, "image_source", status_->image_source.c_str());
+  cJSON_AddNumberToObject(root, "next_wakeup_epoch", static_cast<double>(status_->next_wakeup_epoch));
   cJSON_AddStringToObject(root, "last_error", status_->last_error.c_str());
 
   char* str = cJSON_PrintUnformatted(root);
@@ -294,6 +315,26 @@ esp_err_t PortalServer::HandlePostConfig(httpd_req_t* req) {
   const cJSON* url = cJSON_GetObjectItemCaseSensitive(root, "image_url_template");
   if (cJSON_IsString(url) && url->valuestring != nullptr) {
     self->config_->image_url_template = url->valuestring;
+  }
+
+  const cJSON* orch_enabled = cJSON_GetObjectItemCaseSensitive(root, "orchestrator_enabled");
+  if (cJSON_IsNumber(orch_enabled)) {
+    self->config_->orchestrator_enabled = orch_enabled->valueint ? 1 : 0;
+  }
+
+  const cJSON* orch_url = cJSON_GetObjectItemCaseSensitive(root, "orchestrator_base_url");
+  if (cJSON_IsString(orch_url) && orch_url->valuestring != nullptr) {
+    self->config_->orchestrator_base_url = orch_url->valuestring;
+  }
+
+  const cJSON* device_id = cJSON_GetObjectItemCaseSensitive(root, "device_id");
+  if (cJSON_IsString(device_id) && device_id->valuestring != nullptr) {
+    self->config_->device_id = device_id->valuestring;
+  }
+
+  const cJSON* orch_token = cJSON_GetObjectItemCaseSensitive(root, "orchestrator_token");
+  if (cJSON_IsString(orch_token) && orch_token->valuestring != nullptr) {
+    self->config_->orchestrator_token = orch_token->valuestring;
   }
 
   const cJSON* tz = cJSON_GetObjectItemCaseSensitive(root, "timezone");
@@ -492,7 +533,7 @@ void PortalServer::DnsTask(void* arg) {
     resp[o++] = 0x04;
     resp[o++] = 192;
     resp[o++] = 168;
-    resp[o++] = 4;
+    resp[o++] = 73;
     resp[o++] = 1;
 
     sendto(sock, resp.data(), o, 0, reinterpret_cast<sockaddr*>(&from), from_len);

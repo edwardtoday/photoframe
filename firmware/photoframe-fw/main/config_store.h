@@ -20,6 +20,10 @@ struct AppConfig {
   std::string wifi_ssid;
   std::string wifi_password;
   std::string image_url_template = "http://192.168.58.113:8000/image/480x800?date=%DATE%";
+  int orchestrator_enabled = 1;
+  std::string orchestrator_base_url = "http://192.168.58.113:8081";
+  std::string device_id = "";
+  std::string orchestrator_token;
   std::string timezone = "UTC";
   int interval_minutes = 60;
   int retry_base_minutes = 5;
@@ -40,6 +44,8 @@ struct RuntimeStatus {
   bool force_refresh = false;
   int last_http_status = 0;
   bool image_changed = false;
+  std::string image_source = "daily";
+  int64_t next_wakeup_epoch = 0;
   std::string last_error;
 };
 

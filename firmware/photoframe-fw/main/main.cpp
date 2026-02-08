@@ -6,6 +6,7 @@
 
 #include "config_store.h"
 #include "image_client.h"
+#include "orchestrator_client.h"
 #include "photopainter_epd.h"
 #include "portal_server.h"
 
@@ -20,6 +21,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
+#include "lwip/ip4_addr.h"
 
 namespace {
 constexpr const char* kTag = "photoframe_main";
@@ -29,6 +31,10 @@ constexpr int kStaConnectTimeoutSec = 25;
 constexpr int kStaConnectRetry = 5;
 constexpr const char* kApSsid = "PhotoFrame-Setup";
 constexpr const char* kApPassword = "12345678";
+constexpr uint8_t kApIpA = 192;
+constexpr uint8_t kApIpB = 168;
+constexpr uint8_t kApIpC = 73;
+constexpr uint8_t kApIpD = 1;
 
 EventGroupHandle_t g_wifi_events = nullptr;
 constexpr int kWifiConnectedBit = BIT0;
@@ -36,6 +42,8 @@ constexpr int kWifiFailBit = BIT1;
 int g_wifi_retry = 0;
 int g_wifi_retry_limit = kStaConnectRetry;
 bool g_wifi_ready = false;
+esp_netif_t* g_sta_netif = nullptr;
+esp_netif_t* g_ap_netif = nullptr;
 
 void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
@@ -69,8 +77,12 @@ bool EnsureWifiStack() {
 
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
-  esp_netif_create_default_wifi_sta();
-  esp_netif_create_default_wifi_ap();
+  g_sta_netif = esp_netif_create_default_wifi_sta();
+  g_ap_netif = esp_netif_create_default_wifi_ap();
+  if (g_sta_netif == nullptr || g_ap_netif == nullptr) {
+    ESP_LOGE(kTag, "failed to create default netif");
+    return false;
+  }
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -91,7 +103,43 @@ bool EnsureWifiStack() {
   return true;
 }
 
+bool ConfigureApNetwork() {
+  if (g_ap_netif == nullptr) {
+    return false;
+  }
+
+  // 默认 AP 可能尚未启动 DHCP，允许 already stopped 状态继续设置固定网段。
+  esp_err_t err = esp_netif_dhcps_stop(g_ap_netif);
+  if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+    ESP_LOGE(kTag, "stop dhcps failed: %s", esp_err_to_name(err));
+    return false;
+  }
+
+  esp_netif_ip_info_t ip_info = {};
+  IP4_ADDR(&ip_info.ip, kApIpA, kApIpB, kApIpC, kApIpD);
+  IP4_ADDR(&ip_info.gw, kApIpA, kApIpB, kApIpC, kApIpD);
+  IP4_ADDR(&ip_info.netmask, 255, 255, 255, 0);
+
+  err = esp_netif_set_ip_info(g_ap_netif, &ip_info);
+  if (err != ESP_OK) {
+    ESP_LOGE(kTag, "set ap ip failed: %s", esp_err_to_name(err));
+    return false;
+  }
+
+  err = esp_netif_dhcps_start(g_ap_netif);
+  if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
+    ESP_LOGE(kTag, "start dhcps failed: %s", esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
 bool StartConfigApMode() {
+  if (!ConfigureApNetwork()) {
+    ESP_LOGE(kTag, "ap network config failed");
+    return false;
+  }
+
   wifi_config_t ap_cfg = {};
   strncpy(reinterpret_cast<char*>(ap_cfg.ap.ssid), kApSsid, sizeof(ap_cfg.ap.ssid));
   strncpy(reinterpret_cast<char*>(ap_cfg.ap.password), kApPassword, sizeof(ap_cfg.ap.password));
@@ -109,7 +157,8 @@ bool StartConfigApMode() {
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
   ESP_ERROR_CHECK(esp_wifi_start());
 
-  ESP_LOGI(kTag, "config AP started, ssid=%s", kApSsid);
+  ESP_LOGI(kTag, "config AP started, ssid=%s ip=%u.%u.%u.%u", kApSsid, kApIpA, kApIpB, kApIpC,
+           kApIpD);
   return true;
 }
 
@@ -236,6 +285,13 @@ extern "C" void app_main(void) {
     return;
   }
 
+  if (config.device_id.empty()) {
+    // 首次启动自动生成设备标识，便于 NAS 编排服务识别设备状态。
+    const std::string generated_device_id = OrchestratorClient::EnsureDeviceId(&config);
+    ESP_LOGI(kTag, "generated device_id=%s", generated_device_id.c_str());
+    store.Save(config);
+  }
+
   ConfigureButtonGpio();
 
   const bool long_press_portal = ShouldEnterPortalByLongPress();
@@ -258,7 +314,12 @@ extern "C" void app_main(void) {
   }
 
   if (config.wifi_ssid.empty() || long_press_portal) {
-    StartConfigApMode();
+    if (!StartConfigApMode()) {
+      ESP_LOGE(kTag, "start config ap failed");
+      vTaskDelay(pdMS_TO_TICKS(2000));
+      esp_restart();
+      return;
+    }
     PortalServer portal;
     if (!portal.Start(&config, &status, &store)) {
       ESP_LOGE(kTag, "portal start failed");
@@ -267,7 +328,8 @@ extern "C" void app_main(void) {
       return;
     }
 
-    ESP_LOGI(kTag, "enter portal mode: connect Wi-Fi to %s, then open http://192.168.4.1/", kApSsid);
+    ESP_LOGI(kTag, "enter portal mode: connect Wi-Fi to %s, then open http://%u.%u.%u.%u/", kApSsid,
+             kApIpA, kApIpB, kApIpC, kApIpD);
     while (true) {
       if (portal.ShouldReboot()) {
         ESP_LOGI(kTag, "config saved, rebooting...");
@@ -289,7 +351,25 @@ extern "C" void app_main(void) {
 
   SyncTime(config.timezone);
   const time_t now = time(nullptr);
-  const std::string url = ImageClient::BuildDatedUrl(config.image_url_template, now);
+  std::string url = ImageClient::BuildDatedUrl(config.image_url_template, now);
+  uint64_t success_sleep_seconds = static_cast<uint64_t>(std::max(1, config.interval_minutes)) * 60ULL;
+  status.image_source = "daily";
+
+  if (config.orchestrator_enabled != 0 && !config.orchestrator_base_url.empty()) {
+    const FrameDirective directive = OrchestratorClient::FetchDirective(config, now);
+    if (directive.ok) {
+      url = directive.image_url;
+      status.image_source = directive.source;
+      if (directive.poll_after_seconds > 0) {
+        success_sleep_seconds = static_cast<uint64_t>(directive.poll_after_seconds);
+      }
+      ESP_LOGI(kTag, "orchestrator source=%s poll_after=%llus", status.image_source.c_str(),
+               static_cast<unsigned long long>(success_sleep_seconds));
+    } else {
+      ESP_LOGW(kTag, "orchestrator unavailable, fallback daily url: %s", directive.error.c_str());
+    }
+  }
+
   ESP_LOGI(kTag, "fetch url: %s", url.c_str());
 
   ImageFetchResult fetch = ImageClient::FetchBmp(url, config.last_image_sha256);
@@ -322,10 +402,28 @@ extern "C" void app_main(void) {
     config.last_success_epoch = static_cast<int64_t>(time(nullptr));
     store.Save(config);
 
+    const int64_t now_epoch = static_cast<int64_t>(time(nullptr));
+    status.next_wakeup_epoch = now_epoch + static_cast<int64_t>(success_sleep_seconds);
+
+    if (config.orchestrator_enabled != 0) {
+      DeviceCheckinPayload payload;
+      payload.fetch_ok = true;
+      payload.image_changed = fetch.image_changed;
+      payload.last_http_status = fetch.status_code;
+      payload.failure_count = config.failure_count;
+      payload.poll_interval_seconds = std::max(1, config.interval_minutes) * 60;
+      payload.sleep_seconds = success_sleep_seconds;
+      payload.now_epoch = now_epoch;
+      payload.next_wakeup_epoch = status.next_wakeup_epoch;
+      payload.image_source = status.image_source;
+      payload.last_error = status.last_error;
+      OrchestratorClient::ReportCheckin(config, payload);
+    }
+
     ImageClient::FreeResultBuffer(&fetch);
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_stop());
-    // 正常路径按固定轮询间隔休眠。
-    EnterDeepSleep(static_cast<uint64_t>(std::max(1, config.interval_minutes)) * 60ULL);
+    // 正常路径按服务下发或本地默认间隔休眠。
+    EnterDeepSleep(success_sleep_seconds);
     return;
   }
 
@@ -334,7 +432,26 @@ extern "C" void app_main(void) {
   config.failure_count += 1;
   store.Save(config);
 
+  const uint64_t backoff_sleep_seconds = CalcBackoffSeconds(&config);
+  const int64_t now_epoch = static_cast<int64_t>(time(nullptr));
+  status.next_wakeup_epoch = now_epoch + static_cast<int64_t>(backoff_sleep_seconds);
+
+  if (config.orchestrator_enabled != 0) {
+    DeviceCheckinPayload payload;
+    payload.fetch_ok = false;
+    payload.image_changed = fetch.image_changed;
+    payload.last_http_status = fetch.status_code;
+    payload.failure_count = config.failure_count;
+    payload.poll_interval_seconds = std::max(1, config.interval_minutes) * 60;
+    payload.sleep_seconds = backoff_sleep_seconds;
+    payload.now_epoch = now_epoch;
+    payload.next_wakeup_epoch = status.next_wakeup_epoch;
+    payload.image_source = status.image_source;
+    payload.last_error = status.last_error;
+    OrchestratorClient::ReportCheckin(config, payload);
+  }
+
   ImageClient::FreeResultBuffer(&fetch);
   ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_stop());
-  EnterDeepSleep(CalcBackoffSeconds(&config));
+  EnterDeepSleep(backoff_sleep_seconds);
 }

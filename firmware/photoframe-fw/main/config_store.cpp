@@ -47,6 +47,10 @@ bool ConfigStore::Load(AppConfig* cfg) {
   cfg->wifi_ssid = GetString("wifi_ssid", "");
   cfg->wifi_password = GetString("wifi_pwd", "");
   cfg->image_url_template = GetString("url_tpl", cfg->image_url_template);
+  cfg->orchestrator_enabled = GetI32("orch_en", cfg->orchestrator_enabled) ? 1 : 0;
+  cfg->orchestrator_base_url = GetString("orch_url", cfg->orchestrator_base_url);
+  cfg->device_id = GetString("dev_id", cfg->device_id);
+  cfg->orchestrator_token = GetString("orch_tok", cfg->orchestrator_token);
   cfg->timezone = GetString("tz", cfg->timezone);
   // NVS 读到非法值时在加载阶段就做下限兜底，避免后续计算出现负值。
   cfg->interval_minutes =
@@ -82,7 +86,9 @@ bool ConfigStore::Save(const AppConfig& cfg) {
   }
 
   if (!SetString("wifi_ssid", cfg.wifi_ssid) || !SetString("wifi_pwd", cfg.wifi_password) ||
-      !SetString("url_tpl", cfg.image_url_template) || !SetString("tz", cfg.timezone) ||
+      !SetString("url_tpl", cfg.image_url_template) || !SetI32("orch_en", cfg.orchestrator_enabled) ||
+      !SetString("orch_url", cfg.orchestrator_base_url) || !SetString("dev_id", cfg.device_id) ||
+      !SetString("orch_tok", cfg.orchestrator_token) || !SetString("tz", cfg.timezone) ||
       !SetI32("intv_min", cfg.interval_minutes) || !SetI32("retry_base", cfg.retry_base_minutes) ||
       !SetI32("retry_max", cfg.retry_max_minutes) ||
       !SetI32("max_fail", cfg.max_failure_before_long_sleep) ||

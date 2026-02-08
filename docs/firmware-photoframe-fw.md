@@ -6,21 +6,23 @@
 - 目标芯片：`ESP32-S3`
 - 面板：Waveshare 7.3" 彩色墨水屏（引脚沿用上游）
 
-## 已实现能力（阶段 C + D）
+## 已实现能力（阶段 C + D + 编排接入）
 
 1. **配网（Captive Portal）**
    - 长按按键（GPIO4）上电 3 秒进入配网模式。
    - 设备启动 AP：`PhotoFrame-Setup` / `12345678`
-   - 浏览器访问 `http://192.168.4.1/`
+   - AP 网段固定为 `192.168.73.1/24`（避免与常见 `192.168.4.1` 冲突）。
+   - 浏览器访问 `http://192.168.73.1/`
    - 支持扫描附近 Wi-Fi、填写 SSID/密码并保存。
 
 2. **定时拉图 + 刷新 + 深睡**
    - 正常模式下连接家里 Wi-Fi。
-   - 根据配置 URL 拉取 BMP（默认模板：`.../image/480x800?date=%DATE%`）。
+   - 支持两种拉图来源：
+     - 编排服务（推荐）：`/api/v1/device/next` 下发当前应显示图片 URL
+     - 传统模板：`image_url_template`（默认 `%DATE%` 模板）
    - 自动判断图片是否已是 6 色：已是则直通显示，否则设备端转换。
-   - 串口日志会输出一次处理耗时（`detect=xxms total=xxms`），便于评估设备端转换成本。
+   - 串口日志会输出处理耗时（`detect=xxms total=xxms`），便于评估设备端转换成本。
    - 成功后刷新墨水屏，进入深度睡眠。
-   - 默认 60 分钟唤醒一次。
 
 3. **失败重试策略（指数退避）**
    - 失败后按 `retry_base_minutes * 2^(failure_count-1)` 退避。
@@ -35,15 +37,23 @@
    - STA 模式自动重连 + 有限重试。
    - 连接失败进入退避深睡，下一轮自动恢复。
 
-6. **配置查询/修改接口**
+6. **设备心跳上报（编排模式）**
+   - 每轮完成后上报 `checkin`（含 `next_wakeup_epoch`、失败计数、最近错误）。
+   - 后端可据此在 Web 端提示“插播预计生效时间”。
+
+7. **配置查询/修改接口**
    - `GET /api/config`：查询当前配置与运行状态。
-   - `POST /api/config`：更新 Wi-Fi、URL、轮询间隔、重试参数、时区、旋转参数。
+   - `POST /api/config`：更新 Wi-Fi、编排服务地址、轮询间隔、重试参数、时区、旋转参数。
    - `GET /api/wifi/scan`：扫描 AP 列表。
 
 ## 配置项（NVS 持久化）
 
 - `wifi_ssid` / `wifi_password`
-- `image_url_template`（支持 `%DATE%` 占位）
+- `orchestrator_enabled`（`1=启用编排` `0=关闭编排`）
+- `orchestrator_base_url`（默认 `http://192.168.58.113:8081`）
+- `device_id`（首次自动生成，可手工覆盖）
+- `orchestrator_token`（可选）
+- `image_url_template`（编排关闭时使用，支持 `%DATE%` 占位）
 - `interval_minutes`（默认 60）
 - `retry_base_minutes` / `retry_max_minutes`
 - `max_failure_before_long_sleep`
@@ -60,18 +70,22 @@
 
 ```bash
 # 查询当前配置与运行状态
-curl -s http://192.168.4.1/api/config
+curl -s http://192.168.73.1/api/config
 
 # 扫描附近 Wi-Fi
-curl -s http://192.168.4.1/api/wifi/scan
+curl -s http://192.168.73.1/api/wifi/scan
 
-# 更新轮询与重试参数
-curl -s -X POST http://192.168.4.1/api/config \
+# 更新配置
+curl -s -X POST http://192.168.73.1/api/config \
   -H "Content-Type: application/json" \
   --data-binary @- <<JSON
 {
   "wifi_ssid": "YourWiFi",
   "wifi_password": "YourPassword",
+  "orchestrator_enabled": 1,
+  "orchestrator_base_url": "http://192.168.58.113:8081",
+  "device_id": "pf-livingroom",
+  "orchestrator_token": "",
   "image_url_template": "http://192.168.58.113:8000/image/480x800?date=%DATE%",
   "interval_minutes": 60,
   "retry_base_minutes": 5,

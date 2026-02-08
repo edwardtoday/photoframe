@@ -17,6 +17,7 @@
 2. **定时拉图 + 刷新 + 深睡**
    - 正常模式下连接家里 Wi-Fi。
    - 根据配置 URL 拉取 BMP（默认模板：`.../image/480x800?date=%DATE%`）。
+   - 自动判断图片是否已是 6 色：已是则直通显示，否则设备端转换。
    - 成功后刷新墨水屏，进入深度睡眠。
    - 默认 60 分钟唤醒一次。
 
@@ -46,6 +47,9 @@
 - `retry_base_minutes` / `retry_max_minutes`
 - `max_failure_before_long_sleep`
 - `display_rotation`（当前支持 `0` 或 `2`）
+- `color_process_mode`（`0=自动判断` `1=总是转换` `2=认为输入已是6色`）
+- `dither_mode`（`0=关闭` `1=有序抖动`）
+- `six_color_tolerance`（0-64，判断“是否已是6色”的容差）
 - `timezone`（默认 `UTC`）
 - `last_image_sha256`（用于避免重复刷新）
 
@@ -73,6 +77,9 @@ curl -s -X POST http://192.168.4.1/api/config \
   "retry_max_minutes": 240,
   "max_failure_before_long_sleep": 24,
   "display_rotation": 2,
+  "color_process_mode": 0,
+  "dither_mode": 1,
+  "six_color_tolerance": 0,
   "timezone": "Asia/Shanghai"
 }
 JSON

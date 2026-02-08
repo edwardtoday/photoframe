@@ -6,6 +6,17 @@
 #include "nvs.h"
 
 struct AppConfig {
+  enum ColorProcessMode {
+    kColorProcessAuto = 0,
+    kColorProcessForceConvert = 1,
+    kColorProcessAssumeSixColor = 2,
+  };
+
+  enum DitherMode {
+    kDitherNone = 0,
+    kDitherOrdered = 1,
+  };
+
   std::string wifi_ssid;
   std::string wifi_password;
   std::string image_url_template = "http://192.168.58.113:8000/image/480x800?date=%DATE%";
@@ -15,6 +26,9 @@ struct AppConfig {
   int retry_max_minutes = 240;
   int max_failure_before_long_sleep = 24;
   int display_rotation = 2;
+  int color_process_mode = kColorProcessAuto;
+  int dither_mode = kDitherOrdered;
+  int six_color_tolerance = 0;
 
   std::string last_image_sha256;
   int64_t last_success_epoch = 0;

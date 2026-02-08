@@ -19,9 +19,27 @@ class PhotoPainterEpd {
   PhotoPainterEpd();
   ~PhotoPainterEpd();
 
+  enum ColorProcessMode : uint8_t {
+    kColorProcessAuto = 0,
+    kColorProcessForceConvert = 1,
+    kColorProcessAssumeSixColor = 2,
+  };
+
+  enum DitheringMode : uint8_t {
+    kDitherNone = 0,
+    kDitherOrdered = 1,
+  };
+
+  struct RenderOptions {
+    uint8_t panel_rotation = 2;
+    uint8_t color_process_mode = kColorProcessAuto;
+    uint8_t dithering_mode = kDitherOrdered;
+    uint8_t six_color_tolerance = 0;
+  };
+
   bool Init();
   void Clear(EpdColor color = kWhite);
-  bool DrawBmp24(const uint8_t* bmp, size_t len, uint8_t panel_rotation);
+  bool DrawBmp24(const uint8_t* bmp, size_t len, const RenderOptions& options);
 
  private:
   static constexpr int kPanelWidth = 800;

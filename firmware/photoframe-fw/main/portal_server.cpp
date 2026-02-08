@@ -53,6 +53,16 @@ constexpr const char* kPortalHtml = R"HTML(
       <option value="2">旋转 180（推荐）</option>
       <option value="0">旋转 0</option>
     </select>
+    <select id="colorMode">
+      <option value="0">色彩模式：自动判断（推荐）</option>
+      <option value="1">色彩模式：总是转换为 6 色</option>
+      <option value="2">色彩模式：认为输入已是 6 色</option>
+    </select>
+    <select id="ditherMode">
+      <option value="1">转换抖动：有序抖动（推荐）</option>
+      <option value="0">转换抖动：关闭</option>
+    </select>
+    <input id="colorTol" type="number" min="0" max="64" placeholder="6 色判断容差（0-64）" />
     <input id="timezone" placeholder="时区，例如 Asia/Shanghai 或 UTC" />
   </div>
 
@@ -73,14 +83,17 @@ constexpr const char* kPortalHtml = R"HTML(
 
     async function loadConfig() {
       const cfg = await api('/api/config');
-      document.getElementById('ssid').value = cfg.wifi_ssid || '';
-      document.getElementById('urlTemplate').value = cfg.image_url_template || '';
-      document.getElementById('interval').value = cfg.interval_minutes || 60;
-      document.getElementById('retryBase').value = cfg.retry_base_minutes || 5;
-      document.getElementById('retryMax').value = cfg.retry_max_minutes || 240;
-      document.getElementById('maxFail').value = cfg.max_failure_before_long_sleep || 24;
-      document.getElementById('rotation').value = String(cfg.display_rotation || 2);
-      document.getElementById('timezone').value = cfg.timezone || 'UTC';
+      document.getElementById('ssid').value = cfg.wifi_ssid ?? '';
+      document.getElementById('urlTemplate').value = cfg.image_url_template ?? '';
+      document.getElementById('interval').value = cfg.interval_minutes ?? 60;
+      document.getElementById('retryBase').value = cfg.retry_base_minutes ?? 5;
+      document.getElementById('retryMax').value = cfg.retry_max_minutes ?? 240;
+      document.getElementById('maxFail').value = cfg.max_failure_before_long_sleep ?? 24;
+      document.getElementById('rotation').value = String(cfg.display_rotation ?? 2);
+      document.getElementById('colorMode').value = String(cfg.color_process_mode ?? 0);
+      document.getElementById('ditherMode').value = String(cfg.dither_mode ?? 1);
+      document.getElementById('colorTol').value = cfg.six_color_tolerance ?? 0;
+      document.getElementById('timezone').value = cfg.timezone ?? 'UTC';
       out(JSON.stringify(cfg, null, 2));
     }
 
@@ -116,6 +129,9 @@ constexpr const char* kPortalHtml = R"HTML(
         retry_max_minutes: Number(document.getElementById('retryMax').value),
         max_failure_before_long_sleep: Number(document.getElementById('maxFail').value),
         display_rotation: Number(document.getElementById('rotation').value),
+        color_process_mode: Number(document.getElementById('colorMode').value),
+        dither_mode: Number(document.getElementById('ditherMode').value),
+        six_color_tolerance: Number(document.getElementById('colorTol').value),
         timezone: document.getElementById('timezone').value,
       };
       try {
@@ -230,6 +246,9 @@ esp_err_t PortalServer::SendConfigJson(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "max_failure_before_long_sleep",
                           config_->max_failure_before_long_sleep);
   cJSON_AddNumberToObject(root, "display_rotation", config_->display_rotation);
+  cJSON_AddNumberToObject(root, "color_process_mode", config_->color_process_mode);
+  cJSON_AddNumberToObject(root, "dither_mode", config_->dither_mode);
+  cJSON_AddNumberToObject(root, "six_color_tolerance", config_->six_color_tolerance);
   cJSON_AddBoolToObject(root, "wifi_connected", status_->wifi_connected);
   cJSON_AddBoolToObject(root, "force_refresh", status_->force_refresh);
   cJSON_AddNumberToObject(root, "last_http_status", status_->last_http_status);
@@ -305,6 +324,25 @@ esp_err_t PortalServer::HandlePostConfig(httpd_req_t* req) {
   const cJSON* rotation = cJSON_GetObjectItemCaseSensitive(root, "display_rotation");
   if (cJSON_IsNumber(rotation)) {
     self->config_->display_rotation = (rotation->valueint == 0) ? 0 : 2;
+  }
+
+  const cJSON* color_mode = cJSON_GetObjectItemCaseSensitive(root, "color_process_mode");
+  if (cJSON_IsNumber(color_mode)) {
+    self->config_->color_process_mode = std::clamp<int>(
+        color_mode->valueint, static_cast<int>(AppConfig::kColorProcessAuto),
+        static_cast<int>(AppConfig::kColorProcessAssumeSixColor));
+  }
+
+  const cJSON* dither_mode = cJSON_GetObjectItemCaseSensitive(root, "dither_mode");
+  if (cJSON_IsNumber(dither_mode)) {
+    self->config_->dither_mode =
+        std::clamp<int>(dither_mode->valueint, static_cast<int>(AppConfig::kDitherNone),
+                        static_cast<int>(AppConfig::kDitherOrdered));
+  }
+
+  const cJSON* color_tol = cJSON_GetObjectItemCaseSensitive(root, "six_color_tolerance");
+  if (cJSON_IsNumber(color_tol)) {
+    self->config_->six_color_tolerance = std::clamp(color_tol->valueint, 0, 64);
   }
 
   const bool ok = self->store_->Save(*self->config_);

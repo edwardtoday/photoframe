@@ -297,11 +297,16 @@ extern "C" void app_main(void) {
   status.image_changed = fetch.image_changed;
 
   PhotoPainterEpd epd;
+  PhotoPainterEpd::RenderOptions render_opts;
+  render_opts.panel_rotation = static_cast<uint8_t>(config.display_rotation);
+  render_opts.color_process_mode = static_cast<uint8_t>(config.color_process_mode);
+  render_opts.dithering_mode = static_cast<uint8_t>(config.dither_mode);
+  render_opts.six_color_tolerance = static_cast<uint8_t>(config.six_color_tolerance);
   if (!epd.Init()) {
     status.last_error = "epd init failed";
   } else if (fetch.ok && fetch.data != nullptr) {
     if (status.force_refresh || fetch.image_changed) {
-      if (!epd.DrawBmp24(fetch.data, fetch.data_len, static_cast<uint8_t>(config.display_rotation))) {
+      if (!epd.DrawBmp24(fetch.data, fetch.data_len, render_opts)) {
         status.last_error = "bmp decode/render failed";
       }
     } else {

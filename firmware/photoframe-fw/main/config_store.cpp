@@ -8,6 +8,16 @@
 namespace {
 constexpr const char* kTag = "config_store";
 constexpr const char* kNvsNs = "photoframe";
+
+int ClampInt(int value, int min_v, int max_v) {
+  if (value < min_v) {
+    return min_v;
+  }
+  if (value > max_v) {
+    return max_v;
+  }
+  return value;
+}
 }  // namespace
 
 bool ConfigStore::Init() {
@@ -49,6 +59,13 @@ bool ConfigStore::Load(AppConfig* cfg) {
   cfg->max_failure_before_long_sleep = std::max<int32_t>(
       1, GetI32("max_fail", static_cast<int32_t>(cfg->max_failure_before_long_sleep)));
   cfg->display_rotation = GetI32("rotation", cfg->display_rotation);
+  cfg->color_process_mode = ClampInt(
+      GetI32("clr_mode", cfg->color_process_mode), AppConfig::kColorProcessAuto,
+      AppConfig::kColorProcessAssumeSixColor);
+  cfg->dither_mode = ClampInt(GetI32("dither", cfg->dither_mode), AppConfig::kDitherNone,
+                              AppConfig::kDitherOrdered);
+  cfg->six_color_tolerance =
+      ClampInt(GetI32("clr_tol", cfg->six_color_tolerance), 0, 64);
   cfg->last_image_sha256 = GetString("img_sha256", "");
   cfg->last_success_epoch = GetI64("last_ok", 0);
   cfg->failure_count = std::max<int32_t>(0, GetI32("fail_cnt", 0));
@@ -69,7 +86,9 @@ bool ConfigStore::Save(const AppConfig& cfg) {
       !SetI32("intv_min", cfg.interval_minutes) || !SetI32("retry_base", cfg.retry_base_minutes) ||
       !SetI32("retry_max", cfg.retry_max_minutes) ||
       !SetI32("max_fail", cfg.max_failure_before_long_sleep) ||
-      !SetI32("rotation", cfg.display_rotation) || !SetString("img_sha256", cfg.last_image_sha256) ||
+      !SetI32("rotation", cfg.display_rotation) || !SetI32("clr_mode", cfg.color_process_mode) ||
+      !SetI32("dither", cfg.dither_mode) || !SetI32("clr_tol", cfg.six_color_tolerance) ||
+      !SetString("img_sha256", cfg.last_image_sha256) ||
       !SetI64("last_ok", cfg.last_success_epoch) || !SetI32("fail_cnt", cfg.failure_count)) {
     return false;
   }

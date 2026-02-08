@@ -16,6 +16,58 @@
 namespace {
 constexpr const char* kTag = "photopainter_epd";
 
+struct PaletteColor {
+  uint8_t code;
+  uint8_t r;
+  uint8_t g;
+  uint8_t b;
+};
+
+constexpr std::array<PaletteColor, 6> kPalette = {
+    PaletteColor{PhotoPainterEpd::kBlack, 0, 0, 0},
+    PaletteColor{PhotoPainterEpd::kWhite, 255, 255, 255},
+    PaletteColor{PhotoPainterEpd::kYellow, 255, 255, 0},
+    PaletteColor{PhotoPainterEpd::kRed, 255, 0, 0},
+    PaletteColor{PhotoPainterEpd::kBlue, 0, 0, 255},
+    PaletteColor{PhotoPainterEpd::kGreen, 0, 255, 0},
+};
+
+struct PaletteMatch {
+  bool matched;
+  uint8_t code;
+};
+
+uint8_t ClampByte(int value) {
+  return static_cast<uint8_t>(std::max(0, std::min(255, value)));
+}
+
+PaletteMatch MatchPaletteColor(uint8_t r, uint8_t g, uint8_t b, uint8_t tolerance) {
+  for (const auto& p : kPalette) {
+    const int dr = std::abs(static_cast<int>(r) - static_cast<int>(p.r));
+    const int dg = std::abs(static_cast<int>(g) - static_cast<int>(p.g));
+    const int db = std::abs(static_cast<int>(b) - static_cast<int>(p.b));
+    if (dr <= tolerance && dg <= tolerance && db <= tolerance) {
+      return {true, p.code};
+    }
+  }
+  return {false, PhotoPainterEpd::kWhite};
+}
+
+void ApplyOrderedDither(int x, int y, uint8_t* r, uint8_t* g, uint8_t* b) {
+  static constexpr int8_t kBayer4x4[4][4] = {
+      {0, 8, 2, 10},
+      {12, 4, 14, 6},
+      {3, 11, 1, 9},
+      {15, 7, 13, 5},
+  };
+  constexpr int kDitherStrength = 5;
+  const int8_t threshold = static_cast<int8_t>(kBayer4x4[y & 0x3][x & 0x3] - 8);
+  const int delta = static_cast<int>(threshold) * kDitherStrength;
+  *r = ClampByte(static_cast<int>(*r) + delta);
+  *g = ClampByte(static_cast<int>(*g) + delta);
+  *b = ClampByte(static_cast<int>(*b) + delta);
+}
+
 #pragma pack(push, 1)
 struct BmpFileHeader {
   uint16_t type;
@@ -340,18 +392,6 @@ void PhotoPainterEpd::RotateBuffer(uint8_t rotation) {
 }
 
 uint8_t PhotoPainterEpd::QuantizeColor(uint8_t r, uint8_t g, uint8_t b) const {
-  struct PaletteColor {
-    uint8_t code;
-    uint8_t r;
-    uint8_t g;
-    uint8_t b;
-  };
-  static constexpr std::array<PaletteColor, 6> kPalette = {
-      PaletteColor{kBlack, 0, 0, 0},       PaletteColor{kWhite, 255, 255, 255},
-      PaletteColor{kYellow, 255, 255, 0},  PaletteColor{kRed, 255, 0, 0},
-      PaletteColor{kBlue, 0, 0, 255},      PaletteColor{kGreen, 0, 255, 0},
-  };
-
   uint8_t best_code = kWhite;
   int best_dist = INT32_MAX;
   for (const auto& p : kPalette) {
@@ -388,7 +428,7 @@ void PhotoPainterEpd::Clear(EpdColor color) {
   FlushDisplay();
 }
 
-bool PhotoPainterEpd::DrawBmp24(const uint8_t* bmp, size_t len, uint8_t panel_rotation) {
+bool PhotoPainterEpd::DrawBmp24(const uint8_t* bmp, size_t len, const RenderOptions& options) {
   if (!initialized_ || bmp == nullptr || len < sizeof(BmpFileHeader) + sizeof(BmpInfoHeader)) {
     return false;
   }
@@ -429,6 +469,11 @@ bool PhotoPainterEpd::DrawBmp24(const uint8_t* bmp, size_t len, uint8_t panel_ro
   const uint8_t* pixels = bmp + file->offset;
   ClearDisplayBuffer(kWhite);
 
+  const uint8_t color_mode =
+      std::min<uint8_t>(options.color_process_mode, kColorProcessAssumeSixColor);
+  const uint8_t dithering_mode = std::min<uint8_t>(options.dithering_mode, kDitherOrdered);
+  const uint8_t tolerance = std::min<uint8_t>(options.six_color_tolerance, 64);
+
   auto get_rgb = [&](int sx, int sy, uint8_t& r, uint8_t& g, uint8_t& b) {
     const int row = bottom_up ? (in_h_abs - 1 - sy) : sy;
     const uint8_t* p = pixels + static_cast<size_t>(row) * row_stride + static_cast<size_t>(sx) * 3;
@@ -437,27 +482,69 @@ bool PhotoPainterEpd::DrawBmp24(const uint8_t* bmp, size_t len, uint8_t panel_ro
     r = p[2];
   };
 
+  auto map_source_xy = [&](int x, int y, int* sx, int* sy) {
+    if (in_w == kPanelWidth && in_h_abs == kPanelHeight) {
+      *sx = x;
+      *sy = y;
+      return;
+    }
+    // 输入是 480x800：先旋转成 800x480。
+    *sx = y;
+    *sy = in_h_abs - 1 - x;
+  };
+
+  bool treat_as_six_color = (color_mode == kColorProcessAssumeSixColor);
+  if (color_mode == kColorProcessAuto) {
+    treat_as_six_color = true;
+    for (int y = 0; y < kPanelHeight && treat_as_six_color; ++y) {
+      for (int x = 0; x < kPanelWidth; ++x) {
+        int sx = 0;
+        int sy = 0;
+        map_source_xy(x, y, &sx, &sy);
+        uint8_t r = 255;
+        uint8_t g = 255;
+        uint8_t b = 255;
+        get_rgb(sx, sy, r, g, b);
+        if (!MatchPaletteColor(r, g, b, tolerance).matched) {
+          treat_as_six_color = false;
+          break;
+        }
+      }
+    }
+  }
+
+  const bool use_dither = !treat_as_six_color && (dithering_mode == kDitherOrdered);
+
   for (int y = 0; y < kPanelHeight; ++y) {
     for (int x = 0; x < kPanelWidth; ++x) {
       int sx = 0;
       int sy = 0;
-      if (in_w == kPanelWidth && in_h_abs == kPanelHeight) {
-        sx = x;
-        sy = y;
-      } else {
-        // 输入是 480x800：先旋转成 800x480。
-        sx = y;
-        sy = in_h_abs - 1 - x;
-      }
+      map_source_xy(x, y, &sx, &sy);
       uint8_t r = 255;
       uint8_t g = 255;
       uint8_t b = 255;
       get_rgb(sx, sy, r, g, b);
-      SetPackedPixel(display_buf_, kPanelWidth, x, y, QuantizeColor(r, g, b));
+
+      uint8_t color_code = kWhite;
+      if (treat_as_six_color) {
+        const auto match = MatchPaletteColor(r, g, b, tolerance);
+        color_code = match.matched ? match.code : QuantizeColor(r, g, b);
+      } else {
+        if (use_dither) {
+          ApplyOrderedDither(x, y, &r, &g, &b);
+        }
+        color_code = QuantizeColor(r, g, b);
+      }
+
+      SetPackedPixel(display_buf_, kPanelWidth, x, y, color_code);
     }
   }
 
-  RotateBuffer(panel_rotation);
+  ESP_LOGI(kTag, "bmp color process: mode=%s dither=%s tolerance=%u",
+           treat_as_six_color ? "passthrough-6color" : "convert",
+           use_dither ? "ordered" : "none", static_cast<unsigned>(tolerance));
+
+  RotateBuffer(options.panel_rotation);
   FlushDisplay();
   return true;
 }

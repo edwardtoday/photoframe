@@ -43,7 +43,7 @@ scripts/release-orchestrator-image.sh
 scripts/release-orchestrator-image.sh 0.1.0
 ```
 
-访问：`http://<NAS_IP>:8081/`
+访问：`http://<NAS_IP>:18081/`
 
 ## 环境变量
 

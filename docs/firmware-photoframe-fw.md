@@ -50,7 +50,7 @@
 
 - `wifi_ssid` / `wifi_password`
 - `orchestrator_enabled`（`1=启用编排` `0=关闭编排`）
-- `orchestrator_base_url`（默认 `http://192.168.58.113:8081`）
+- `orchestrator_base_url`（默认 `http://192.168.58.113:18081`）
 - `device_id`（首次自动生成，可手工覆盖）
 - `orchestrator_token`（可选）
 - `image_url_template`（编排关闭时使用，支持 `%DATE%` 占位）
@@ -83,7 +83,7 @@ curl -s -X POST http://192.168.73.1/api/config \
   "wifi_ssid": "YourWiFi",
   "wifi_password": "YourPassword",
   "orchestrator_enabled": 1,
-  "orchestrator_base_url": "http://192.168.58.113:8081",
+  "orchestrator_base_url": "http://192.168.58.113:18081",
   "device_id": "pf-livingroom",
   "orchestrator_token": "",
   "image_url_template": "http://192.168.58.113:8000/image/480x800?date=%DATE%",

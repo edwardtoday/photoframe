@@ -21,7 +21,7 @@ struct AppConfig {
   std::string wifi_password;
   std::string image_url_template = "http://192.168.58.113:8000/image/480x800?date=%DATE%";
   int orchestrator_enabled = 1;
-  std::string orchestrator_base_url = "http://192.168.58.113:8081";
+  std::string orchestrator_base_url = "http://192.168.58.113:18081";
   std::string device_id = "";
   std::string orchestrator_token;
   std::string timezone = "UTC";

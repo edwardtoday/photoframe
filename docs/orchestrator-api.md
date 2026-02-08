@@ -23,7 +23,7 @@
   "device_id": "pf-a1b2c3d4",
   "server_epoch": 1760000000,
   "source": "override",
-  "image_url": "http://192.168.58.113:8081/api/v1/assets/xxxx.bmp",
+  "image_url": "http://192.168.58.113:18081/api/v1/assets/xxxx.bmp",
   "valid_until_epoch": 1760001800,
   "poll_after_seconds": 900,
   "default_poll_seconds": 3600,
@@ -79,7 +79,7 @@
   "start_epoch": 1760000100,
   "end_epoch": 1760001900,
   "duration_minutes": 30,
-  "image_url": "http://192.168.58.113:8081/api/v1/assets/xxxx.bmp",
+  "image_url": "http://192.168.58.113:18081/api/v1/assets/xxxx.bmp",
   "asset_sha256": "...",
   "expected_effective_epoch": 1760003600
 }

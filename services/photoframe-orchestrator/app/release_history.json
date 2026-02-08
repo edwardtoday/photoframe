@@ -1,0 +1,50 @@
+[
+  {
+    "version": "0.2.2",
+    "released_on": "2026-02-08",
+    "title": "默认端口切换到 18081",
+    "summary": "统一默认编排地址，避免 NAS 上 8081 端口冲突。",
+    "highlights": [
+      "固件默认 orchestrator_base_url 改为 http://192.168.58.113:18081",
+      "生产 compose 默认映射 18081:8081",
+      "文档示例统一为 18081"
+    ],
+    "commit": "2dcfc8e"
+  },
+  {
+    "version": "0.2.1",
+    "released_on": "2026-02-08",
+    "title": "支持 multi-arch 发布与 NAS 拉取部署",
+    "summary": "新增 buildx 发布脚本，NAS 改为 docker pull + compose 启动。",
+    "highlights": [
+      "新增 scripts/release-orchestrator-image.sh",
+      "新增 docker-compose.photoframe-orchestrator.prod.yml",
+      "镜像发布到 Docker Hub: edwardtoday/photoframe-orchestrator"
+    ],
+    "commit": "964b689"
+  },
+  {
+    "version": "0.2.0",
+    "released_on": "2026-02-08",
+    "title": "编排服务首版",
+    "summary": "上线设备编排、插播管理与 Web 控制台。",
+    "highlights": [
+      "新增 /api/v1/device/next 与 /api/v1/device/checkin",
+      "支持上传任意图片并转换为 480x800 BMP",
+      "支持按设备或全局创建插播并计算预计生效时间"
+    ],
+    "commit": "1576f92"
+  },
+  {
+    "version": "0.1.1",
+    "released_on": "2026-02-08",
+    "title": "固件接入编排与 AP 网段调整",
+    "summary": "设备支持心跳上报，Portal 新增编排配置。",
+    "highlights": [
+      "固件新增 orchestrator client",
+      "配网 AP 固定为 192.168.73.1/24",
+      "Portal 支持配置编排地址、device_id、token"
+    ],
+    "commit": "23a64d0"
+  }
+]

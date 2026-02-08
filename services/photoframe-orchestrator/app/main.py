@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import os
 import sqlite3
 import threading
@@ -27,8 +28,10 @@ DEFAULT_POLL_SECONDS = max(60, int(os.getenv("DEFAULT_POLL_SECONDS", "3600")))
 TOKEN = os.getenv("PHOTOFRAME_TOKEN", "")
 TZ_NAME = os.getenv("TZ", "Asia/Shanghai")
 LOCAL_TZ = ZoneInfo(TZ_NAME)
+APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.2")
+RELEASE_HISTORY_FILE = APP_DIR / "release_history.json"
 
-app = FastAPI(title="PhotoFrame Orchestrator", version="0.1.0")
+app = FastAPI(title="PhotoFrame Orchestrator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 
 DB_LOCK = threading.Lock()
@@ -117,6 +120,46 @@ def _public_base(request: Request) -> str:
   if PUBLIC_BASE_URL:
     return PUBLIC_BASE_URL
   return f"{request.url.scheme}://{request.url.netloc}"
+
+
+def _load_release_history() -> list[dict[str, Any]]:
+  if not RELEASE_HISTORY_FILE.exists():
+    return []
+
+  try:
+    data = json.loads(RELEASE_HISTORY_FILE.read_text(encoding="utf-8"))
+  except Exception:  # pragma: no cover - 配置文件损坏时保持服务可用
+    return []
+
+  if not isinstance(data, list):
+    return []
+
+  releases: list[dict[str, Any]] = []
+  for item in data:
+    if not isinstance(item, dict):
+      continue
+
+    version = str(item.get("version", "")).strip()
+    if not version:
+      continue
+
+    highlights_raw = item.get("highlights", [])
+    highlights = []
+    if isinstance(highlights_raw, list):
+      highlights = [str(h).strip() for h in highlights_raw if str(h).strip()]
+
+    releases.append(
+        {
+            "version": version,
+            "released_on": str(item.get("released_on", "")).strip(),
+            "title": str(item.get("title", "")).strip(),
+            "summary": str(item.get("summary", "")).strip(),
+            "highlights": highlights,
+            "commit": str(item.get("commit", "")).strip(),
+        }
+    )
+
+  return releases
 
 
 def _parse_start_epoch(starts_at: str | None) -> int:
@@ -211,6 +254,27 @@ def asset(asset_name: str) -> FileResponse:
   if not path.exists():
     raise HTTPException(status_code=404, detail="asset not found")
   return FileResponse(path=path, media_type="image/bmp", filename=safe_name)
+
+
+@app.get("/api/v1/releases")
+def releases() -> dict[str, Any]:
+  items = _load_release_history()
+  if not items:
+    items = [
+        {
+            "version": APP_VERSION,
+            "released_on": datetime.now(LOCAL_TZ).strftime("%Y-%m-%d"),
+            "title": "当前版本",
+            "summary": "运行中版本未配置发布记录。",
+            "highlights": [],
+            "commit": "",
+        }
+    ]
+
+  return {
+      "current_version": APP_VERSION,
+      "releases": items,
+  }
 
 
 @app.get("/api/v1/device/next")

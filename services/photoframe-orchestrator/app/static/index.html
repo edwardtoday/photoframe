@@ -5,97 +5,389 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PhotoFrame 编排服务</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 16px; }
-    .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 14px; }
-    label { display: block; margin-top: 8px; font-size: 14px; }
-    input, select, button, textarea { width: 100%; box-sizing: border-box; margin-top: 4px; padding: 8px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-    th, td { border: 1px solid #ddd; padding: 6px; font-size: 13px; text-align: left; }
-    .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
-    .muted { color: #666; font-size: 12px; }
-    .small { width: auto; }
-    .actions { width: 110px; }
-    pre { background: #f7f7f7; border: 1px solid #eee; padding: 8px; overflow: auto; }
+    :root {
+      --bg: #f4f6fb;
+      --card: #ffffff;
+      --line: #e6e9f0;
+      --text: #1f2430;
+      --sub: #5f6980;
+      --accent: #3558e5;
+      --ok: #2f9e64;
+      --warn: #d4851c;
+      --danger: #cc3d3d;
+      --shadow: 0 8px 24px rgba(31, 36, 48, 0.08);
+      --radius: 12px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background: radial-gradient(circle at top left, #f9fbff 0%, var(--bg) 40%, #eef1f8 100%);
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: grid;
+      gap: 16px;
+    }
+
+    .hero {
+      padding: 20px;
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, #2846bf, #4869ff);
+      color: #fff;
+      box-shadow: var(--shadow);
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+
+    .hero p {
+      margin: 8px 0 12px;
+      color: rgba(255, 255, 255, 0.88);
+      font-size: 14px;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .pill {
+      font-size: 12px;
+      color: #f0f4ff;
+      background: rgba(255, 255, 255, 0.16);
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .stack {
+      display: grid;
+      gap: 16px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 14px;
+    }
+
+    .card h3 {
+      margin: 0 0 10px;
+      font-size: 16px;
+    }
+
+    .card p.help {
+      margin: 0 0 10px;
+      color: var(--sub);
+      font-size: 12px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+    }
+
+    label {
+      display: block;
+      font-size: 13px;
+      color: var(--sub);
+    }
+
+    input, select, button {
+      width: 100%;
+      margin-top: 6px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font-size: 14px;
+      background: #fff;
+    }
+
+    input:focus, select:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(53, 88, 229, 0.12);
+    }
+
+    button {
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      font-weight: 600;
+    }
+
+    button.secondary {
+      background: #3a4257;
+    }
+
+    button.danger {
+      background: var(--danger);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    thead {
+      background: #f7f9fd;
+    }
+
+    th, td {
+      padding: 8px;
+      font-size: 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    .tag {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #edf1ff;
+      color: #3047b2;
+      border: 1px solid #dbe3ff;
+    }
+
+    .tag.active { background: #eaf8f1; color: var(--ok); border-color: #c9edd9; }
+    .tag.upcoming { background: #fff6e8; color: var(--warn); border-color: #fde3ba; }
+    .tag.expired { background: #f5f6fa; color: #6d7486; border-color: #e4e7f0; }
+
+    pre {
+      margin: 10px 0 0;
+      padding: 10px;
+      border-radius: 10px;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-size: 12px;
+      max-height: 180px;
+      overflow: auto;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .stat {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px;
+      background: #fafbff;
+    }
+
+    .stat .k {
+      color: var(--sub);
+      font-size: 11px;
+      margin-bottom: 3px;
+    }
+
+    .stat .v {
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 10px;
+      max-height: 760px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    .release-item {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: #fff;
+    }
+
+    .release-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .release-title {
+      font-size: 14px;
+      font-weight: 700;
+      margin: 0;
+    }
+
+    .release-date {
+      color: var(--sub);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .release-summary {
+      margin: 0 0 8px;
+      color: #30384c;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .release-item ul {
+      margin: 0;
+      padding-left: 18px;
+      color: #394259;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .muted {
+      color: var(--sub);
+      font-size: 12px;
+    }
+
+    @media (max-width: 980px) {
+      .grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
-  <h2>PhotoFrame 插播编排</h2>
-  <p class="muted">省电优先模式：设备仅在唤醒窗口拉取任务，插播生效时间取决于下一次唤醒。</p>
-
-  <div class="card">
-    <div class="row">
-      <label>可选 Token
-        <input id="token" type="password" placeholder="如果服务配置了 PHOTOFRAME_TOKEN，填这里" />
-      </label>
-      <label>
-        <button id="refreshBtn" class="small" style="margin-top:22px;">刷新设备/插播状态</button>
-      </label>
-    </div>
-  </div>
-
-  <div class="card">
-    <h3>创建插播</h3>
-    <form id="overrideForm">
-      <div class="row">
-        <label>目标设备
-          <select id="deviceId">
-            <option value="*">全部设备 (*)</option>
-          </select>
-        </label>
-        <label>开始时间（可空=立即）
-          <input id="startsAt" type="datetime-local" />
-        </label>
-        <label>持续分钟
-          <input id="duration" type="number" min="1" value="30" required />
-        </label>
+  <div class="container">
+    <section class="hero">
+      <h1>PhotoFrame 插播编排控制台</h1>
+      <p>省电优先：设备仅在唤醒窗口拉取任务，插播生效时间由设备下一次唤醒决定。</p>
+      <div class="pill-row">
+        <div class="pill">服务版本：<strong id="appVersion">-</strong></div>
+        <div class="pill">服务时间：<strong id="serverNow">-</strong></div>
+        <div class="pill">最近刷新：<strong id="lastRefresh">-</strong></div>
       </div>
-      <label>备注
-        <input id="note" placeholder="例如：家庭聚会插播" />
-      </label>
-      <label>上传图片（任意格式，服务端会转成 480x800 BMP）
-        <input id="imageFile" type="file" accept="image/*" required />
-      </label>
-      <button type="submit">提交插播</button>
-    </form>
-    <pre id="createResult"></pre>
-  </div>
+    </section>
 
-  <div class="card">
-    <h3>设备状态</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>device_id</th>
-          <th>last_checkin</th>
-          <th>next_wakeup</th>
-          <th>ETA(s)</th>
-          <th>poll(s)</th>
-          <th>fail</th>
-          <th>source</th>
-          <th>error</th>
-        </tr>
-      </thead>
-      <tbody id="devicesBody"></tbody>
-    </table>
-  </div>
+    <section class="grid">
+      <div class="stack">
+        <div class="card">
+          <h3>连接与刷新</h3>
+          <p class="help">如果启用了 PHOTOFRAME_TOKEN，请在这里填写后刷新数据。</p>
+          <div class="row">
+            <label>Token
+              <input id="token" type="password" placeholder="可选：X-PhotoFrame-Token" />
+            </label>
+            <label>操作
+              <button id="refreshBtn" class="secondary">刷新设备/插播状态</button>
+            </label>
+          </div>
+        </div>
 
-  <div class="card">
-    <h3>插播列表</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>device</th>
-          <th>state</th>
-          <th>start</th>
-          <th>end</th>
-          <th>预计生效</th>
-          <th>note</th>
-          <th class="actions">操作</th>
-        </tr>
-      </thead>
-      <tbody id="overridesBody"></tbody>
-    </table>
+        <div class="card">
+          <h3>创建插播</h3>
+          <form id="overrideForm">
+            <div class="row">
+              <label>目标设备
+                <select id="deviceId">
+                  <option value="*">全部设备 (*)</option>
+                </select>
+              </label>
+              <label>开始时间（可空=立即）
+                <input id="startsAt" type="datetime-local" />
+              </label>
+              <label>持续分钟
+                <input id="duration" type="number" min="1" value="30" required />
+              </label>
+            </div>
+            <label>备注
+              <input id="note" placeholder="例如：家庭聚会插播" />
+            </label>
+            <label>上传图片（任意格式，服务端会转成 480x800 BMP）
+              <input id="imageFile" type="file" accept="image/*" required />
+            </label>
+            <button type="submit">提交插播</button>
+          </form>
+          <pre id="createResult"></pre>
+        </div>
+
+        <div class="card">
+          <h3>设备状态</h3>
+          <div class="stats">
+            <div class="stat"><div class="k">设备数</div><div class="v" id="deviceCount">0</div></div>
+            <div class="stat"><div class="k">插播任务数</div><div class="v" id="overrideCount">0</div></div>
+            <div class="stat"><div class="k">服务版本</div><div class="v" id="appVersionStat">-</div></div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>device_id</th>
+                <th>last_checkin</th>
+                <th>next_wakeup</th>
+                <th>ETA</th>
+                <th>poll</th>
+                <th>fail</th>
+                <th>source</th>
+                <th>error</th>
+              </tr>
+            </thead>
+            <tbody id="devicesBody"></tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h3>插播列表</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>device</th>
+                <th>state</th>
+                <th>start</th>
+                <th>end</th>
+                <th>预计生效</th>
+                <th>note</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="overridesBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <aside class="stack">
+        <div class="card">
+          <h3>发布历史</h3>
+          <p class="help">展示服务版本迭代与关键变更，便于排查行为差异。</p>
+          <div id="releasesBody" class="timeline"></div>
+          <p id="releaseHint" class="muted"></p>
+        </div>
+      </aside>
+    </section>
   </div>
 
   <script src="/static/app.js"></script>

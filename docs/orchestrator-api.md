@@ -98,3 +98,26 @@
 设置环境变量 `PHOTOFRAME_TOKEN` 后，接口需要请求头：
 
 - `X-PhotoFrame-Token: <token>`
+
+
+## 6) 发布历史
+
+`GET /api/v1/releases`
+
+### Response
+
+```json
+{
+  "current_version": "0.2.2",
+  "releases": [
+    {
+      "version": "0.2.2",
+      "released_on": "2026-02-08",
+      "title": "默认端口切换到 18081",
+      "summary": "统一默认编排地址，避免 NAS 上 8081 端口冲突。",
+      "highlights": ["..."],
+      "commit": "2dcfc8e"
+    }
+  ]
+}
+```

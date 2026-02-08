@@ -108,10 +108,10 @@
 
 ```json
 {
-  "current_version": "0.2.2",
+  "current_version": "0.2.3",
   "releases": [
     {
-      "version": "0.2.2",
+      "version": "0.2.3",
       "released_on": "2026-02-08",
       "title": "默认端口切换到 18081",
       "summary": "统一默认编排地址，避免 NAS 上 8081 端口冲突。",

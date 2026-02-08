@@ -28,7 +28,7 @@ DEFAULT_POLL_SECONDS = max(60, int(os.getenv("DEFAULT_POLL_SECONDS", "3600")))
 TOKEN = os.getenv("PHOTOFRAME_TOKEN", "")
 TZ_NAME = os.getenv("TZ", "Asia/Shanghai")
 LOCAL_TZ = ZoneInfo(TZ_NAME)
-APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.2")
+APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.3")
 RELEASE_HISTORY_FILE = APP_DIR / "release_history.json"
 
 app = FastAPI(title="PhotoFrame Orchestrator", version=APP_VERSION)

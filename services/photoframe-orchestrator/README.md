@@ -10,7 +10,7 @@
 - 管理插播列表：`GET /api/v1/overrides`、`DELETE /api/v1/overrides/{id}`
 - Web 管理页：`GET /`
 
-## 本地运行
+## 本地运行（源码）
 
 ```bash
 cd services/photoframe-orchestrator
@@ -20,10 +20,27 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8081
 ```
 
-## Docker 运行
+## 本地 Docker（开发模式，按源码构建）
 
 ```bash
 docker compose -f docker-compose.photoframe-orchestrator.yml up -d --build
+```
+
+## 生产 Docker（NAS，镜像拉取）
+
+```bash
+docker compose -f docker-compose.photoframe-orchestrator.prod.yml pull
+docker compose -f docker-compose.photoframe-orchestrator.prod.yml up -d
+```
+
+## 发布 multi-arch 镜像
+
+```bash
+# 默认: edwardtoday/photoframe-orchestrator:<git短sha> + latest
+scripts/release-orchestrator-image.sh
+
+# 指定 tag
+scripts/release-orchestrator-image.sh 0.1.0
 ```
 
 访问：`http://<NAS_IP>:8081/`

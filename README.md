@@ -46,12 +46,25 @@ cat docs/workflow-esp-idf-docker.md
 - D：增强能力（重试退避、按键强刷、断网恢复、配置接口）✅
 - E：编排服务接入（插播 + 预计生效时间）✅
 
-## 启动 NAS 编排服务
+## 启动 NAS 编排服务（镜像拉取模式）
+
+生产推荐：NAS 只保存 compose 和 data，镜像从 Docker Hub 拉取。
 
 ```bash
-docker compose -f docker-compose.photoframe-orchestrator.yml up -d --build
+docker compose -f docker-compose.photoframe-orchestrator.prod.yml pull
+docker compose -f docker-compose.photoframe-orchestrator.prod.yml up -d
 ```
 
-- Web：`http://<NAS_IP>:8081/`
+## 发布 multi-arch 镜像
+
+```bash
+# 默认推送 edwardtoday/photoframe-orchestrator:<git短sha> + latest
+scripts/release-orchestrator-image.sh
+
+# 或指定 tag
+scripts/release-orchestrator-image.sh 0.1.0
+```
+
+- NAS Web：`http://<NAS_IP>:8081/`
 - API：见 `docs/orchestrator-api.md`
 - 服务说明：`services/photoframe-orchestrator/README.md`

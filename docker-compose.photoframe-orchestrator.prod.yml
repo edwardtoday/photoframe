@@ -1,0 +1,15 @@
+services:
+  photoframe-orchestrator:
+    image: ${PHOTOFRAME_ORCHESTRATOR_IMAGE:-edwardtoday/photoframe-orchestrator:latest}
+    container_name: photoframe-orchestrator
+    ports:
+      - "8081:8081"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      DAILY_IMAGE_URL_TEMPLATE: ${DAILY_IMAGE_URL_TEMPLATE:-http://192.168.58.113:8000/image/480x800?date=%DATE%}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://192.168.58.113:8081}
+      DEFAULT_POLL_SECONDS: ${DEFAULT_POLL_SECONDS:-3600}
+      PHOTOFRAME_TOKEN: ${PHOTOFRAME_TOKEN:-}
+    volumes:
+      - ./services/photoframe-orchestrator/data:/app/data
+    restart: unless-stopped

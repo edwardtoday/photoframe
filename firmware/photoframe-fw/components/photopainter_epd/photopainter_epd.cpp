@@ -12,6 +12,7 @@
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 namespace {
 constexpr const char* kTag = "photopainter_epd";
@@ -469,6 +470,8 @@ bool PhotoPainterEpd::DrawBmp24(const uint8_t* bmp, size_t len, const RenderOpti
   const uint8_t* pixels = bmp + file->offset;
   ClearDisplayBuffer(kWhite);
 
+  const int64_t render_start_us = esp_timer_get_time();
+
   const uint8_t color_mode =
       std::min<uint8_t>(options.color_process_mode, kColorProcessAssumeSixColor);
   const uint8_t dithering_mode = std::min<uint8_t>(options.dithering_mode, kDitherOrdered);
@@ -494,7 +497,9 @@ bool PhotoPainterEpd::DrawBmp24(const uint8_t* bmp, size_t len, const RenderOpti
   };
 
   bool treat_as_six_color = (color_mode == kColorProcessAssumeSixColor);
+  int64_t detect_cost_us = 0;
   if (color_mode == kColorProcessAuto) {
+    const int64_t detect_start_us = esp_timer_get_time();
     treat_as_six_color = true;
     for (int y = 0; y < kPanelHeight && treat_as_six_color; ++y) {
       for (int x = 0; x < kPanelWidth; ++x) {
@@ -511,6 +516,7 @@ bool PhotoPainterEpd::DrawBmp24(const uint8_t* bmp, size_t len, const RenderOpti
         }
       }
     }
+    detect_cost_us = esp_timer_get_time() - detect_start_us;
   }
 
   const bool use_dither = !treat_as_six_color && (dithering_mode == kDitherOrdered);
@@ -543,6 +549,13 @@ bool PhotoPainterEpd::DrawBmp24(const uint8_t* bmp, size_t len, const RenderOpti
   ESP_LOGI(kTag, "bmp color process: mode=%s dither=%s tolerance=%u",
            treat_as_six_color ? "passthrough-6color" : "convert",
            use_dither ? "ordered" : "none", static_cast<unsigned>(tolerance));
+
+  const int64_t render_cost_us = esp_timer_get_time() - render_start_us;
+  ESP_LOGI(kTag,
+           "bmp process cost: detect=%lldms total=%lldms pixels=%u",
+           static_cast<long long>(detect_cost_us / 1000),
+           static_cast<long long>(render_cost_us / 1000),
+           static_cast<unsigned>(kPanelWidth * kPanelHeight));
 
   RotateBuffer(options.panel_rotation);
   FlushDisplay();

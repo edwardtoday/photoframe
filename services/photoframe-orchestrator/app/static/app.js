@@ -31,6 +31,14 @@ function fmtDuration(seconds) {
   return rest ? `${h}h ${rest}m` : `${h}h`;
 }
 
+function shorten(text, maxLen = 72) {
+  const s = String(text ?? '');
+  if (s.length <= maxLen) {
+    return s;
+  }
+  return `${s.slice(0, maxLen - 1)}…`;
+}
+
 async function fetchJson(url, options = {}) {
   const headers = { ...authHeaders(), ...(options.headers || {}) };
   const resp = await fetch(url, { ...options, headers });
@@ -55,10 +63,18 @@ function renderStateTag(state) {
   return `<span class="tag">${escapeHtml(state || '-')}</span>`;
 }
 
+async function loadHealth() {
+  const data = await fetchJson('/healthz');
+  const version = data.app_version || '-';
+  document.getElementById('appVersion').textContent = version;
+  document.getElementById('appVersionStat').textContent = version;
+}
+
 async function loadDevices() {
   const data = await fetchJson('/api/v1/devices');
   const body = document.getElementById('devicesBody');
   const deviceSelect = document.getElementById('deviceId');
+  const selectedBefore = deviceSelect.value;
 
   body.innerHTML = '';
   deviceSelect.innerHTML = '<option value="*">全部设备 (*)</option>';
@@ -85,6 +101,10 @@ async function loadDevices() {
     op.value = d.device_id;
     op.textContent = d.device_id;
     deviceSelect.appendChild(op);
+  }
+
+  if ([...deviceSelect.options].some((o) => o.value === selectedBefore)) {
+    deviceSelect.value = selectedBefore;
   }
 }
 
@@ -126,39 +146,48 @@ async function loadOverrides() {
   }
 }
 
-function renderReleaseItem(item) {
-  const highlights = Array.isArray(item.highlights)
-    ? item.highlights.map((h) => `<li>${escapeHtml(h)}</li>`).join('')
-    : '';
-  const commitText = item.commit ? ` · commit ${escapeHtml(item.commit)}` : '';
+function renderPublishHistoryItem(item) {
+  const sourceTag = item.source === 'override'
+    ? '<span class="tag active">override</span>'
+    : '<span class="tag">daily</span>';
+  const overrideText = item.override_id == null ? '-' : `#${item.override_id}`;
+  const safeUrl = escapeHtml(item.image_url || '');
+  const shortUrl = escapeHtml(shorten(item.image_url || '', 78));
+
   return `
     <article class="release-item">
       <div class="release-head">
-        <p class="release-title">v${escapeHtml(item.version)} · ${escapeHtml(item.title || '更新')}</p>
-        <span class="release-date">${escapeHtml(item.released_on || '-')}</span>
+        <p class="release-title">${sourceTag} <span class="tag">${escapeHtml(item.device_id)}</span></p>
+        <span class="release-date">${fmtEpoch(item.issued_epoch)}</span>
       </div>
-      <p class="release-summary">${escapeHtml(item.summary || '')}${commitText}</p>
-      ${highlights ? `<ul>${highlights}</ul>` : ''}
+      <p class="release-summary">${shortUrl}</p>
+      <ul>
+        <li>override_id: ${escapeHtml(overrideText)}</li>
+        <li>poll_after: ${fmtDuration(item.poll_after_seconds)}</li>
+        <li>valid_until: ${fmtEpoch(item.valid_until_epoch)}</li>
+        <li><a href="${safeUrl}" target="_blank" rel="noreferrer">打开原图</a></li>
+      </ul>
     </article>
   `;
 }
 
-async function loadReleases() {
-  const data = await fetchJson('/api/v1/releases');
-  const releases = data.releases || [];
+async function loadPublishHistory() {
+  const selectedDevice = document.getElementById('deviceId').value || '*';
+  const query = selectedDevice !== '*'
+    ? `?device_id=${encodeURIComponent(selectedDevice)}&limit=120`
+    : '?limit=120';
+  const data = await fetchJson(`/api/v1/publish-history${query}`);
 
-  const currentVersion = data.current_version || '-';
-  document.getElementById('appVersion').textContent = currentVersion;
-  document.getElementById('appVersionStat').textContent = currentVersion;
-
-  const body = document.getElementById('releasesBody');
-  if (releases.length === 0) {
-    body.innerHTML = '<p class="muted">暂无发布记录</p>';
+  const items = data.items || [];
+  const body = document.getElementById('publishHistoryBody');
+  if (items.length === 0) {
+    body.innerHTML = '<p class="muted">暂无发布记录（等待设备下一次拉取）。</p>';
   } else {
-    body.innerHTML = releases.map(renderReleaseItem).join('');
+    body.innerHTML = items.map(renderPublishHistoryItem).join('');
   }
 
-  document.getElementById('releaseHint').textContent = `共 ${releases.length} 条发布记录`;
+  const scope = selectedDevice === '*' ? '全部设备' : selectedDevice;
+  document.getElementById('publishHistoryHint').textContent = `${scope} · 最近 ${items.length} 条`;
 }
 
 async function submitOverride(ev) {
@@ -200,7 +229,10 @@ async function submitOverride(ev) {
 }
 
 async function refreshAll() {
-  await Promise.all([loadDevices(), loadOverrides(), loadReleases()]);
+  await loadHealth();
+  await loadDevices();
+  await loadOverrides();
+  await loadPublishHistory();
   document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString();
 }
 
@@ -217,6 +249,14 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
     await refreshAll();
   } catch (err) {
     alert(`刷新失败: ${err.message}`);
+  }
+});
+
+document.getElementById('deviceId').addEventListener('change', async () => {
+  try {
+    await loadPublishHistory();
+  } catch (err) {
+    document.getElementById('publishHistoryHint').textContent = `加载历史失败: ${err.message}`;
   }
 });
 

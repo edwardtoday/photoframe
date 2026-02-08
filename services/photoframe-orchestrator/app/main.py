@@ -1,6 +1,5 @@
 import hashlib
 import io
-import json
 import os
 import sqlite3
 import threading
@@ -28,8 +27,7 @@ DEFAULT_POLL_SECONDS = max(60, int(os.getenv("DEFAULT_POLL_SECONDS", "3600")))
 TOKEN = os.getenv("PHOTOFRAME_TOKEN", "")
 TZ_NAME = os.getenv("TZ", "Asia/Shanghai")
 LOCAL_TZ = ZoneInfo(TZ_NAME)
-APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.3")
-RELEASE_HISTORY_FILE = APP_DIR / "release_history.json"
+APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.4")
 
 app = FastAPI(title="PhotoFrame Orchestrator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
@@ -89,6 +87,21 @@ def _init_db() -> None:
           ON overrides (start_epoch, end_epoch);
         CREATE INDEX IF NOT EXISTS idx_overrides_device_window
           ON overrides (device_id, start_epoch, end_epoch);
+
+        CREATE TABLE IF NOT EXISTS publish_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT NOT NULL,
+          issued_epoch INTEGER NOT NULL,
+          source TEXT NOT NULL,
+          image_url TEXT NOT NULL,
+          override_id INTEGER,
+          poll_after_seconds INTEGER NOT NULL,
+          valid_until_epoch INTEGER NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_publish_history_device_epoch
+          ON publish_history (device_id, issued_epoch DESC);
         """
     )
     conn.commit()
@@ -120,46 +133,6 @@ def _public_base(request: Request) -> str:
   if PUBLIC_BASE_URL:
     return PUBLIC_BASE_URL
   return f"{request.url.scheme}://{request.url.netloc}"
-
-
-def _load_release_history() -> list[dict[str, Any]]:
-  if not RELEASE_HISTORY_FILE.exists():
-    return []
-
-  try:
-    data = json.loads(RELEASE_HISTORY_FILE.read_text(encoding="utf-8"))
-  except Exception:  # pragma: no cover - 配置文件损坏时保持服务可用
-    return []
-
-  if not isinstance(data, list):
-    return []
-
-  releases: list[dict[str, Any]] = []
-  for item in data:
-    if not isinstance(item, dict):
-      continue
-
-    version = str(item.get("version", "")).strip()
-    if not version:
-      continue
-
-    highlights_raw = item.get("highlights", [])
-    highlights = []
-    if isinstance(highlights_raw, list):
-      highlights = [str(h).strip() for h in highlights_raw if str(h).strip()]
-
-    releases.append(
-        {
-            "version": version,
-            "released_on": str(item.get("released_on", "")).strip(),
-            "title": str(item.get("title", "")).strip(),
-            "summary": str(item.get("summary", "")).strip(),
-            "highlights": highlights,
-            "commit": str(item.get("commit", "")).strip(),
-        }
-    )
-
-  return releases
 
 
 def _parse_start_epoch(starts_at: str | None) -> int:
@@ -244,7 +217,7 @@ def index() -> str:
 
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
-  return {"ok": True, "now_epoch": _now_epoch(), "timezone": TZ_NAME}
+  return {"ok": True, "now_epoch": _now_epoch(), "timezone": TZ_NAME, "app_version": APP_VERSION}
 
 
 @app.get("/api/v1/assets/{asset_name}")
@@ -254,27 +227,6 @@ def asset(asset_name: str) -> FileResponse:
   if not path.exists():
     raise HTTPException(status_code=404, detail="asset not found")
   return FileResponse(path=path, media_type="image/bmp", filename=safe_name)
-
-
-@app.get("/api/v1/releases")
-def releases() -> dict[str, Any]:
-  items = _load_release_history()
-  if not items:
-    items = [
-        {
-            "version": APP_VERSION,
-            "released_on": datetime.now(LOCAL_TZ).strftime("%Y-%m-%d"),
-            "title": "当前版本",
-            "summary": "运行中版本未配置发布记录。",
-            "highlights": [],
-            "commit": "",
-        }
-    ]
-
-  return {
-      "current_version": APP_VERSION,
-      "releases": items,
-  }
 
 
 @app.get("/api/v1/device/next")
@@ -346,6 +298,38 @@ def device_next(
   if upcoming is not None:
     until_next = max(1, int(upcoming["start_epoch"]) - now_ts)
     poll_sec = min(poll_sec, _clamp(until_next, 60, 86400))
+
+  with DB_LOCK:
+    conn.execute(
+        """
+        INSERT INTO publish_history (
+          device_id, issued_epoch, source, image_url, override_id,
+          poll_after_seconds, valid_until_epoch, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            device_id,
+            now_ts,
+            source,
+            image_url,
+            active_override_id,
+            int(poll_sec),
+            int(valid_until),
+            now_ts,
+        ),
+    )
+    # 控制历史表体积，保留最近 5000 条即可满足家庭场景追溯需求。
+    conn.execute(
+        """
+        DELETE FROM publish_history
+        WHERE id IN (
+          SELECT id FROM publish_history
+          ORDER BY id DESC
+          LIMIT -1 OFFSET 5000
+        )
+        """
+    )
+    conn.commit()
 
   return {
       "device_id": device_id,
@@ -442,6 +426,58 @@ def devices() -> dict[str, Any]:
     )
 
   return {"now_epoch": now_ts, "devices": items}
+
+
+@app.get("/api/v1/publish-history")
+def publish_history(
+    device_id: str | None = Query(default=None),
+    limit: int = Query(default=200),
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+
+  max_rows = _clamp(limit, 1, 1000)
+  conn = _ensure_db()
+  now_ts = _now_epoch()
+
+  where = ""
+  params: list[Any] = []
+  if device_id and device_id.strip() and device_id.strip() != "*":
+    where = "WHERE device_id = ?"
+    params.append(device_id.strip())
+
+  rows = conn.execute(
+      f"""
+      SELECT id, device_id, issued_epoch, source, image_url, override_id,
+             poll_after_seconds, valid_until_epoch
+      FROM publish_history
+      {where}
+      ORDER BY issued_epoch DESC, id DESC
+      LIMIT ?
+      """,
+      (*params, max_rows),
+  ).fetchall()
+
+  items: list[dict[str, Any]] = []
+  for row in rows:
+    items.append(
+        {
+            "id": int(row["id"]),
+            "device_id": row["device_id"],
+            "issued_epoch": int(row["issued_epoch"]),
+            "source": row["source"],
+            "image_url": row["image_url"],
+            "override_id": None if row["override_id"] is None else int(row["override_id"]),
+            "poll_after_seconds": int(row["poll_after_seconds"]),
+            "valid_until_epoch": int(row["valid_until_epoch"]),
+        }
+    )
+
+  return {
+      "now_epoch": now_ts,
+      "count": len(items),
+      "items": items,
+  }
 
 
 @app.get("/api/v1/overrides")

@@ -36,6 +36,7 @@
 - `source=override`：有插播生效
 - `source=daily`：无插播，回退到每日图
 - `poll_after_seconds`：服务建议下次唤醒间隔（用于平衡省电和插播时效）
+- 服务会在每次 `device/next` 响应后记录一条图片下发历史
 
 ## 2) 设备上报心跳
 
@@ -99,25 +100,47 @@
 
 - `X-PhotoFrame-Token: <token>`
 
+## 6) 图片发布历史
 
-## 6) 发布历史
+`GET /api/v1/publish-history`
 
-`GET /api/v1/releases`
+### Query
+
+- `device_id`：可选，指定设备 ID；`*` 或不填表示全部设备
+- `limit`：可选，返回条数（1-1000，默认 200）
 
 ### Response
 
 ```json
 {
-  "current_version": "0.2.3",
-  "releases": [
+  "now_epoch": 1760000600,
+  "count": 2,
+  "items": [
     {
-      "version": "0.2.3",
-      "released_on": "2026-02-08",
-      "title": "默认端口切换到 18081",
-      "summary": "统一默认编排地址，避免 NAS 上 8081 端口冲突。",
-      "highlights": ["..."],
-      "commit": "2dcfc8e"
+      "id": 101,
+      "device_id": "pf-a1b2c3d4",
+      "issued_epoch": 1760000500,
+      "source": "override",
+      "image_url": "http://192.168.58.113:18081/api/v1/assets/xxxx.bmp",
+      "override_id": 12,
+      "poll_after_seconds": 900,
+      "valid_until_epoch": 1760001800
+    },
+    {
+      "id": 100,
+      "device_id": "pf-a1b2c3d4",
+      "issued_epoch": 1760000000,
+      "source": "daily",
+      "image_url": "http://192.168.58.113:8000/image/480x800?date=2026-02-08",
+      "override_id": null,
+      "poll_after_seconds": 3600,
+      "valid_until_epoch": 1760003600
     }
   ]
 }
 ```
+
+说明：
+
+- 历史记录按 `issued_epoch` 倒序返回。
+- 当前实现自动保留最近 5000 条，超出后会清理最旧记录。

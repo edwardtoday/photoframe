@@ -8,7 +8,8 @@
 - 设备心跳：`POST /api/v1/device/checkin`
 - Web 上传插播图并设置播放窗口：`POST /api/v1/overrides/upload`
 - 管理插播列表：`GET /api/v1/overrides`、`DELETE /api/v1/overrides/{id}`
-- Web 管理页：`GET /`（含发布历史时间线）
+- 图片下发历史：`GET /api/v1/publish-history`
+- Web 管理页：`GET /`（含图片发布历史时间线）
 
 ## 本地运行（源码）
 
@@ -52,6 +53,3 @@ scripts/release-orchestrator-image.sh 0.1.0
 - `DEFAULT_POLL_SECONDS`：默认轮询周期（秒）
 - `PHOTOFRAME_TOKEN`：可选认证 token（设备与 Web 请求都需带 `X-PhotoFrame-Token`）
 - `TZ`：服务端时区
-
-
-发布历史数据文件：`services/photoframe-orchestrator/app/release_history.json`

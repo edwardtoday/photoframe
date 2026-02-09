@@ -107,6 +107,15 @@ JSON
 - `failure_count` 达到 `max_failure_before_long_sleep` 后，保持最长退避间隔
 - 任意一次成功拉图后，`failure_count` 归零
 
+## Wi-Fi 诊断日志
+
+当出现 `wifi disconnected` 时，串口会输出：
+
+- `reason=<code>(<name>)`：ESP-IDF 断开原因码与名称
+- `hint=<text>`：可执行排查建议（如检查密码、2.4GHz 覆盖或 WPA 模式）
+
+连接超时失败时，还会在 `wifi connect failed` 中带上最后一次断开原因，便于定位“密码错误 / 安全模式不兼容 / 信号问题”。
+
 ## 编译
 
 ```bash

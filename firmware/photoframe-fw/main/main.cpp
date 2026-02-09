@@ -41,9 +41,78 @@ constexpr int kWifiConnectedBit = BIT0;
 constexpr int kWifiFailBit = BIT1;
 int g_wifi_retry = 0;
 int g_wifi_retry_limit = kStaConnectRetry;
+int g_last_disconnect_reason = 0;
 bool g_wifi_ready = false;
 esp_netif_t* g_sta_netif = nullptr;
 esp_netif_t* g_ap_netif = nullptr;
+
+const char* WifiReasonToString(wifi_err_reason_t reason) {
+  switch (reason) {
+    case WIFI_REASON_UNSPECIFIED:
+      return "UNSPECIFIED";
+    case WIFI_REASON_AUTH_EXPIRE:
+      return "AUTH_EXPIRE";
+    case WIFI_REASON_AUTH_LEAVE:
+      return "AUTH_LEAVE";
+    case WIFI_REASON_ASSOC_TOOMANY:
+      return "ASSOC_TOOMANY";
+    case WIFI_REASON_ASSOC_LEAVE:
+      return "ASSOC_LEAVE";
+    case WIFI_REASON_ASSOC_NOT_AUTHED:
+      return "ASSOC_NOT_AUTHED";
+    case WIFI_REASON_IE_INVALID:
+      return "IE_INVALID";
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+      return "4WAY_HANDSHAKE_TIMEOUT";
+    case WIFI_REASON_GROUP_KEY_UPDATE_TIMEOUT:
+      return "GROUP_KEY_UPDATE_TIMEOUT";
+    case WIFI_REASON_IE_IN_4WAY_DIFFERS:
+      return "IE_IN_4WAY_DIFFERS";
+    case WIFI_REASON_BEACON_TIMEOUT:
+      return "BEACON_TIMEOUT";
+    case WIFI_REASON_NO_AP_FOUND:
+      return "NO_AP_FOUND";
+    case WIFI_REASON_AUTH_FAIL:
+      return "AUTH_FAIL";
+    case WIFI_REASON_ASSOC_FAIL:
+      return "ASSOC_FAIL";
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:
+      return "HANDSHAKE_TIMEOUT";
+    case WIFI_REASON_CONNECTION_FAIL:
+      return "CONNECTION_FAIL";
+    case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+      return "NO_AP_FOUND_W_COMPATIBLE_SECURITY";
+    case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+      return "NO_AP_FOUND_IN_AUTHMODE_THRESHOLD";
+    case WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD:
+      return "NO_AP_FOUND_IN_RSSI_THRESHOLD";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+const char* WifiReasonHint(wifi_err_reason_t reason) {
+  // 给出可执行诊断提示，便于现场快速定位是密码、信号还是路由器兼容性问题。
+  switch (reason) {
+    case WIFI_REASON_AUTH_FAIL:
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+      return "check password and WPA mode";
+    case WIFI_REASON_NO_AP_FOUND:
+    case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+    case WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD:
+      return "check SSID spelling and 2.4GHz coverage";
+    case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+      return "router security incompatible, try WPA2-PSK";
+    case WIFI_REASON_ASSOC_FAIL:
+    case WIFI_REASON_CONNECTION_FAIL:
+      return "router may reject STA, disable smart-connect/WPA3-only";
+    case WIFI_REASON_BEACON_TIMEOUT:
+      return "signal unstable, try closer AP/channel 1/6/11";
+    default:
+      return "check router settings then retry";
+  }
+}
 
 void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
@@ -52,11 +121,21 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
   }
 
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+    wifi_err_reason_t reason = WIFI_REASON_UNSPECIFIED;
+    if (event_data != nullptr) {
+      auto* disconn = static_cast<wifi_event_sta_disconnected_t*>(event_data);
+      reason = static_cast<wifi_err_reason_t>(disconn->reason);
+    }
+    g_last_disconnect_reason = static_cast<int>(reason);
+    ESP_LOGW(kTag, "wifi disconnected, reason=%d(%s), hint=%s", g_last_disconnect_reason,
+             WifiReasonToString(reason), WifiReasonHint(reason));
+
     if (g_wifi_retry < g_wifi_retry_limit) {
       ++g_wifi_retry;
       esp_wifi_connect();
-      ESP_LOGW(kTag, "wifi disconnected, retry %d/%d", g_wifi_retry, g_wifi_retry_limit);
+      ESP_LOGW(kTag, "wifi reconnect retry %d/%d", g_wifi_retry, g_wifi_retry_limit);
     } else {
+      ESP_LOGW(kTag, "wifi reconnect exhausted for this cycle");
       xEventGroupSetBits(g_wifi_events, kWifiFailBit);
     }
     return;
@@ -66,6 +145,7 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
     auto* got_ip = static_cast<ip_event_got_ip_t*>(event_data);
     ESP_LOGI(kTag, "got ip: " IPSTR, IP2STR(&got_ip->ip_info.ip));
     g_wifi_retry = 0;
+    g_last_disconnect_reason = 0;
     xEventGroupSetBits(g_wifi_events, kWifiConnectedBit);
   }
 }
@@ -184,6 +264,7 @@ bool ConnectToSta(const AppConfig& cfg, RuntimeStatus* status) {
 
   g_wifi_retry = 0;
   g_wifi_retry_limit = kStaConnectRetry;
+  g_last_disconnect_reason = 0;
   xEventGroupClearBits(g_wifi_events, kWifiConnectedBit | kWifiFailBit);
 
   ESP_ERROR_CHECK(esp_wifi_start());
@@ -199,6 +280,13 @@ bool ConnectToSta(const AppConfig& cfg, RuntimeStatus* status) {
 
   status->wifi_connected = false;
   status->last_error = "wifi connect timeout/fail";
+  if (g_last_disconnect_reason > 0) {
+    const wifi_err_reason_t reason = static_cast<wifi_err_reason_t>(g_last_disconnect_reason);
+    status->last_error += ", reason=" + std::to_string(g_last_disconnect_reason) + "(" +
+                          WifiReasonToString(reason) + ")";
+    ESP_LOGW(kTag, "wifi connect failed, last reason=%d(%s), hint=%s", g_last_disconnect_reason,
+             WifiReasonToString(reason), WifiReasonHint(reason));
+  }
   return false;
 }
 

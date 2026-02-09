@@ -52,6 +52,7 @@ constexpr const char* kPortalHtml = R"HTML(
     <input id="orchBaseUrl" placeholder="编排服务地址，例如 http://192.168.58.113:18081" />
     <input id="deviceId" placeholder="设备 ID（留空则自动生成）" />
     <input id="orchToken" placeholder="编排服务 Token（可选）" />
+    <input id="photoToken" placeholder="图片拉取 Token（可选，HTTP Header: X-Photo-Token）" />
     <input id="interval" type="number" min="1" placeholder="刷新间隔（分钟）" />
     <input id="retryBase" type="number" min="1" placeholder="失败重试基数（分钟）" />
     <input id="retryMax" type="number" min="1" placeholder="失败重试上限（分钟）" />
@@ -96,6 +97,7 @@ constexpr const char* kPortalHtml = R"HTML(
       document.getElementById('orchBaseUrl').value = cfg.orchestrator_base_url ?? '';
       document.getElementById('deviceId').value = cfg.device_id ?? '';
       document.getElementById('orchToken').value = cfg.orchestrator_token ?? '';
+      document.getElementById('photoToken').value = cfg.photo_token ?? '';
       document.getElementById('interval').value = cfg.interval_minutes ?? 60;
       document.getElementById('retryBase').value = cfg.retry_base_minutes ?? 5;
       document.getElementById('retryMax').value = cfg.retry_max_minutes ?? 240;
@@ -139,6 +141,7 @@ constexpr const char* kPortalHtml = R"HTML(
         orchestrator_base_url: document.getElementById('orchBaseUrl').value,
         device_id: document.getElementById('deviceId').value,
         orchestrator_token: document.getElementById('orchToken').value,
+        photo_token: document.getElementById('photoToken').value,
         interval_minutes: Number(document.getElementById('interval').value),
         retry_base_minutes: Number(document.getElementById('retryBase').value),
         retry_max_minutes: Number(document.getElementById('retryMax').value),
@@ -258,6 +261,7 @@ esp_err_t PortalServer::SendConfigJson(httpd_req_t* req) {
   cJSON_AddStringToObject(root, "orchestrator_base_url", config_->orchestrator_base_url.c_str());
   cJSON_AddStringToObject(root, "device_id", config_->device_id.c_str());
   cJSON_AddStringToObject(root, "orchestrator_token", config_->orchestrator_token.c_str());
+  cJSON_AddStringToObject(root, "photo_token", config_->photo_token.c_str());
   cJSON_AddStringToObject(root, "timezone", config_->timezone.c_str());
   cJSON_AddNumberToObject(root, "interval_minutes", config_->interval_minutes);
   cJSON_AddNumberToObject(root, "retry_base_minutes", config_->retry_base_minutes);
@@ -335,6 +339,11 @@ esp_err_t PortalServer::HandlePostConfig(httpd_req_t* req) {
   const cJSON* orch_token = cJSON_GetObjectItemCaseSensitive(root, "orchestrator_token");
   if (cJSON_IsString(orch_token) && orch_token->valuestring != nullptr) {
     self->config_->orchestrator_token = orch_token->valuestring;
+  }
+
+  const cJSON* photo_token = cJSON_GetObjectItemCaseSensitive(root, "photo_token");
+  if (cJSON_IsString(photo_token) && photo_token->valuestring != nullptr) {
+    self->config_->photo_token = photo_token->valuestring;
   }
 
   const cJSON* tz = cJSON_GetObjectItemCaseSensitive(root, "timezone");

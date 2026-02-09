@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -11,6 +12,11 @@
 
 namespace {
 constexpr const char* kTag = "image_client";
+constexpr const char* kPhotoTokenHeader = "X-Photo-Token";
+
+bool IsHttpsUrl(const std::string& url) {
+  return url.rfind("https://", 0) == 0;
+}
 
 std::string Sha256Hex(const uint8_t* data, size_t len) {
   uint8_t digest[32] = {0};
@@ -51,17 +57,26 @@ std::string ImageClient::BuildDatedUrl(const std::string& tpl, time_t now) {
 }
 
 ImageFetchResult ImageClient::FetchBmp(const std::string& url,
-                                       const std::string& previous_sha256) {
+                                       const std::string& previous_sha256,
+                                       const std::string& photo_token) {
   ImageFetchResult result;
   esp_http_client_config_t cfg = {};
   cfg.url = url.c_str();
   cfg.timeout_ms = 20000;
   cfg.disable_auto_redirect = false;
+  if (IsHttpsUrl(url)) {
+    // 启用系统证书包校验 HTTPS 证书，确保公网拉图链路默认安全。
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+  }
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (client == nullptr) {
     result.error = "esp_http_client_init failed";
     return result;
+  }
+
+  if (!photo_token.empty()) {
+    esp_http_client_set_header(client, kPhotoTokenHeader, photo_token.c_str());
   }
 
   esp_err_t err = esp_http_client_open(client, 0);
@@ -78,6 +93,9 @@ ImageFetchResult ImageClient::FetchBmp(const std::string& url,
 
   if (result.status_code != 200) {
     result.error = "unexpected status: " + std::to_string(result.status_code);
+    if (result.status_code == 401 || result.status_code == 403) {
+      result.error += ", check X-Photo-Token";
+    }
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return result;

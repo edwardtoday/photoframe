@@ -53,6 +53,7 @@
 - `orchestrator_base_url`（默认 `http://192.168.58.113:18081`）
 - `device_id`（首次自动生成，可手工覆盖）
 - `orchestrator_token`（可选）
+- `photo_token`（可选，拉图时自动携带请求头 `X-Photo-Token`）
 - `image_url_template`（编排关闭时使用，支持 `%DATE%` 占位）
 - `interval_minutes`（默认 60）
 - `retry_base_minutes` / `retry_max_minutes`
@@ -86,6 +87,7 @@ curl -s -X POST http://192.168.73.1/api/config \
   "orchestrator_base_url": "http://192.168.58.113:18081",
   "device_id": "pf-livingroom",
   "orchestrator_token": "",
+  "photo_token": "",
   "image_url_template": "http://192.168.58.113:8000/image/480x800?date=%DATE%",
   "interval_minutes": 60,
   "retry_base_minutes": 5,
@@ -98,6 +100,16 @@ curl -s -X POST http://192.168.73.1/api/config \
   "timezone": "Asia/Shanghai"
 }
 JSON
+```
+
+公网 HTTPS + Header Token 示例（你的新接口）：
+
+```json
+{
+  "orchestrator_enabled": 0,
+  "image_url_template": "https://901.qingpei.me:40009/daily.bmp",
+  "photo_token": "<PUBLIC_PHOTO_TOKEN>"
+}
 ```
 
 ## 失败重试行为

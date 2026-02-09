@@ -460,7 +460,7 @@ extern "C" void app_main(void) {
 
   ESP_LOGI(kTag, "fetch url: %s", url.c_str());
 
-  ImageFetchResult fetch = ImageClient::FetchBmp(url, config.last_image_sha256);
+  ImageFetchResult fetch = ImageClient::FetchBmp(url, config.last_image_sha256, config.photo_token);
   status.last_http_status = fetch.status_code;
   status.image_changed = fetch.image_changed;
 

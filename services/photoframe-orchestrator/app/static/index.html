@@ -288,6 +288,23 @@
       margin-top: 4px;
     }
 
+    .inline-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .inline-actions button {
+      width: auto;
+      padding: 8px 12px;
+      font-size: 12px;
+      border-radius: 999px;
+      background: #f3f4f7;
+      color: #293145;
+      border: 1px solid #dfe3ec;
+    }
+
     .preview-box {
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -444,6 +461,10 @@
             </label>
             <label>图片 URL 模板（支持 %DATE% / %DEVICE_ID%）
               <input id="cfgImageUrlTemplate" placeholder="当前: -" />
+              <div class="inline-actions">
+                <button id="fillCurrentDailyBtn" class="secondary" type="button">填入当前服务 daily.bmp</button>
+                <button id="fillPublicDailyBtn" class="secondary" type="button">填入公网 daily.bmp（示例）</button>
+              </div>
             </label>
 
             <div class="row">
@@ -501,6 +522,7 @@
               </label>
             </div>
 
+            <p class="help">离家模式建议：将“图片 URL 模板”指向公网 daily.bmp，设备即使连不上编排服务也能持续拉图。</p>
             <button type="submit">发布设备配置</button>
           </form>
           <pre id="configResult"></pre>

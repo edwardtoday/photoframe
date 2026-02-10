@@ -9,6 +9,8 @@ function authHeaders() {
 let previewBlobUrl = null;
 let deviceMap = new Map();
 
+const PUBLIC_DAILY_EXAMPLE_URL = 'https://example.com/daily.bmp';
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -32,6 +34,30 @@ function fmtDuration(seconds) {
   const h = Math.floor(m / 60);
   const rest = m % 60;
   return rest ? `${h}h ${rest}m` : `${h}h`;
+}
+
+function startPolicyLabel(policy) {
+  if (policy === 'next_wakeup') return '按设备下次唤醒';
+  if (policy === 'explicit') return '按指定开始时间';
+  if (policy === 'immediate') return '立即生效（等待设备来拉取）';
+  return policy || '-';
+}
+
+function formatOverrideCreateResult(data) {
+  const lines = [
+    `插播 #${data.id} 已创建`,
+    `目标设备: ${data.device_id}`,
+    `开始策略: ${startPolicyLabel(data.start_policy)}`,
+    `开始时间: ${fmtEpoch(data.start_epoch)}`,
+    `结束时间: ${fmtEpoch(data.end_epoch)}`,
+    `预计生效: ${fmtEpoch(data.expected_effective_epoch)}`,
+  ];
+
+  if (data.will_expire_before_effective) {
+    lines.push('提示: 当前持续时间可能在设备下次唤醒前过期，建议延长持续分钟。');
+  }
+
+  return `${lines.join('\n')}\n\n详情:\n${JSON.stringify(data, null, 2)}`;
 }
 
 function shorten(text, maxLen = 72) {
@@ -498,7 +524,7 @@ async function submitOverride(ev) {
     throw new Error(msg);
   }
 
-  document.getElementById('createResult').textContent = JSON.stringify(data, null, 2);
+  document.getElementById('createResult').textContent = formatOverrideCreateResult(data);
   await refreshAll();
 }
 
@@ -587,6 +613,15 @@ document.getElementById('configDeviceId').addEventListener('change', async () =>
   } catch (err) {
     document.getElementById('configHistoryHint').textContent = `加载配置历史失败: ${err.message}`;
   }
+});
+
+document.getElementById('fillCurrentDailyBtn').addEventListener('click', () => {
+  const url = `${window.location.origin}/public/daily.bmp`;
+  document.getElementById('cfgImageUrlTemplate').value = url;
+});
+
+document.getElementById('fillPublicDailyBtn').addEventListener('click', () => {
+  document.getElementById('cfgImageUrlTemplate').value = PUBLIC_DAILY_EXAMPLE_URL;
 });
 
 setInterval(() => {

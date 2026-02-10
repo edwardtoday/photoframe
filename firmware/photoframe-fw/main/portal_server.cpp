@@ -187,13 +187,14 @@ void SendJson(httpd_req_t* req, const char* json) {
 }
 }  // namespace
 
-bool PortalServer::Start(AppConfig* config, RuntimeStatus* status, ConfigStore* store) {
+bool PortalServer::Start(AppConfig* config, RuntimeStatus* status, ConfigStore* store, bool enable_dns) {
   if (server_ != nullptr) {
     return true;
   }
   config_ = config;
   status_ = status;
   store_ = store;
+  should_reboot_.store(false);
 
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
   cfg.server_port = 80;
@@ -226,8 +227,10 @@ bool PortalServer::Start(AppConfig* config, RuntimeStatus* status, ConfigStore* 
   httpd_register_uri_handler(server_, &post_cfg);
   httpd_register_uri_handler(server_, &scan);
 
-  if (!StartDnsServer()) {
-    ESP_LOGW(kTag, "dns server start failed, captive portal may be limited");
+  if (enable_dns) {
+    if (!StartDnsServer()) {
+      ESP_LOGW(kTag, "dns server start failed, captive portal may be limited");
+    }
   }
 
   ESP_LOGI(kTag, "portal server started");

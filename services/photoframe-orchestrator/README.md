@@ -1,16 +1,21 @@
 # photoframe-orchestrator
 
-用于 NAS 侧托管“每日图片 + 插播任务”的编排服务。
+用于 NAS 侧托管“每日图片 + 插播任务 + 设备配置下发”的编排服务。
 
 ## 能力
 
 - 设备拉取：`GET /api/v1/device/next`
 - 设备心跳：`POST /api/v1/device/checkin`
+- 设备配置同步：
+  - 管理端发布：`POST /api/v1/device-config`
+  - 设备查询：`GET /api/v1/device/config`
+  - 设备回报：`POST /api/v1/device/config/applied`
+  - 历史查询：`GET /api/v1/device-configs`
 - Web 上传插播图并设置播放窗口：`POST /api/v1/overrides/upload`
 - 管理插播列表：`GET /api/v1/overrides`、`DELETE /api/v1/overrides/{id}`
 - 图片下发历史：`GET /api/v1/publish-history`
-- 公网日图代理：`GET /public/daily.bmp`（token 保护）
-- Web 管理页：`GET /`（含图片发布历史时间线）
+- 公网日图代理：`GET /public/daily.bmp`（token 保护，且优先返回当前生效插播）
+- Web 管理页：`GET /`（含图片发布历史 + 设备配置发布历史）
 
 ## 本地运行（源码）
 
@@ -61,4 +66,9 @@ scripts/release-orchestrator-image.sh 0.1.0
 
 - `GET /public/daily.bmp`
 - 鉴权：请求头 `X-Photo-Token` 或 query `?token=`
-- 行为：服务端按 `DAILY_IMAGE_URL_TEMPLATE` 拉取“当日 BMP”并原样返回
+- 可选：`device_id`（用于按设备匹配插播）
+- 行为：
+  1. 优先返回该设备当前生效的插播图（若存在）
+  2. 否则回退到 `DAILY_IMAGE_URL_TEMPLATE` 的当日 BMP
+
+更多字段与示例见 `docs/orchestrator-api.md`。

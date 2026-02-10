@@ -63,6 +63,29 @@ function renderStateTag(state) {
   return `<span class="tag">${escapeHtml(state || '-')}</span>`;
 }
 
+function renderConfigApplyStatus(device) {
+  const appliedVersion = Number(device.config_applied_version || 0);
+  if (!appliedVersion) {
+    return '<span class="tag">-</span>';
+  }
+
+  if (device.config_apply_ok) {
+    return `<span class="tag active">ok v${appliedVersion}</span>`;
+  }
+
+  const err = device.config_apply_error
+    ? `<div class="muted">${escapeHtml(shorten(device.config_apply_error, 80))}</div>`
+    : '';
+  return `<span class="tag expired">fail v${appliedVersion}</span>${err}`;
+}
+
+function appendDeviceOption(select, value) {
+  const op = document.createElement('option');
+  op.value = value;
+  op.textContent = value;
+  select.appendChild(op);
+}
+
 async function loadHealth() {
   const data = await fetchJson('/healthz');
   const version = data.app_version || '-';
@@ -73,11 +96,14 @@ async function loadHealth() {
 async function loadDevices() {
   const data = await fetchJson('/api/v1/devices');
   const body = document.getElementById('devicesBody');
-  const deviceSelect = document.getElementById('deviceId');
-  const selectedBefore = deviceSelect.value;
+  const overrideDeviceSelect = document.getElementById('deviceId');
+  const configDeviceSelect = document.getElementById('configDeviceId');
+  const selectedOverrideBefore = overrideDeviceSelect.value;
+  const selectedConfigBefore = configDeviceSelect.value;
 
   body.innerHTML = '';
-  deviceSelect.innerHTML = '<option value="*">全部设备 (*)</option>';
+  overrideDeviceSelect.innerHTML = '<option value="*">全部设备 (*)</option>';
+  configDeviceSelect.innerHTML = '<option value="*">全部设备 (*)</option>';
 
   const devices = data.devices || [];
   document.getElementById('deviceCount').textContent = String(devices.length);
@@ -85,6 +111,9 @@ async function loadDevices() {
 
   for (const d of devices) {
     const tr = document.createElement('tr');
+    const cfgVersion = `${d.config_target_version || 0}/${d.config_seen_version || 0}/${d.config_applied_version || 0}`;
+    const cfgQuery = fmtEpoch(d.config_last_query_epoch);
+
     tr.innerHTML = `
       <td><span class="tag">${escapeHtml(d.device_id)}</span></td>
       <td>${fmtEpoch(d.last_checkin_epoch)}</td>
@@ -93,18 +122,22 @@ async function loadDevices() {
       <td>${fmtDuration(d.poll_interval_seconds)}</td>
       <td>${escapeHtml(d.failure_count)}</td>
       <td>${escapeHtml(d.image_source || 'daily')}</td>
-      <td>${escapeHtml(d.last_error || '')}</td>
+      <td>${escapeHtml(cfgVersion)}</td>
+      <td>${cfgQuery}</td>
+      <td>${renderConfigApplyStatus(d)}</td>
+      <td>${escapeHtml(shorten(d.last_error || '', 88))}</td>
     `;
     body.appendChild(tr);
 
-    const op = document.createElement('option');
-    op.value = d.device_id;
-    op.textContent = d.device_id;
-    deviceSelect.appendChild(op);
+    appendDeviceOption(overrideDeviceSelect, d.device_id);
+    appendDeviceOption(configDeviceSelect, d.device_id);
   }
 
-  if ([...deviceSelect.options].some((o) => o.value === selectedBefore)) {
-    deviceSelect.value = selectedBefore;
+  if ([...overrideDeviceSelect.options].some((o) => o.value === selectedOverrideBefore)) {
+    overrideDeviceSelect.value = selectedOverrideBefore;
+  }
+  if ([...configDeviceSelect.options].some((o) => o.value === selectedConfigBefore)) {
+    configDeviceSelect.value = selectedConfigBefore;
   }
 }
 
@@ -190,6 +223,39 @@ async function loadPublishHistory() {
   document.getElementById('publishHistoryHint').textContent = `${scope} · 最近 ${items.length} 条`;
 }
 
+function renderConfigHistoryItem(item) {
+  const configText = escapeHtml(JSON.stringify(item.config || {}, null, 2));
+  return `
+    <article class="release-item">
+      <div class="release-head">
+        <p class="release-title"><span class="tag">${escapeHtml(item.device_id)}</span> 配置版本 #${item.id}</p>
+        <span class="release-date">${fmtEpoch(item.created_epoch)}</span>
+      </div>
+      <p class="release-summary">${escapeHtml(item.note || '-')}</p>
+      <pre>${configText}</pre>
+    </article>
+  `;
+}
+
+async function loadDeviceConfigs() {
+  const selectedDevice = document.getElementById('configDeviceId').value || '*';
+  const query = selectedDevice !== '*'
+    ? `?device_id=${encodeURIComponent(selectedDevice)}&limit=80`
+    : '?limit=80';
+  const data = await fetchJson(`/api/v1/device-configs${query}`);
+
+  const items = data.items || [];
+  const body = document.getElementById('configHistoryBody');
+  if (items.length === 0) {
+    body.innerHTML = '<p class="muted">暂无设备配置发布记录。</p>';
+  } else {
+    body.innerHTML = items.map(renderConfigHistoryItem).join('');
+  }
+
+  const scope = selectedDevice === '*' ? '全部设备' : selectedDevice;
+  document.getElementById('configHistoryHint').textContent = `${scope} · 最近 ${items.length} 条`;
+}
+
 async function submitOverride(ev) {
   ev.preventDefault();
   const fileInput = document.getElementById('imageFile');
@@ -228,11 +294,40 @@ async function submitOverride(ev) {
   await refreshAll();
 }
 
+async function submitDeviceConfig(ev) {
+  ev.preventDefault();
+  const raw = document.getElementById('configJson').value.trim();
+  let config = {};
+  if (raw) {
+    try {
+      config = JSON.parse(raw);
+    } catch (_) {
+      throw new Error('配置 JSON 格式错误');
+    }
+  }
+
+  const payload = {
+    device_id: document.getElementById('configDeviceId').value || '*',
+    note: document.getElementById('configNote').value || '',
+    config,
+  };
+
+  const data = await fetchJson('/api/v1/device-config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  document.getElementById('configResult').textContent = JSON.stringify(data, null, 2);
+  await refreshAll();
+}
+
 async function refreshAll() {
   await loadHealth();
   await loadDevices();
   await loadOverrides();
   await loadPublishHistory();
+  await loadDeviceConfigs();
   document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString();
 }
 
@@ -241,6 +336,14 @@ document.getElementById('overrideForm').addEventListener('submit', async (ev) =>
     await submitOverride(ev);
   } catch (err) {
     document.getElementById('createResult').textContent = `提交失败: ${err.message}`;
+  }
+});
+
+document.getElementById('deviceConfigForm').addEventListener('submit', async (ev) => {
+  try {
+    await submitDeviceConfig(ev);
+  } catch (err) {
+    document.getElementById('configResult').textContent = `发布失败: ${err.message}`;
   }
 });
 
@@ -257,6 +360,14 @@ document.getElementById('deviceId').addEventListener('change', async () => {
     await loadPublishHistory();
   } catch (err) {
     document.getElementById('publishHistoryHint').textContent = `加载历史失败: ${err.message}`;
+  }
+});
+
+document.getElementById('configDeviceId').addEventListener('change', async () => {
+  try {
+    await loadDeviceConfigs();
+  } catch (err) {
+    document.getElementById('configHistoryHint').textContent = `加载配置历史失败: ${err.message}`;
   }
 });
 

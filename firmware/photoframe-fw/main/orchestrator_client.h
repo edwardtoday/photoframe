@@ -16,6 +16,13 @@ struct FrameDirective {
   std::string error;
 };
 
+struct DeviceConfigSyncResult {
+  bool ok = false;
+  bool updated = false;
+  int config_version = 0;
+  std::string error;
+};
+
 struct DeviceCheckinPayload {
   bool fetch_ok = false;
   bool image_changed = false;
@@ -33,5 +40,9 @@ class OrchestratorClient {
  public:
   static std::string EnsureDeviceId(AppConfig* cfg);
   static FrameDirective FetchDirective(const AppConfig& cfg, time_t now_epoch);
+  static DeviceConfigSyncResult SyncDeviceConfig(AppConfig* cfg, ConfigStore* store,
+                                                 int64_t now_epoch);
+  static bool ReportConfigApplied(const AppConfig& cfg, int config_version, bool applied,
+                                  const std::string& error, int64_t now_epoch);
   static bool ReportCheckin(const AppConfig& cfg, const DeviceCheckinPayload& payload);
 };

@@ -38,6 +38,7 @@ struct AppConfig {
   std::string last_image_sha256;
   int64_t last_success_epoch = 0;
   int failure_count = 0;
+  int remote_config_version = 0;
 };
 
 struct RuntimeStatus {

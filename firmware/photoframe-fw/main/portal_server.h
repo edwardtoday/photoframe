@@ -8,7 +8,7 @@
 
 class PortalServer {
  public:
-  bool Start(AppConfig* config, RuntimeStatus* status, ConfigStore* store);
+  bool Start(AppConfig* config, RuntimeStatus* status, ConfigStore* store, bool enable_dns = true);
   void Stop();
 
   bool ShouldReboot() const { return should_reboot_.load(); }

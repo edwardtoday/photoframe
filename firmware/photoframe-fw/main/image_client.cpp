@@ -35,7 +35,8 @@ std::string Sha256Hex(const uint8_t* data, size_t len) {
 }
 }  // namespace
 
-std::string ImageClient::BuildDatedUrl(const std::string& tpl, time_t now) {
+std::string ImageClient::BuildDatedUrl(const std::string& tpl, time_t now,
+                                       const std::string& device_id) {
   std::tm tm_local = {};
   localtime_r(&now, &tm_local);
 
@@ -47,6 +48,13 @@ std::string ImageClient::BuildDatedUrl(const std::string& tpl, time_t now) {
   while ((pos = url.find("%DATE%", pos)) != std::string::npos) {
     url.replace(pos, 6, date_buf);
     pos += 10;
+  }
+
+  const std::string safe_device_id = device_id.empty() ? "unknown" : device_id;
+  pos = 0;
+  while ((pos = url.find("%DEVICE_ID%", pos)) != std::string::npos) {
+    url.replace(pos, strlen("%DEVICE_ID%"), safe_device_id);
+    pos += safe_device_id.size();
   }
 
   if (url.find("%DATE%") == std::string::npos && url.find("date=") == std::string::npos) {

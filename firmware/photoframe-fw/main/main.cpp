@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -16,6 +17,7 @@
 #include "esp_sleep.h"
 #include "esp_sntp.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
@@ -35,6 +37,8 @@ constexpr uint8_t kApIpA = 192;
 constexpr uint8_t kApIpB = 168;
 constexpr uint8_t kApIpC = 73;
 constexpr uint8_t kApIpD = 1;
+constexpr int kKeyWakePortalWindowSec = 120;
+constexpr int kPortalLoopStepMs = 200;
 
 EventGroupHandle_t g_wifi_events = nullptr;
 constexpr int kWifiConnectedBit = BIT0;
@@ -359,6 +363,53 @@ void ConfigureButtonGpio() {
   cfg.intr_type = GPIO_INTR_DISABLE;
   ESP_ERROR_CHECK(gpio_config(&cfg));
 }
+
+std::string StaIpString() {
+  if (g_sta_netif == nullptr) {
+    return "";
+  }
+
+  esp_netif_ip_info_t ip_info = {};
+  if (esp_netif_get_ip_info(g_sta_netif, &ip_info) != ESP_OK) {
+    return "";
+  }
+
+  char ip_buf[16] = {};
+  snprintf(ip_buf, sizeof(ip_buf), IPSTR, IP2STR(&ip_info.ip));
+  return ip_buf;
+}
+
+void RunPortalWindowOnSta(AppConfig* config, RuntimeStatus* status, ConfigStore* store) {
+  PortalServer portal;
+  if (!portal.Start(config, status, store, false)) {
+    ESP_LOGW(kTag, "start sta portal failed, skip window");
+    return;
+  }
+
+  const std::string ip = StaIpString();
+  if (ip.empty()) {
+    ESP_LOGI(kTag, "key wake portal opened for %d seconds", kKeyWakePortalWindowSec);
+  } else {
+    ESP_LOGI(kTag, "key wake portal opened for %d seconds: http://%s/", kKeyWakePortalWindowSec,
+             ip.c_str());
+  }
+
+  const int64_t deadline_us = esp_timer_get_time() +
+                              static_cast<int64_t>(kKeyWakePortalWindowSec) * 1000000LL;
+  while (esp_timer_get_time() < deadline_us) {
+    if (portal.ShouldReboot()) {
+      ESP_LOGI(kTag, "portal config saved, rebooting now");
+      portal.Stop();
+      vTaskDelay(pdMS_TO_TICKS(300));
+      esp_restart();
+      return;
+    }
+    vTaskDelay(pdMS_TO_TICKS(kPortalLoopStepMs));
+  }
+
+  portal.Stop();
+  ESP_LOGI(kTag, "key wake portal window expired");
+}
 }  // namespace
 
 extern "C" void app_main(void) {
@@ -409,7 +460,7 @@ extern "C" void app_main(void) {
       return;
     }
     PortalServer portal;
-    if (!portal.Start(&config, &status, &store)) {
+    if (!portal.Start(&config, &status, &store, true)) {
       ESP_LOGE(kTag, "portal start failed");
       vTaskDelay(pdMS_TO_TICKS(2000));
       esp_restart();
@@ -437,9 +488,31 @@ extern "C" void app_main(void) {
     return;
   }
 
+  if (status.force_refresh) {
+    // 按键唤醒后提供 120 秒本地配置窗口，便于直接通过设备局域网 IP 调整参数。
+    RunPortalWindowOnSta(&config, &status, &store);
+  }
+
   SyncTime(config.timezone);
-  const time_t now = time(nullptr);
-  std::string url = ImageClient::BuildDatedUrl(config.image_url_template, now);
+  time_t now = time(nullptr);
+
+  if (config.orchestrator_enabled != 0 && !config.orchestrator_base_url.empty()) {
+    const DeviceConfigSyncResult sync_result =
+        OrchestratorClient::SyncDeviceConfig(&config, &store, static_cast<int64_t>(now));
+    if (!sync_result.ok) {
+      ESP_LOGW(kTag, "orchestrator config sync failed: %s", sync_result.error.c_str());
+    } else if (sync_result.updated) {
+      ESP_LOGI(kTag, "orchestrator config updated to version=%d, reboot to apply",
+               sync_result.config_version);
+      ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_stop());
+      vTaskDelay(pdMS_TO_TICKS(300));
+      esp_restart();
+      return;
+    }
+  }
+
+  now = time(nullptr);
+  std::string url = ImageClient::BuildDatedUrl(config.image_url_template, now, config.device_id);
   uint64_t success_sleep_seconds = static_cast<uint64_t>(std::max(1, config.interval_minutes)) * 60ULL;
   status.image_source = "daily";
 

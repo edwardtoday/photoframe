@@ -17,7 +17,8 @@ struct ImageFetchResult {
 
 class ImageClient {
  public:
-  static std::string BuildDatedUrl(const std::string& tpl, time_t now);
+  static std::string BuildDatedUrl(const std::string& tpl, time_t now,
+                                   const std::string& device_id = "");
   static ImageFetchResult FetchBmp(const std::string& url, const std::string& previous_sha256,
                                    const std::string& photo_token = "");
   static void FreeResultBuffer(ImageFetchResult* result);

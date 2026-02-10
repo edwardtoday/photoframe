@@ -114,7 +114,7 @@
       color: var(--sub);
     }
 
-    input, select, button {
+    input, select, textarea, button {
       width: 100%;
       margin-top: 6px;
       padding: 10px;
@@ -124,7 +124,13 @@
       background: #fff;
     }
 
-    input:focus, select:focus {
+    textarea {
+      min-height: 150px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      resize: vertical;
+    }
+
+    input:focus, select:focus, textarea:focus {
       outline: none;
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(53, 88, 229, 0.12);
@@ -192,7 +198,7 @@
       background: #0f172a;
       color: #e2e8f0;
       font-size: 12px;
-      max-height: 180px;
+      max-height: 240px;
       overflow: auto;
     }
 
@@ -336,6 +342,28 @@
         </div>
 
         <div class="card">
+          <h3>设备配置下发</h3>
+          <p class="help">设备每次唤醒会查询配置版本；检测到新版本后保存并回报应用结果。</p>
+          <form id="deviceConfigForm">
+            <div class="row">
+              <label>目标设备
+                <select id="configDeviceId">
+                  <option value="*">全部设备 (*)</option>
+                </select>
+              </label>
+              <label>备注
+                <input id="configNote" placeholder="例如：公网 token 切换" />
+              </label>
+            </div>
+            <label>配置 JSON（支持 `%DEVICE_ID%` 占位）
+              <textarea id="configJson" placeholder='{"interval_minutes":60,"image_url_template":"https://901.qingpei.me:40009/daily.bmp?device_id=%DEVICE_ID%"}'></textarea>
+            </label>
+            <button type="submit">发布设备配置</button>
+          </form>
+          <pre id="configResult"></pre>
+        </div>
+
+        <div class="card">
           <h3>设备状态</h3>
           <div class="stats">
             <div class="stat"><div class="k">设备数</div><div class="v" id="deviceCount">0</div></div>
@@ -352,6 +380,9 @@
                 <th>poll</th>
                 <th>fail</th>
                 <th>source</th>
+                <th>cfg 目标/已见/已用</th>
+                <th>cfg 最近查询</th>
+                <th>cfg 应用结果</th>
                 <th>error</th>
               </tr>
             </thead>
@@ -385,6 +416,13 @@
           <p class="help">展示服务曾下发到相框的图片记录（按时间倒序）。</p>
           <div id="publishHistoryBody" class="timeline"></div>
           <p id="publishHistoryHint" class="muted"></p>
+        </div>
+
+        <div class="card">
+          <h3>设备配置发布历史</h3>
+          <p class="help">展示曾下发到设备的配置版本与内容。</p>
+          <div id="configHistoryBody" class="timeline"></div>
+          <p id="configHistoryHint" class="muted"></p>
         </div>
       </aside>
     </section>

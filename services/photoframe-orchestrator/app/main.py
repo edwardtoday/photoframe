@@ -54,6 +54,7 @@ DEVICE_CONFIG_ALLOWED_KEYS = {
     "six_color_tolerance",
     "timezone",
 }
+DEVICE_CONFIG_SECRET_KEYS = {"orchestrator_token", "photo_token"}
 
 app = FastAPI(title="PhotoFrame Orchestrator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
@@ -75,6 +76,18 @@ def _ensure_db() -> sqlite3.Connection:
   return DB
 
 
+def _ensure_table_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+  existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+  if column in existing:
+    return
+  conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
+  _ensure_table_column(conn, "devices", "reported_config_json", "TEXT NOT NULL DEFAULT '{}'")
+  _ensure_table_column(conn, "devices", "reported_config_epoch", "INTEGER NOT NULL DEFAULT 0")
+
+
 def _init_db() -> None:
   DATA_DIR.mkdir(parents=True, exist_ok=True)
   ASSET_DIR.mkdir(parents=True, exist_ok=True)
@@ -94,6 +107,8 @@ def _init_db() -> None:
           image_changed INTEGER NOT NULL DEFAULT 0,
           image_source TEXT NOT NULL DEFAULT 'daily',
           last_error TEXT NOT NULL DEFAULT '',
+          reported_config_json TEXT NOT NULL DEFAULT '{}',
+          reported_config_epoch INTEGER NOT NULL DEFAULT 0,
           updated_at INTEGER NOT NULL DEFAULT 0
         );
 
@@ -154,6 +169,7 @@ def _init_db() -> None:
         );
         """
     )
+    _apply_schema_migrations(conn)
     conn.commit()
 
 
@@ -273,6 +289,41 @@ def _sanitize_device_config(raw: dict[str, Any]) -> dict[str, Any]:
       sanitized[key] = text_val[:max_len]
 
   return sanitized
+
+def _sanitize_reported_device_config(raw: Any) -> dict[str, Any]:
+  # 设备上报值也走同一套白名单/范围约束，避免脏数据污染控制台提示。
+  if not isinstance(raw, dict):
+    return {}
+
+  sanitized: dict[str, Any] = {}
+  for key in DEVICE_CONFIG_ALLOWED_KEYS:
+    if key not in raw:
+      continue
+    try:
+      partial = _sanitize_device_config({key: raw[key]})
+    except HTTPException:
+      continue
+    sanitized.update(partial)
+  return sanitized
+
+
+def _mask_secret(value: str) -> str:
+  if not value:
+    return ""
+  if len(value) <= 4:
+    return "*" * len(value)
+  return f"{value[:2]}***{value[-2:]}"
+
+
+def _redact_reported_config_for_view(config: dict[str, Any]) -> dict[str, Any]:
+  # Token 等敏感字段仅用于“已设置”提示，返回前统一脱敏。
+  redacted = dict(config)
+  for key in DEVICE_CONFIG_SECRET_KEYS:
+    val = redacted.get(key)
+    if isinstance(val, str):
+      redacted[key] = _mask_secret(val)
+  return redacted
+
 
 
 def _load_latest_device_config_plan(conn: sqlite3.Connection, device_id: str) -> sqlite3.Row | None:
@@ -419,6 +470,7 @@ class DeviceCheckin(BaseModel):
   image_changed: bool = False
   image_source: str = "daily"
   last_error: str = ""
+  reported_config: dict[str, Any] = Field(default_factory=dict)
 
 
 class DeviceConfigPublish(BaseModel):
@@ -628,6 +680,9 @@ def device_checkin(
   _require_token(x_photoframe_token)
 
   now_ts = _now_epoch()
+  reported_config = _sanitize_reported_device_config(payload.reported_config)
+  reported_config_json = json.dumps(reported_config, ensure_ascii=False)
+
   conn = _ensure_db()
   with DB_LOCK:
     conn.execute(
@@ -635,8 +690,9 @@ def device_checkin(
         INSERT INTO devices (
           device_id, last_checkin_epoch, next_wakeup_epoch, sleep_seconds,
           poll_interval_seconds, failure_count, last_http_status, fetch_ok,
-          image_changed, image_source, last_error, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          image_changed, image_source, last_error, reported_config_json,
+          reported_config_epoch, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(device_id) DO UPDATE SET
           last_checkin_epoch = excluded.last_checkin_epoch,
           next_wakeup_epoch = excluded.next_wakeup_epoch,
@@ -648,6 +704,8 @@ def device_checkin(
           image_changed = excluded.image_changed,
           image_source = excluded.image_source,
           last_error = excluded.last_error,
+          reported_config_json = excluded.reported_config_json,
+          reported_config_epoch = excluded.reported_config_epoch,
           updated_at = excluded.updated_at
         """,
         (
@@ -662,6 +720,8 @@ def device_checkin(
             1 if payload.image_changed else 0,
             payload.image_source,
             payload.last_error,
+            reported_config_json,
+            int(payload.checkin_epoch),
             now_ts,
         ),
     )
@@ -828,6 +888,7 @@ def devices() -> dict[str, Any]:
     latest_plan = _load_latest_device_config_plan(conn, device_id)
     target_version = 0 if latest_plan is None else int(latest_plan["id"])
 
+    reported_config = _decode_config_json(str(row["reported_config_json"]))
     items.append(
         {
             "device_id": device_id,
@@ -841,6 +902,8 @@ def devices() -> dict[str, Any]:
             "fetch_ok": bool(row["fetch_ok"]),
             "image_source": row["image_source"],
             "last_error": row["last_error"],
+            "reported_config_epoch": int(row["reported_config_epoch"]),
+            "reported_config": _redact_reported_config_for_view(reported_config),
             "config_target_version": target_version,
             "config_seen_version": 0 if status is None else int(status["last_seen_version"]),
             "config_last_query_epoch": 0 if status is None else int(status["last_query_epoch"]),

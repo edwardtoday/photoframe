@@ -16,7 +16,8 @@
 - 图片下发历史：`GET /api/v1/publish-history`
 - 管理页预览当前下发图：`GET /api/v1/preview/current.bmp`
 - 公网日图代理：`GET /public/daily.bmp`（token 保护，且优先返回当前生效插播）
-- Web 管理页：`GET /`（含图片发布历史 + 设备配置发布历史）
+- Web 管理页：`GET /`（含图片发布历史 + 设备配置发布历史 + 当前下发预览）
+- 设备配置“填空式表单”：不再手写 JSON，灰字提示来自设备最近上报配置
 
 ## 本地运行（源码）
 
@@ -74,6 +75,11 @@ scripts/release-orchestrator-image.sh 0.1.0
 
 更多字段与示例见 `docs/orchestrator-api.md`。
 
+
+## 设备离家场景建议
+
+- 若设备可能不在家，请把 `image_url_template` 配成公网 `daily.bmp` 地址（含 token）。
+- 即使设备访问不到本地 orchestrator（无法实时下发配置），仍可在每次联网唤醒时拉到应显示图片。
 
 ## 插播开始时间规则
 

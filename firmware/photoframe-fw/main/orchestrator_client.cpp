@@ -154,6 +154,42 @@ bool ApplyRemoteConfigObject(const cJSON* config, AppConfig* cfg, std::string* e
 
   return true;
 }
+
+void AddReportedConfig(cJSON* root, const AppConfig& cfg) {
+  // 设备每次 checkin 上报当前生效配置，供后台页面用灰字提示默认值。
+  if (root == nullptr) {
+    return;
+  }
+
+  cJSON* reported = cJSON_CreateObject();
+  if (reported == nullptr) {
+    return;
+  }
+
+  cJSON_AddNumberToObject(reported, "orchestrator_enabled", cfg.orchestrator_enabled ? 1 : 0);
+  cJSON_AddStringToObject(reported, "orchestrator_base_url", cfg.orchestrator_base_url.c_str());
+  cJSON_AddStringToObject(reported, "orchestrator_token", cfg.orchestrator_token.c_str());
+  cJSON_AddStringToObject(reported, "image_url_template", cfg.image_url_template.c_str());
+  cJSON_AddStringToObject(reported, "photo_token", cfg.photo_token.c_str());
+  cJSON_AddNumberToObject(reported, "interval_minutes", std::max(1, cfg.interval_minutes));
+  cJSON_AddNumberToObject(reported, "retry_base_minutes", std::max(1, cfg.retry_base_minutes));
+  cJSON_AddNumberToObject(reported, "retry_max_minutes",
+                          std::max(std::max(1, cfg.retry_base_minutes), cfg.retry_max_minutes));
+  cJSON_AddNumberToObject(reported, "max_failure_before_long_sleep",
+                          std::max(1, cfg.max_failure_before_long_sleep));
+  cJSON_AddNumberToObject(reported, "display_rotation", cfg.display_rotation == 0 ? 0 : 2);
+  cJSON_AddNumberToObject(reported, "color_process_mode",
+                          std::clamp(cfg.color_process_mode,
+                                     static_cast<int>(AppConfig::kColorProcessAuto),
+                                     static_cast<int>(AppConfig::kColorProcessAssumeSixColor)));
+  cJSON_AddNumberToObject(reported, "dither_mode",
+                          std::clamp(cfg.dither_mode, static_cast<int>(AppConfig::kDitherNone),
+                                     static_cast<int>(AppConfig::kDitherOrdered)));
+  cJSON_AddNumberToObject(reported, "six_color_tolerance", std::clamp(cfg.six_color_tolerance, 0, 64));
+  cJSON_AddStringToObject(reported, "timezone", cfg.timezone.c_str());
+
+  cJSON_AddItemToObject(root, "reported_config", reported);
+}
 }  // namespace
 
 std::string OrchestratorClient::EnsureDeviceId(AppConfig* cfg) {
@@ -446,6 +482,7 @@ bool OrchestratorClient::ReportCheckin(const AppConfig& cfg, const DeviceCheckin
   cJSON_AddBoolToObject(root, "image_changed", payload.image_changed);
   cJSON_AddStringToObject(root, "image_source", payload.image_source.c_str());
   cJSON_AddStringToObject(root, "last_error", payload.last_error.c_str());
+  AddReportedConfig(root, cfg);
 
   char* json = cJSON_PrintUnformatted(root);
   cJSON_Delete(root);

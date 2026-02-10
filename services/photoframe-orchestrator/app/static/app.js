@@ -7,6 +7,7 @@ function authHeaders() {
 }
 
 let previewBlobUrl = null;
+let deviceMap = new Map();
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -39,6 +40,28 @@ function shorten(text, maxLen = 72) {
     return s;
   }
   return `${s.slice(0, maxLen - 1)}…`;
+}
+
+function optionLabel(value, mapping) {
+  if (value == null || value === '') {
+    return '-';
+  }
+  const key = String(value);
+  return mapping[key] || key;
+}
+
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.textContent = text;
+  }
+}
+
+function setPlaceholder(id, text) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.placeholder = text;
+  }
 }
 
 async function fetchJson(url, options = {}) {
@@ -88,6 +111,150 @@ function appendDeviceOption(select, value) {
   select.appendChild(op);
 }
 
+function normalizeReported(device) {
+  if (!device || typeof device !== 'object') {
+    return {};
+  }
+  if (!device.reported_config || typeof device.reported_config !== 'object') {
+    return {};
+  }
+  return device.reported_config;
+}
+
+function updateConfigHints() {
+  const selectedDevice = document.getElementById('configDeviceId').value || '*';
+  const device = deviceMap.get(selectedDevice);
+  const reported = normalizeReported(device);
+
+  const reportedOr = (key, fallback = '-') => {
+    if (Object.prototype.hasOwnProperty.call(reported, key)) {
+      const value = reported[key];
+      if (value === null || value === '') {
+        return '-';
+      }
+      return String(value);
+    }
+    return fallback;
+  };
+
+  const intervalFallback = device ? String(Math.max(1, Math.floor((device.poll_interval_seconds || 3600) / 60))) : '-';
+
+  const orchEnabled = reportedOr('orchestrator_enabled', '-');
+  const rotation = reportedOr('display_rotation', '-');
+  const colorMode = reportedOr('color_process_mode', '-');
+  const ditherMode = reportedOr('dither_mode', '-');
+
+  setText('cfgHintOrchEnabled', `当前: ${optionLabel(orchEnabled, { '0': '关闭', '1': '启用' })}`);
+  setText('cfgHintDisplayRotation', `当前: ${optionLabel(rotation, { '0': '旋转 0', '2': '旋转 180' })}`);
+  setText('cfgHintColorProcessMode', `当前: ${optionLabel(colorMode, {
+    '0': '自动判断',
+    '1': '总是转换为 6 色',
+    '2': '认为输入已是 6 色',
+  })}`);
+  setText('cfgHintDitherMode', `当前: ${optionLabel(ditherMode, { '0': '关闭', '1': '有序抖动' })}`);
+
+  setPlaceholder('cfgTimezone', `当前: ${reportedOr('timezone', '-')}`);
+  setPlaceholder('cfgOrchBaseUrl', `当前: ${reportedOr('orchestrator_base_url', '-')}`);
+  setPlaceholder('cfgImageUrlTemplate', `当前: ${reportedOr('image_url_template', '-')}`);
+  setPlaceholder('cfgOrchToken', `当前: ${reportedOr('orchestrator_token', '未设置')}`);
+  setPlaceholder('cfgPhotoToken', `当前: ${reportedOr('photo_token', '未设置')}`);
+  setPlaceholder('cfgIntervalMinutes', `当前: ${reportedOr('interval_minutes', intervalFallback)}`);
+  setPlaceholder('cfgRetryBaseMinutes', `当前: ${reportedOr('retry_base_minutes', '-')}`);
+  setPlaceholder('cfgRetryMaxMinutes', `当前: ${reportedOr('retry_max_minutes', '-')}`);
+  setPlaceholder('cfgMaxFailure', `当前: ${reportedOr('max_failure_before_long_sleep', '-')}`);
+  setPlaceholder('cfgSixColorTolerance', `当前: ${reportedOr('six_color_tolerance', '-')}`);
+}
+
+function clearConfigPatchInputs() {
+  const textIds = [
+    'cfgTimezone',
+    'cfgOrchBaseUrl',
+    'cfgImageUrlTemplate',
+    'cfgOrchToken',
+    'cfgPhotoToken',
+    'cfgIntervalMinutes',
+    'cfgRetryBaseMinutes',
+    'cfgRetryMaxMinutes',
+    'cfgMaxFailure',
+    'cfgSixColorTolerance',
+  ];
+  for (const id of textIds) {
+    const input = document.getElementById(id);
+    if (input) input.value = '';
+  }
+
+  const selectIds = [
+    'cfgOrchEnabled',
+    'cfgDisplayRotation',
+    'cfgColorProcessMode',
+    'cfgDitherMode',
+  ];
+  for (const id of selectIds) {
+    const select = document.getElementById(id);
+    if (select) select.value = '';
+  }
+}
+
+function parseOptionalInteger(id, title, minValue, maxValue = null) {
+  const raw = document.getElementById(id).value.trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  if (!Number.isInteger(value)) {
+    throw new Error(`${title} 必须是整数`);
+  }
+  if (value < minValue) {
+    throw new Error(`${title} 不能小于 ${minValue}`);
+  }
+  if (maxValue != null && value > maxValue) {
+    throw new Error(`${title} 不能大于 ${maxValue}`);
+  }
+  return value;
+}
+
+function collectDeviceConfigPatch() {
+  const patch = {};
+
+  const addSelectNumber = (id, key) => {
+    const raw = document.getElementById(id).value;
+    if (raw === '') return;
+    patch[key] = Number(raw);
+  };
+
+  const addText = (id, key) => {
+    const raw = document.getElementById(id).value.trim();
+    if (!raw) return;
+    patch[key] = raw;
+  };
+
+  addSelectNumber('cfgOrchEnabled', 'orchestrator_enabled');
+  addText('cfgTimezone', 'timezone');
+  addText('cfgOrchBaseUrl', 'orchestrator_base_url');
+  addText('cfgImageUrlTemplate', 'image_url_template');
+  addText('cfgOrchToken', 'orchestrator_token');
+  addText('cfgPhotoToken', 'photo_token');
+
+  const interval = parseOptionalInteger('cfgIntervalMinutes', '刷新间隔', 1, 24 * 60);
+  if (interval != null) patch.interval_minutes = interval;
+
+  const retryBase = parseOptionalInteger('cfgRetryBaseMinutes', '失败重试基数', 1, 24 * 60);
+  if (retryBase != null) patch.retry_base_minutes = retryBase;
+
+  const retryMax = parseOptionalInteger('cfgRetryMaxMinutes', '失败重试上限', 1, 7 * 24 * 60);
+  if (retryMax != null) patch.retry_max_minutes = retryMax;
+
+  const maxFail = parseOptionalInteger('cfgMaxFailure', '连续失败阈值', 1, 1000);
+  if (maxFail != null) patch.max_failure_before_long_sleep = maxFail;
+
+  addSelectNumber('cfgDisplayRotation', 'display_rotation');
+  addSelectNumber('cfgColorProcessMode', 'color_process_mode');
+  addSelectNumber('cfgDitherMode', 'dither_mode');
+
+  const tolerance = parseOptionalInteger('cfgSixColorTolerance', '6 色判断容差', 0, 64);
+  if (tolerance != null) patch.six_color_tolerance = tolerance;
+
+  return patch;
+}
+
 async function loadHealth() {
   const data = await fetchJson('/healthz');
   const version = data.app_version || '-';
@@ -108,10 +275,13 @@ async function loadDevices() {
   configDeviceSelect.innerHTML = '<option value="*">全部设备 (*)</option>';
 
   const devices = data.devices || [];
+  deviceMap = new Map();
   document.getElementById('deviceCount').textContent = String(devices.length);
   document.getElementById('serverNow').textContent = fmtEpoch(data.now_epoch);
 
   for (const d of devices) {
+    deviceMap.set(d.device_id, d);
+
     const tr = document.createElement('tr');
     const cfgVersion = `${d.config_target_version || 0}/${d.config_seen_version || 0}/${d.config_applied_version || 0}`;
     const cfgQuery = fmtEpoch(d.config_last_query_epoch);
@@ -141,6 +311,8 @@ async function loadDevices() {
   if ([...configDeviceSelect.options].some((o) => o.value === selectedConfigBefore)) {
     configDeviceSelect.value = selectedConfigBefore;
   }
+
+  updateConfigHints();
 }
 
 async function loadOverrides() {
@@ -332,14 +504,10 @@ async function submitOverride(ev) {
 
 async function submitDeviceConfig(ev) {
   ev.preventDefault();
-  const raw = document.getElementById('configJson').value.trim();
-  let config = {};
-  if (raw) {
-    try {
-      config = JSON.parse(raw);
-    } catch (_) {
-      throw new Error('配置 JSON 格式错误');
-    }
+  const config = collectDeviceConfigPatch();
+
+  if (Object.keys(config).length === 0) {
+    throw new Error('请至少填写一项配置');
   }
 
   const payload = {
@@ -355,6 +523,7 @@ async function submitDeviceConfig(ev) {
   });
 
   document.getElementById('configResult').textContent = JSON.stringify(data, null, 2);
+  clearConfigPatchInputs();
   await refreshAll();
 }
 
@@ -412,6 +581,8 @@ document.getElementById('deviceId').addEventListener('change', async () => {
 
 document.getElementById('configDeviceId').addEventListener('change', async () => {
   try {
+    clearConfigPatchInputs();
+    updateConfigHints();
     await loadDeviceConfigs();
   } catch (err) {
     document.getElementById('configHistoryHint').textContent = `加载配置历史失败: ${err.message}`;

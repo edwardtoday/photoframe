@@ -57,9 +57,16 @@
   "fetch_ok": true,
   "image_changed": true,
   "image_source": "override",
-  "last_error": ""
+  "last_error": "",
+  "reported_config": {
+    "interval_minutes": 60,
+    "image_url_template": "https://901.qingpei.me:40009/daily.bmp?device_id=%DEVICE_ID%",
+    "color_process_mode": 0
+  }
 }
 ```
+
+`reported_config` 为设备当前生效配置快照，用于 Web 表单灰字提示；敏感字段会在服务端返回时脱敏。
 
 ## 3) 设备配置下发与同步
 
@@ -201,6 +208,8 @@ Query:
 - `config_last_apply_epoch`
 - `config_apply_ok`
 - `config_apply_error`
+- `reported_config_epoch`
+- `reported_config`（设备上报配置快照，敏感值脱敏）
 
 ## 6) 当前下发图片预览（管理页）
 

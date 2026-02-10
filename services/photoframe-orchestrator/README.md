@@ -9,6 +9,7 @@
 - Web 上传插播图并设置播放窗口：`POST /api/v1/overrides/upload`
 - 管理插播列表：`GET /api/v1/overrides`、`DELETE /api/v1/overrides/{id}`
 - 图片下发历史：`GET /api/v1/publish-history`
+- 公网日图代理：`GET /public/daily.bmp`（token 保护）
 - Web 管理页：`GET /`（含图片发布历史时间线）
 
 ## 本地运行（源码）
@@ -52,4 +53,12 @@ scripts/release-orchestrator-image.sh 0.1.0
 - `PUBLIC_BASE_URL`：返回给设备的资源 URL 前缀
 - `DEFAULT_POLL_SECONDS`：默认轮询周期（秒）
 - `PHOTOFRAME_TOKEN`：可选认证 token（设备与 Web 请求都需带 `X-PhotoFrame-Token`）
+- `PUBLIC_DAILY_BMP_TOKEN`：公网日图接口口令（`/public/daily.bmp`，为空则禁用）
+- `DAILY_FETCH_TIMEOUT_SECONDS`：公网日图代理拉取上游超时（秒，默认 10）
 - `TZ`：服务端时区
+
+## 公网日图接口
+
+- `GET /public/daily.bmp`
+- 鉴权：请求头 `X-Photo-Token` 或 query `?token=`
+- 行为：服务端按 `DAILY_IMAGE_URL_TEMPLATE` 拉取“当日 BMP”并原样返回

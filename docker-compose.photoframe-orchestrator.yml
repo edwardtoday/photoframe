@@ -11,6 +11,8 @@ services:
       PUBLIC_BASE_URL: "http://192.168.58.113:8081"
       DEFAULT_POLL_SECONDS: "3600"
       PHOTOFRAME_TOKEN: ""
+      PUBLIC_DAILY_BMP_TOKEN: ""
+      DAILY_FETCH_TIMEOUT_SECONDS: "10"
     volumes:
       - ./services/photoframe-orchestrator/data:/app/data
     restart: unless-stopped

@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import io
 import os
 import sqlite3
@@ -7,10 +8,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request as UrlRequest, urlopen
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
@@ -25,6 +28,11 @@ DAILY_TEMPLATE = os.getenv("DAILY_IMAGE_URL_TEMPLATE", DEFAULT_DAILY_TEMPLATE)
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 DEFAULT_POLL_SECONDS = max(60, int(os.getenv("DEFAULT_POLL_SECONDS", "3600")))
 TOKEN = os.getenv("PHOTOFRAME_TOKEN", "")
+PUBLIC_DAILY_BMP_TOKEN = os.getenv("PUBLIC_DAILY_BMP_TOKEN", "")
+try:
+  DAILY_FETCH_TIMEOUT_SECONDS = max(1.0, float(os.getenv("DAILY_FETCH_TIMEOUT_SECONDS", "10")))
+except Exception:
+  DAILY_FETCH_TIMEOUT_SECONDS = 10.0
 TZ_NAME = os.getenv("TZ", "Asia/Shanghai")
 LOCAL_TZ = ZoneInfo(TZ_NAME)
 APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.4")
@@ -120,6 +128,16 @@ def _require_token(header_token: str | None) -> None:
     raise HTTPException(status_code=401, detail="invalid token")
 
 
+def _require_public_daily_token(header_token: str | None, query_token: str | None) -> None:
+  token = (PUBLIC_DAILY_BMP_TOKEN or "").strip()
+  if not token:
+    raise HTTPException(status_code=403, detail="public daily disabled: set PUBLIC_DAILY_BMP_TOKEN")
+
+  provided = (header_token or query_token or "").strip()
+  if not provided or not hmac.compare_digest(provided, token):
+    raise HTTPException(status_code=403, detail="public photo token required")
+
+
 def _daily_image_url(now_epoch: int) -> str:
   date_text = datetime.fromtimestamp(now_epoch, LOCAL_TZ).strftime("%Y-%m-%d")
   url = DAILY_TEMPLATE.replace("%DATE%", date_text)
@@ -127,6 +145,28 @@ def _daily_image_url(now_epoch: int) -> str:
     connector = "&" if "?" in url else "?"
     url = f"{url}{connector}date={date_text}"
   return url
+
+
+def _fetch_daily_bmp_bytes(url: str) -> bytes:
+  req = UrlRequest(url, headers={"User-Agent": f"photoframe-orchestrator/{APP_VERSION}"})
+  try:
+    with urlopen(req, timeout=DAILY_FETCH_TIMEOUT_SECONDS) as resp:
+      status = int(getattr(resp, "status", 200))
+      if status != 200:
+        raise HTTPException(status_code=502, detail=f"daily upstream status={status}")
+      payload = resp.read()
+  except HTTPError as exc:
+    raise HTTPException(status_code=502, detail=f"daily upstream status={exc.code}") from exc
+  except URLError as exc:
+    raise HTTPException(status_code=502, detail=f"daily upstream unavailable: {exc}") from exc
+  except TimeoutError as exc:
+    raise HTTPException(status_code=502, detail="daily upstream timeout") from exc
+
+  if not payload:
+    raise HTTPException(status_code=502, detail="daily upstream empty")
+  if not payload.startswith(b"BM"):
+    raise HTTPException(status_code=502, detail="daily upstream not bmp")
+  return payload
 
 
 def _public_base(request: Request) -> str:
@@ -227,6 +267,22 @@ def asset(asset_name: str) -> FileResponse:
   if not path.exists():
     raise HTTPException(status_code=404, detail="asset not found")
   return FileResponse(path=path, media_type="image/bmp", filename=safe_name)
+
+
+@app.get("/public/daily.bmp")
+def public_daily_bmp(
+    token: str | None = Query(default=None),
+    x_photo_token: str | None = Header(default=None),
+) -> Response:
+  _require_public_daily_token(x_photo_token, token)
+  now_ts = _now_epoch()
+  upstream_url = _daily_image_url(now_ts)
+  payload = _fetch_daily_bmp_bytes(upstream_url)
+  return Response(
+      content=payload,
+      media_type="image/bmp",
+      headers={"Cache-Control": "private, max-age=60"},
+  )
 
 
 @app.get("/api/v1/device/next")

@@ -144,3 +144,18 @@
 
 - 历史记录按 `issued_epoch` 倒序返回。
 - 当前实现自动保留最近 5000 条，超出后会清理最旧记录。
+
+## 7) 公网只读日图（供外网相框拉取）
+
+`GET /public/daily.bmp`
+
+鉴权：
+
+- 请求头：`X-Photo-Token: <token>`
+- 或 query：`?token=<token>`
+- 当 `PUBLIC_DAILY_BMP_TOKEN` 未配置时返回 `403`
+
+说明：
+
+- 服务端根据 `DAILY_IMAGE_URL_TEMPLATE` 生成当日 URL 并向上游拉取 BMP。
+- 上游异常/超时会返回 `502`。

@@ -282,6 +282,23 @@
       font-size: 12px;
     }
 
+    .preview-box {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fafbff;
+      padding: 10px;
+      text-align: center;
+    }
+
+    #currentPreview {
+      width: min(100%, 320px);
+      aspect-ratio: 3 / 5;
+      object-fit: contain;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
     }
@@ -339,6 +356,23 @@
             <button type="submit">提交插播</button>
           </form>
           <pre id="createResult"></pre>
+        </div>
+
+        <div class="card">
+          <h3>当前下发预览</h3>
+          <p class="help">预览“设备此刻来拉图”时服务会返回的 480x800 图。</p>
+          <div class="row">
+            <label>目标设备（与“创建插播”共用）
+              <input value="查看左侧创建插播的目标设备" disabled />
+            </label>
+            <label>操作
+              <button id="previewBtn" class="secondary" type="button">刷新当前预览</button>
+            </label>
+          </div>
+          <p id="previewMeta" class="muted">-</p>
+          <div class="preview-box">
+            <img id="currentPreview" alt="当前下发图片预览" />
+          </div>
         </div>
 
         <div class="card">

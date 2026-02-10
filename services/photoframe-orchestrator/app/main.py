@@ -328,6 +328,23 @@ def _active_override_for_device(conn: sqlite3.Connection, now_ts: int, device_id
   ).fetchone()
 
 
+def _resolve_current_payload_for_device(
+    conn: sqlite3.Connection,
+    now_ts: int,
+    target_device: str,
+) -> tuple[bytes, str]:
+  active = _active_override_for_device(conn, now_ts, target_device)
+  if active is not None:
+    path = ASSET_DIR / str(active["asset_name"])
+    if not path.exists():
+      raise HTTPException(status_code=502, detail="override asset missing")
+    return path.read_bytes(), "override"
+
+  upstream_url = _daily_image_url(now_ts)
+  payload = _fetch_daily_bmp_bytes(upstream_url)
+  return payload, "daily"
+
+
 def _public_base(request: Request) -> str:
   if PUBLIC_BASE_URL:
     return PUBLIC_BASE_URL
@@ -453,25 +470,36 @@ def public_daily_bmp(
   target_device = _normalize_device_id(device_id)
   conn = _ensure_db()
 
-  active = _active_override_for_device(conn, now_ts, target_device)
-  source = "daily"
-  payload: bytes
-
-  if active is not None:
-    source = "override"
-    path = ASSET_DIR / str(active["asset_name"])
-    if not path.exists():
-      raise HTTPException(status_code=502, detail="override asset missing")
-    payload = path.read_bytes()
-  else:
-    upstream_url = _daily_image_url(now_ts)
-    payload = _fetch_daily_bmp_bytes(upstream_url)
+  payload, source = _resolve_current_payload_for_device(conn, now_ts, target_device)
 
   return Response(
       content=payload,
       media_type="image/bmp",
       headers={
           "Cache-Control": "private, max-age=60",
+          "X-PhotoFrame-Source": source,
+          "X-PhotoFrame-Device": target_device,
+      },
+  )
+
+
+@app.get("/api/v1/preview/current.bmp")
+def preview_current_bmp(
+    device_id: str = Query(default="*", min_length=1, max_length=64),
+    now_epoch: int | None = Query(default=None),
+    x_photoframe_token: str | None = Header(default=None),
+) -> Response:
+  _require_token(x_photoframe_token)
+  now_ts = _now_epoch() if now_epoch is None else now_epoch
+  target_device = _normalize_device_id(device_id)
+  conn = _ensure_db()
+
+  payload, source = _resolve_current_payload_for_device(conn, now_ts, target_device)
+  return Response(
+      content=payload,
+      media_type="image/bmp",
+      headers={
+          "Cache-Control": "no-store",
           "X-PhotoFrame-Source": source,
           "X-PhotoFrame-Device": target_device,
       },
@@ -979,8 +1007,18 @@ def override_upload(
   if duration_minutes <= 0:
     raise HTTPException(status_code=400, detail="duration_minutes must be > 0")
 
-  target_device = device_id.strip() or "*"
+  target_device = _normalize_device_id(device_id)
+  explicit_start = starts_at is not None and starts_at.strip() != ""
   start_epoch = _parse_start_epoch(starts_at)
+  start_policy = "explicit" if explicit_start else "immediate"
+
+  if not explicit_start and target_device != "*":
+    next_wakeup = _device_next_wakeup(target_device)
+    if next_wakeup is not None and next_wakeup > start_epoch:
+      # 默认按“设备下一次可拉取时刻”开始计时，避免窗口在设备睡眠期内被消耗完。
+      start_epoch = next_wakeup
+      start_policy = "next_wakeup"
+
   end_epoch = start_epoch + duration_minutes * 60
 
   asset_name, sha256 = _read_and_convert_bmp(file)
@@ -999,6 +1037,9 @@ def override_upload(
     conn.commit()
 
   expected_effective_epoch = _guess_effective_epoch(target_device, start_epoch)
+  will_expire_before_effective = (
+      expected_effective_epoch is not None and expected_effective_epoch >= end_epoch
+  )
   image_url = f"{_public_base(request)}/api/v1/assets/{asset_name}"
 
   return {
@@ -1008,6 +1049,8 @@ def override_upload(
       "start_epoch": start_epoch,
       "end_epoch": end_epoch,
       "duration_minutes": duration_minutes,
+      "start_policy": start_policy,
+      "will_expire_before_effective": will_expire_before_effective,
       "image_url": image_url,
       "asset_sha256": sha256,
       "expected_effective_epoch": expected_effective_epoch,

@@ -14,6 +14,7 @@
 - Web 上传插播图并设置播放窗口：`POST /api/v1/overrides/upload`
 - 管理插播列表：`GET /api/v1/overrides`、`DELETE /api/v1/overrides/{id}`
 - 图片下发历史：`GET /api/v1/publish-history`
+- 管理页预览当前下发图：`GET /api/v1/preview/current.bmp`
 - 公网日图代理：`GET /public/daily.bmp`（token 保护，且优先返回当前生效插播）
 - Web 管理页：`GET /`（含图片发布历史 + 设备配置发布历史）
 
@@ -72,3 +73,10 @@ scripts/release-orchestrator-image.sh 0.1.0
   2. 否则回退到 `DAILY_IMAGE_URL_TEMPLATE` 的当日 BMP
 
 更多字段与示例见 `docs/orchestrator-api.md`。
+
+
+## 插播开始时间规则
+
+- 指定 `starts_at`：按指定时间开始。
+- `starts_at` 为空且是单设备：按设备 `next_wakeup_epoch` 开始，避免设备睡眠期间把窗口耗尽。
+- `starts_at` 为空且 `device_id=*`：立即开始。

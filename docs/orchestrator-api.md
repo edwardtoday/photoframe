@@ -165,9 +165,11 @@ Query:
   "ok": true,
   "id": 12,
   "device_id": "pf-a1b2c3d4",
-  "start_epoch": 1760000100,
-  "end_epoch": 1760001900,
+  "start_epoch": 1760003600,
+  "end_epoch": 1760005400,
   "duration_minutes": 30,
+  "start_policy": "next_wakeup",
+  "will_expire_before_effective": false,
   "image_url": "http://192.168.58.113:18081/api/v1/assets/xxxx.bmp",
   "asset_sha256": "...",
   "expected_effective_epoch": 1760003600
@@ -175,6 +177,14 @@ Query:
 ```
 
 `expected_effective_epoch` 用于前端提示“预计何时在屏幕上生效”。
+
+插播开始时间规则：
+
+- 显式填写 `starts_at`：按该时间开始（`start_policy=explicit`）
+- `starts_at` 留空且是单设备：默认按该设备 `next_wakeup_epoch` 开始（`start_policy=next_wakeup`）
+- `starts_at` 留空且是 `*`：立即开始（`start_policy=immediate`）
+
+当 `will_expire_before_effective=true` 时，表示该窗口可能在设备真正生效前就过期。
 
 ## 5) 查询与管理
 
@@ -192,7 +202,29 @@ Query:
 - `config_apply_ok`
 - `config_apply_error`
 
-## 6) 图片发布历史
+## 6) 当前下发图片预览（管理页）
+
+`GET /api/v1/preview/current.bmp`
+
+用途：
+
+- 管理页面实时预览“设备此刻拉图会拿到什么图”（480x800 BMP）
+
+Query：
+
+- `device_id`：可选，默认 `*`
+- `now_epoch`：可选
+
+Header：
+
+- `X-PhotoFrame-Token`（当 `PHOTOFRAME_TOKEN` 已配置时必填）
+
+响应头：
+
+- `X-PhotoFrame-Source: override|daily`
+- `X-PhotoFrame-Device: <device_id>`
+
+## 7) 图片发布历史
 
 `GET /api/v1/publish-history`
 
@@ -227,7 +259,7 @@ Query:
 - 历史记录按 `issued_epoch` 倒序返回。
 - 当前实现自动保留最近 5000 条，超出后会清理最旧记录。
 
-## 7) 公网只读日图（供外网相框拉取）
+## 8) 公网只读日图（供外网相框拉取）
 
 `GET /public/daily.bmp`
 
@@ -252,7 +284,7 @@ Query:
 - `X-PhotoFrame-Source: override|daily`
 - `X-PhotoFrame-Device: <device_id>`
 
-## 8) 认证
+## 9) 认证
 
 设置环境变量 `PHOTOFRAME_TOKEN` 后，以下接口需要请求头：
 

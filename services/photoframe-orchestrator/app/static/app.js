@@ -6,6 +6,8 @@ function authHeaders() {
   return { 'X-PhotoFrame-Token': token };
 }
 
+let previewBlobUrl = null;
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -223,6 +225,40 @@ async function loadPublishHistory() {
   document.getElementById('publishHistoryHint').textContent = `${scope} · 最近 ${items.length} 条`;
 }
 
+async function loadCurrentPreview() {
+  const selectedDevice = document.getElementById('deviceId').value || '*';
+  const meta = document.getElementById('previewMeta');
+  const img = document.getElementById('currentPreview');
+
+  const headers = authHeaders();
+  const resp = await fetch(`/api/v1/preview/current.bmp?device_id=${encodeURIComponent(selectedDevice)}`, {
+    headers,
+  });
+
+  if (!resp.ok) {
+    const textBody = await resp.text();
+    let detail = textBody;
+    try {
+      const data = JSON.parse(textBody);
+      detail = data.detail || data.error || textBody;
+    } catch (_) {
+      // keep raw text
+    }
+    throw new Error(detail || `HTTP ${resp.status}`);
+  }
+
+  const blob = await resp.blob();
+  if (previewBlobUrl) {
+    URL.revokeObjectURL(previewBlobUrl);
+  }
+  previewBlobUrl = URL.createObjectURL(blob);
+  img.src = previewBlobUrl;
+
+  const source = resp.headers.get('X-PhotoFrame-Source') || 'daily';
+  const target = resp.headers.get('X-PhotoFrame-Device') || selectedDevice;
+  meta.textContent = `设备 ${target} · 当前来源 ${source} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
+}
+
 function renderConfigHistoryItem(item) {
   const configText = escapeHtml(JSON.stringify(item.config || {}, null, 2));
   return `
@@ -327,6 +363,7 @@ async function refreshAll() {
   await loadDevices();
   await loadOverrides();
   await loadPublishHistory();
+  await loadCurrentPreview();
   await loadDeviceConfigs();
   document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString();
 }
@@ -355,11 +392,21 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
   }
 });
 
+document.getElementById('previewBtn').addEventListener('click', async () => {
+  try {
+    await loadCurrentPreview();
+  } catch (err) {
+    document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
+  }
+});
+
 document.getElementById('deviceId').addEventListener('change', async () => {
   try {
     await loadPublishHistory();
+    await loadCurrentPreview();
   } catch (err) {
     document.getElementById('publishHistoryHint').textContent = `加载历史失败: ${err.message}`;
+    document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
   }
 });
 

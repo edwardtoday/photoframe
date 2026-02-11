@@ -77,7 +77,7 @@ bool ConfigStore::Load(AppConfig* cfg) {
   cfg->remote_config_version = std::max<int32_t>(0, GetI32("cfg_ver", 0));
 
   if (cfg->display_rotation != 0 && cfg->display_rotation != 2) {
-    cfg->display_rotation = 2;
+    cfg->display_rotation = 0;
   }
   return true;
 }

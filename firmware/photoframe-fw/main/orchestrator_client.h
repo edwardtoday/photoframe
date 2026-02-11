@@ -43,6 +43,7 @@ struct DeviceCheckinPayload {
 class OrchestratorClient {
  public:
   static std::string EnsureDeviceId(AppConfig* cfg);
+  static std::string EnsureDeviceToken(AppConfig* cfg);
   static FrameDirective FetchDirective(const AppConfig& cfg, time_t now_epoch);
   static DeviceConfigSyncResult SyncDeviceConfig(AppConfig* cfg, ConfigStore* store,
                                                  int64_t now_epoch);

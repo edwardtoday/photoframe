@@ -38,6 +38,17 @@ std::string UrlEncode(const std::string& input) {
   return out;
 }
 
+std::string GenerateDeviceToken() {
+  uint8_t random_bytes[16] = {0};
+  esp_fill_random(random_bytes, sizeof(random_bytes));
+
+  char buf[33] = {0};
+  for (size_t i = 0; i < sizeof(random_bytes); ++i) {
+    snprintf(buf + i * 2, sizeof(buf) - i * 2, "%02x", random_bytes[i]);
+  }
+  return std::string(buf);
+}
+
 bool ReadResponseBody(esp_http_client_handle_t client, std::string* body) {
   if (body == nullptr) {
     return false;
@@ -209,6 +220,18 @@ std::string OrchestratorClient::EnsureDeviceId(AppConfig* cfg) {
     cfg->device_id = "pf-unknown";
   }
   return cfg->device_id;
+}
+
+std::string OrchestratorClient::EnsureDeviceToken(AppConfig* cfg) {
+  if (cfg == nullptr) {
+    return "";
+  }
+  if (!cfg->orchestrator_token.empty()) {
+    return cfg->orchestrator_token;
+  }
+
+  cfg->orchestrator_token = GenerateDeviceToken();
+  return cfg->orchestrator_token;
 }
 
 FrameDirective OrchestratorClient::FetchDirective(const AppConfig& cfg, time_t now_epoch) {
@@ -393,6 +416,16 @@ DeviceConfigSyncResult OrchestratorClient::SyncDeviceConfig(AppConfig* cfg, Conf
     cJSON_Delete(root);
     (void)ReportConfigApplied(*cfg, target_version, false, result.error, now_epoch);
     return result;
+  }
+
+  const bool display_cfg_changed =
+      (previous.display_rotation != next.display_rotation) ||
+      (previous.color_process_mode != next.color_process_mode) ||
+      (previous.dither_mode != next.dither_mode) ||
+      (previous.six_color_tolerance != next.six_color_tolerance);
+  if (display_cfg_changed) {
+    // 远端仅调整显示参数时，强制下一轮重刷，避免 hash 相同导致方向/色彩配置不生效。
+    next.last_image_sha256.clear();
   }
 
   next.remote_config_version = target_version;

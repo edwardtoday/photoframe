@@ -19,7 +19,7 @@
    - 正常模式下连接家里 Wi-Fi。
    - 支持两种拉图来源：
      - 编排服务（推荐）：`/api/v1/device/next` 下发当前应显示图片 URL
-     - 传统模板：`image_url_template`（支持 `%DATE%` 与 `%DEVICE_ID%` 占位）
+     - 传统模板：`image_url_template`（支持 `%DATE%` 与 `%DEVICE_ID%` 占位；若未包含 `device_id` 参数会自动追加）
    - 若编排服务暂时不可达，会自动回退到 `image_url_template`，保证“只要联网就能取图”。
    - 自动判断图片是否已是 6 色：已是则直通显示，否则设备端转换。
    - 串口日志会输出处理耗时（`detect=xxms total=xxms`），便于评估设备端转换成本。
@@ -70,13 +70,13 @@
 - `orchestrator_enabled`（`1=启用编排` `0=关闭编排`）
 - `orchestrator_base_url`（默认 `http://192.168.58.113:18081`）
 - `device_id`（首次自动生成，可手工覆盖）
-- `orchestrator_token`（可选，作为 `X-PhotoFrame-Token`，用于设备接口身份校验）
+- `orchestrator_token`（设备首次自动生成并持久化，作为 `X-PhotoFrame-Token` 用于设备接口身份校验）
 - `photo_token`（可选，拉图时自动携带请求头 `X-Photo-Token`）
-- `image_url_template`（编排关闭时使用，支持 `%DATE%`、`%DEVICE_ID%`；不会自动追加 `date=`）
+- `image_url_template`（编排关闭时使用，支持 `%DATE%`、`%DEVICE_ID%`；不会自动追加 `date=`，会在缺少时自动追加 `device_id=`）
 - `interval_minutes`（默认 60）
 - `retry_base_minutes` / `retry_max_minutes`
 - `max_failure_before_long_sleep`
-- `display_rotation`（当前支持 `0` 或 `2`）
+- `display_rotation`（当前支持 `0` 或 `2`，默认 `0`）
 - `color_process_mode`（`0=自动判断` `1=总是转换` `2=认为输入已是6色`）
 - `dither_mode`（`0=关闭` `1=有序抖动`）
 - `six_color_tolerance`（0-64，判断“是否已是6色”的容差）
@@ -107,12 +107,12 @@ curl -s -X POST http://192.168.73.1/api/config \
   "device_id": "pf-livingroom",
   "orchestrator_token": "",
   "photo_token": "",
-  "image_url_template": "https://901.qingpei.me:40009/daily.bmp?device_id=%DEVICE_ID%",
+  "image_url_template": "https://901.qingpei.me:40009/daily.bmp",
   "interval_minutes": 60,
   "retry_base_minutes": 5,
   "retry_max_minutes": 240,
   "max_failure_before_long_sleep": 24,
-  "display_rotation": 2,
+  "display_rotation": 0,
   "color_process_mode": 0,
   "dither_mode": 1,
   "six_color_tolerance": 0,
@@ -126,6 +126,8 @@ JSON
 ## 常见现象排查
 
 - 串口出现 `fetch url: ...date=1970-01-01`：说明设备未完成校时且模板里显式用了 `%DATE%`。若使用公网 `daily.bmp`，建议模板不带 `%DATE%`。
+- `time synced` 日志会同时打印 `epoch/local/utc`，可直接确认设备当前时间是否正确。
+- Portal 保存时若 Wi-Fi 密码留空，不会覆盖现有密码。
 - 浏览器访问设备 STA IP 显示 `ERR_CONNECTION_REFUSED`：正常情况。仅在“按键唤醒后的 120 秒窗口”或 AP 配网模式下开放 Web 配置页。
 
 ## 失败重试行为

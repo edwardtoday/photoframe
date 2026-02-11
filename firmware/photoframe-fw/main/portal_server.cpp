@@ -39,7 +39,8 @@ constexpr const char* kPortalHtml = R"HTML(
     <button onclick="scanWifi()">扫描 Wi-Fi</button>
     <select id="ssidSelect" onchange="fillSsid()"><option value="">手动输入 SSID</option></select>
     <input id="ssid" placeholder="SSID" />
-    <input id="password" type="password" placeholder="Password" />
+    <input id="password" type="password" placeholder="Password（留空则保持不变）" />
+    <p class="muted">仅在需要修改 Wi-Fi 密码时填写；留空不会覆盖当前密码。</p>
   </div>
 
   <div class="card">
@@ -58,8 +59,8 @@ constexpr const char* kPortalHtml = R"HTML(
     <input id="retryMax" type="number" min="1" placeholder="失败重试上限（分钟）" />
     <input id="maxFail" type="number" min="1" placeholder="连续失败阈值" />
     <select id="rotation">
-      <option value="2">旋转 180（推荐）</option>
-      <option value="0">旋转 0</option>
+      <option value="0">旋转 0（推荐）</option>
+      <option value="2">旋转 180</option>
     </select>
     <select id="colorMode">
       <option value="0">色彩模式：自动判断（推荐）</option>
@@ -102,7 +103,7 @@ constexpr const char* kPortalHtml = R"HTML(
       document.getElementById('retryBase').value = cfg.retry_base_minutes ?? 5;
       document.getElementById('retryMax').value = cfg.retry_max_minutes ?? 240;
       document.getElementById('maxFail').value = cfg.max_failure_before_long_sleep ?? 24;
-      document.getElementById('rotation').value = String(cfg.display_rotation ?? 2);
+      document.getElementById('rotation').value = String(cfg.display_rotation ?? 0);
       document.getElementById('colorMode').value = String(cfg.color_process_mode ?? 0);
       document.getElementById('ditherMode').value = String(cfg.dither_mode ?? 1);
       document.getElementById('colorTol').value = cfg.six_color_tolerance ?? 0;
@@ -135,7 +136,6 @@ constexpr const char* kPortalHtml = R"HTML(
     async function saveAll() {
       const payload = {
         wifi_ssid: document.getElementById('ssid').value,
-        wifi_password: document.getElementById('password').value,
         image_url_template: document.getElementById('urlTemplate').value,
         orchestrator_enabled: Number(document.getElementById('orchEnabled').value),
         orchestrator_base_url: document.getElementById('orchBaseUrl').value,
@@ -152,6 +152,12 @@ constexpr const char* kPortalHtml = R"HTML(
         six_color_tolerance: Number(document.getElementById('colorTol').value),
         timezone: document.getElementById('timezone').value,
       };
+
+      const password = document.getElementById('password').value;
+      if (password !== '') {
+        payload.wifi_password = password;
+      }
+
       try {
         const ret = await api('/api/config', {method: 'POST', body: JSON.stringify(payload)});
         out(JSON.stringify(ret, null, 2));
@@ -311,16 +317,24 @@ esp_err_t PortalServer::HandlePostConfig(httpd_req_t* req) {
   }
 
   bool wifi_changed = false;
+  bool display_cfg_changed = false;
 
   const cJSON* ssid = cJSON_GetObjectItemCaseSensitive(root, "wifi_ssid");
   const cJSON* password = cJSON_GetObjectItemCaseSensitive(root, "wifi_password");
   if (cJSON_IsString(ssid) && ssid->valuestring != nullptr) {
-    self->config_->wifi_ssid = ssid->valuestring;
-    wifi_changed = true;
+    const std::string next_ssid = ssid->valuestring;
+    if (self->config_->wifi_ssid != next_ssid) {
+      self->config_->wifi_ssid = next_ssid;
+      wifi_changed = true;
+    }
   }
-  if (cJSON_IsString(password) && password->valuestring != nullptr) {
-    self->config_->wifi_password = password->valuestring;
-    wifi_changed = true;
+  if (cJSON_IsString(password) && password->valuestring != nullptr &&
+      password->valuestring[0] != '\0') {
+    const std::string next_password = password->valuestring;
+    if (self->config_->wifi_password != next_password) {
+      self->config_->wifi_password = next_password;
+      wifi_changed = true;
+    }
   }
 
   const cJSON* url = cJSON_GetObjectItemCaseSensitive(root, "image_url_template");
@@ -380,26 +394,47 @@ esp_err_t PortalServer::HandlePostConfig(httpd_req_t* req) {
 
   const cJSON* rotation = cJSON_GetObjectItemCaseSensitive(root, "display_rotation");
   if (cJSON_IsNumber(rotation)) {
-    self->config_->display_rotation = (rotation->valueint == 0) ? 0 : 2;
+    const int next_rotation = (rotation->valueint == 0) ? 0 : 2;
+    if (self->config_->display_rotation != next_rotation) {
+      self->config_->display_rotation = next_rotation;
+      display_cfg_changed = true;
+    }
   }
 
   const cJSON* color_mode = cJSON_GetObjectItemCaseSensitive(root, "color_process_mode");
   if (cJSON_IsNumber(color_mode)) {
-    self->config_->color_process_mode = std::clamp<int>(
+    const int next_mode = std::clamp<int>(
         color_mode->valueint, static_cast<int>(AppConfig::kColorProcessAuto),
         static_cast<int>(AppConfig::kColorProcessAssumeSixColor));
+    if (self->config_->color_process_mode != next_mode) {
+      self->config_->color_process_mode = next_mode;
+      display_cfg_changed = true;
+    }
   }
 
   const cJSON* dither_mode = cJSON_GetObjectItemCaseSensitive(root, "dither_mode");
   if (cJSON_IsNumber(dither_mode)) {
-    self->config_->dither_mode =
-        std::clamp<int>(dither_mode->valueint, static_cast<int>(AppConfig::kDitherNone),
-                        static_cast<int>(AppConfig::kDitherOrdered));
+    const int next_dither = std::clamp<int>(dither_mode->valueint,
+                                            static_cast<int>(AppConfig::kDitherNone),
+                                            static_cast<int>(AppConfig::kDitherOrdered));
+    if (self->config_->dither_mode != next_dither) {
+      self->config_->dither_mode = next_dither;
+      display_cfg_changed = true;
+    }
   }
 
   const cJSON* color_tol = cJSON_GetObjectItemCaseSensitive(root, "six_color_tolerance");
   if (cJSON_IsNumber(color_tol)) {
-    self->config_->six_color_tolerance = std::clamp(color_tol->valueint, 0, 64);
+    const int next_tol = std::clamp(color_tol->valueint, 0, 64);
+    if (self->config_->six_color_tolerance != next_tol) {
+      self->config_->six_color_tolerance = next_tol;
+      display_cfg_changed = true;
+    }
+  }
+
+  if (display_cfg_changed) {
+    // 显示参数变化时清空 hash，确保下一轮即使图片 URL/内容不变也会刷新面板。
+    self->config_->last_image_sha256.clear();
   }
 
   const bool ok = self->store_->Save(*self->config_);

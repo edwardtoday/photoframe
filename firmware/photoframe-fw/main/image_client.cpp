@@ -1,6 +1,7 @@
 #include "image_client.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 
@@ -33,6 +34,22 @@ std::string Sha256Hex(const uint8_t* data, size_t len) {
   }
   return std::string(out);
 }
+
+
+std::string UrlEncode(const std::string& input) {
+  std::string out;
+  out.reserve(input.size() * 2);
+  for (unsigned char c : input) {
+    if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+      out.push_back(static_cast<char>(c));
+      continue;
+    }
+    char buf[4] = {0};
+    snprintf(buf, sizeof(buf), "%%%02X", static_cast<unsigned>(c));
+    out.append(buf);
+  }
+  return out;
+}
 }  // namespace
 
 std::string ImageClient::BuildDatedUrl(const std::string& tpl, time_t now,
@@ -55,6 +72,22 @@ std::string ImageClient::BuildDatedUrl(const std::string& tpl, time_t now,
   while ((pos = url.find("%DEVICE_ID%", pos)) != std::string::npos) {
     url.replace(pos, strlen("%DEVICE_ID%"), safe_device_id);
     pos += safe_device_id.size();
+  }
+
+  if (!device_id.empty() && url.find("device_id=") == std::string::npos) {
+    const size_t fragment_pos = url.find('#');
+    std::string base = url;
+    std::string fragment;
+    if (fragment_pos != std::string::npos) {
+      base = url.substr(0, fragment_pos);
+      fragment = url.substr(fragment_pos);
+    }
+
+    const char connector = (base.find('?') == std::string::npos) ? '?' : '&';
+    base.push_back(connector);
+    base.append("device_id=");
+    base.append(UrlEncode(device_id));
+    url = base + fragment;
   }
 
   // 仅替换模板占位符，不再自动补 date= 参数，避免未校时阶段出现 1970-01-01。

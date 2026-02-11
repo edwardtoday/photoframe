@@ -331,7 +331,18 @@ bool SyncTime(const std::string& timezone) {
   for (int i = 0; i < 20; ++i) {
     time_t now = time(nullptr);
     if (now > 1735689600) {  // 2025-01-01 UTC
-      ESP_LOGI(kTag, "time synced, epoch=%lld", static_cast<long long>(now));
+      std::tm tm_local = {};
+      std::tm tm_utc = {};
+      localtime_r(&now, &tm_local);
+      gmtime_r(&now, &tm_utc);
+
+      char local_buf[64] = {};
+      char utc_buf[64] = {};
+      strftime(local_buf, sizeof(local_buf), "%Y-%m-%d %H:%M:%S %Z", &tm_local);
+      strftime(utc_buf, sizeof(utc_buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
+
+      ESP_LOGI(kTag, "time synced, epoch=%lld local=%s utc=%s", static_cast<long long>(now),
+               local_buf, utc_buf);
       return true;
     }
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -452,10 +463,20 @@ extern "C" void app_main(void) {
     return;
   }
 
+  bool identity_updated = false;
   if (config.device_id.empty()) {
     // 首次启动自动生成设备标识，便于 NAS 编排服务识别设备状态。
     const std::string generated_device_id = OrchestratorClient::EnsureDeviceId(&config);
     ESP_LOGI(kTag, "generated device_id=%s", generated_device_id.c_str());
+    identity_updated = true;
+  }
+  if (config.orchestrator_token.empty()) {
+    // 设备侧首次自动生成 token，后台审批后即可建立设备级鉴权。
+    const std::string generated_token = OrchestratorClient::EnsureDeviceToken(&config);
+    ESP_LOGI(kTag, "generated device token len=%u", static_cast<unsigned>(generated_token.size()));
+    identity_updated = true;
+  }
+  if (identity_updated) {
     store.Save(config);
   }
 

@@ -30,7 +30,7 @@ struct AppConfig {
   int retry_base_minutes = 5;
   int retry_max_minutes = 240;
   int max_failure_before_long_sleep = 24;
-  int display_rotation = 2;
+  int display_rotation = 0;
   int color_process_mode = kColorProcessAuto;
   int dither_mode = kDitherOrdered;
   int six_color_tolerance = 0;

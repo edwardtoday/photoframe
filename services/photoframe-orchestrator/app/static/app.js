@@ -10,6 +10,27 @@ let previewBlobUrl = null;
 let deviceMap = new Map();
 
 const PUBLIC_DAILY_EXAMPLE_URL = 'https://example.com/daily.bmp';
+const TOKEN_STORAGE_KEY = 'photoframe.console.token';
+
+function loadStoredConsoleToken() {
+  const input = document.getElementById('token');
+  if (!input) return;
+  const saved = window.localStorage.getItem(TOKEN_STORAGE_KEY) || '';
+  if (saved) {
+    input.value = saved;
+  }
+}
+
+function persistConsoleToken() {
+  const input = document.getElementById('token');
+  if (!input) return;
+  const token = input.value.trim();
+  if (token) {
+    window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  } else {
+    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+  }
+}
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -412,6 +433,70 @@ async function loadOverrides() {
   }
 }
 
+async function loadDeviceTokens() {
+  const data = await fetchJson('/api/v1/device-tokens?pending_only=1');
+  const body = document.getElementById('deviceTokensBody');
+  body.innerHTML = '';
+
+  const items = data.items || [];
+  if (items.length === 0) {
+    body.innerHTML = '<tr><td colspan="5" class="muted">暂无待审批设备</td></tr>';
+    document.getElementById('deviceTokensHint').textContent = '待审批: 0';
+    return;
+  }
+
+  for (const item of items) {
+    const tr = document.createElement('tr');
+    const stateText = item.approved ? '已信任' : '待审批';
+    const actions = item.approved
+      ? `<button data-device="${escapeHtml(item.device_id)}" class="deleteTokenBtn danger">移除</button>`
+      : `<button data-device="${escapeHtml(item.device_id)}" class="approveTokenBtn">信任</button> <button data-device="${escapeHtml(item.device_id)}" class="deleteTokenBtn danger">拒绝</button>`;
+
+    tr.innerHTML = `
+      <td><span class="tag">${escapeHtml(item.device_id)}</span></td>
+      <td>${fmtEpoch(item.first_seen_epoch)}</td>
+      <td>${fmtEpoch(item.last_seen_epoch)}</td>
+      <td>${escapeHtml(stateText)}</td>
+      <td>${actions}</td>
+    `;
+    body.appendChild(tr);
+  }
+
+  document.getElementById('deviceTokensHint').textContent = `待审批: ${items.length}`;
+
+  for (const btn of document.querySelectorAll('.approveTokenBtn')) {
+    btn.addEventListener('click', async () => {
+      const deviceId = btn.getAttribute('data-device');
+      if (!deviceId) return;
+      try {
+        await fetchJson(`/api/v1/device-tokens/${encodeURIComponent(deviceId)}/approve`, {
+          method: 'POST',
+        });
+        await refreshAll();
+      } catch (err) {
+        alert(`审批失败: ${err.message}`);
+      }
+    });
+  }
+
+  for (const btn of document.querySelectorAll('.deleteTokenBtn')) {
+    btn.addEventListener('click', async () => {
+      const deviceId = btn.getAttribute('data-device');
+      if (!deviceId) return;
+      if (!confirm(`确认移除设备 ${deviceId} 的 token 记录？`)) return;
+      try {
+        await fetchJson(`/api/v1/device-tokens/${encodeURIComponent(deviceId)}`, {
+          method: 'DELETE',
+        });
+        await refreshAll();
+      } catch (err) {
+        alert(`移除失败: ${err.message}`);
+      }
+    });
+  }
+}
+
+
 function renderPublishHistoryItem(item) {
   const sourceTag = item.source === 'override'
     ? '<span class="tag active">override</span>'
@@ -590,6 +675,7 @@ async function refreshAll() {
   await loadHealth();
   await loadDevices();
   await loadOverrides();
+  await loadDeviceTokens();
   await loadPublishHistory();
   await loadCurrentPreview();
   await loadDeviceConfigs();
@@ -656,6 +742,12 @@ document.getElementById('fillCurrentDailyBtn').addEventListener('click', () => {
 document.getElementById('fillPublicDailyBtn').addEventListener('click', () => {
   document.getElementById('cfgImageUrlTemplate').value = PUBLIC_DAILY_EXAMPLE_URL;
 });
+
+document.getElementById('token').addEventListener('input', () => {
+  persistConsoleToken();
+});
+
+loadStoredConsoleToken();
 
 setInterval(() => {
   refreshAll().catch(() => {});

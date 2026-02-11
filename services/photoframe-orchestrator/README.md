@@ -16,7 +16,7 @@
 - 图片下发历史：`GET /api/v1/publish-history`
 - 管理页预览当前下发图：`GET /api/v1/preview/current.bmp`
 - 公网日图代理：`GET /public/daily.bmp`（token 保护，且优先返回当前生效插播）
-- Web 管理页：`GET /`（含图片发布历史 + 设备配置发布历史 + 当前下发预览）
+- Web 管理页：`GET /`（含图片发布历史 + 设备配置发布历史 + 当前下发预览 + 设备 token 审批）
 - 设备配置“填空式表单”：不再手写 JSON，灰字提示来自设备最近上报配置
 - 设备配置页提供 daily.bmp URL 快捷填入（当前服务 / 公网示例）
 - 创建插播后给出“预计生效时间/可能过期”可读提示，便于和设备唤醒周期对齐
@@ -62,14 +62,17 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 
 访问：`http://<NAS_IP>:18081/`
 
+管理页里的 `PHOTOFRAME_TOKEN` 输入框会保存在浏览器本地（localStorage），避免每次刷新重复输入。
+
 ## 环境变量
 
 - `DAILY_IMAGE_URL_TEMPLATE`：无插播时的每日图片模板，支持 `%DATE%`
 - `PUBLIC_BASE_URL`：返回给设备的资源 URL 前缀
 - `DEFAULT_POLL_SECONDS`：默认轮询周期（秒）
-- `PHOTOFRAME_TOKEN`：管理接口 token（Web 管理页、插播编辑等后台接口）
+- `PHOTOFRAME_TOKEN`：管理接口 token（Web 管理页、插播编辑、设备 token 审批等后台接口）
 - `DEVICE_TOKEN_MAP_JSON`：设备 token 映射（JSON 对象，例：`{"pf-d9369c80":"devtoken-xxx"}`）
 - `DEVICE_TOKEN_MAP`：设备 token 映射（CSV 兼容写法，例：`pf-d9369c80=devtoken-xxx,pf-guest=devtoken-yyy`）
+- `DEVICE_TOKEN_MAP_JSON` / `DEVICE_TOKEN_MAP` 可留空：此时设备首次携带 token 请求会进入待审批，需在管理页点击“信任”后放行
 - `PUBLIC_DAILY_BMP_TOKEN`：公网日图接口口令（`/public/daily.bmp`，为空则禁用）
 - `DAILY_FETCH_TIMEOUT_SECONDS`：公网日图代理拉取上游超时（秒，默认 10）
 - `TZ`：服务端时区
@@ -100,7 +103,7 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 - `GET /api/v1/device/config`
 - `POST /api/v1/device/config/applied`
 
-其中 `/api/v1/device/*` 通过 `X-PhotoFrame-Token` 做设备身份校验（按 `DEVICE_TOKEN_MAP_JSON` / `DEVICE_TOKEN_MAP`）。
+其中 `/api/v1/device/*` 通过 `X-PhotoFrame-Token` 做设备身份校验（优先按 `DEVICE_TOKEN_MAP_JSON` / `DEVICE_TOKEN_MAP`，否则走“首次请求待审批”模式）。
 
 若你需要公网侧直接走 `/api/v1/device/next` 指令流，还需额外放行 `/api/v1/assets/*`。
 

@@ -38,7 +38,7 @@ except Exception:
   DAILY_FETCH_TIMEOUT_SECONDS = 10.0
 TZ_NAME = os.getenv("TZ", "Asia/Shanghai")
 LOCAL_TZ = ZoneInfo(TZ_NAME)
-APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.4")
+APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.5")
 DEVICE_CONFIG_MAX_HISTORY = 200
 DEVICE_CONFIG_ALLOWED_KEYS = {
     "orchestrator_enabled",
@@ -92,6 +92,20 @@ def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
   _ensure_table_column(conn, "devices", "battery_percent", "INTEGER NOT NULL DEFAULT -1")
   _ensure_table_column(conn, "devices", "charging", "INTEGER NOT NULL DEFAULT -1")
   _ensure_table_column(conn, "devices", "vbus_good", "INTEGER NOT NULL DEFAULT -1")
+
+  conn.execute(
+      """
+      CREATE TABLE IF NOT EXISTS device_tokens (
+        device_id TEXT PRIMARY KEY,
+        token_sha256 TEXT NOT NULL,
+        approved INTEGER NOT NULL DEFAULT 0,
+        first_seen_epoch INTEGER NOT NULL DEFAULT 0,
+        last_seen_epoch INTEGER NOT NULL DEFAULT 0,
+        approved_epoch INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
+      )
+      """
+  )
 
 
 def _init_db() -> None:
@@ -237,6 +251,91 @@ def _secure_equal(provided: str | None, expected: str | None) -> bool:
   return hmac.compare_digest(provided, expected)
 
 
+def _token_sha256(token: str) -> str:
+  return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _register_or_check_device_token(device_id: str, token: str) -> str:
+  normalized = _normalize_device_id(device_id)
+  if normalized == "*":
+    return "invalid"
+
+  token_sha = _token_sha256(token)
+  now_ts = _now_epoch()
+  conn = _ensure_db()
+
+  with DB_LOCK:
+    row = conn.execute(
+        "SELECT token_sha256, approved FROM device_tokens WHERE device_id = ?",
+        (normalized,),
+    ).fetchone()
+
+    if row is None:
+      conn.execute(
+          """
+          INSERT INTO device_tokens (
+            device_id, token_sha256, approved,
+            first_seen_epoch, last_seen_epoch, approved_epoch, updated_at
+          ) VALUES (?, ?, 0, ?, ?, 0, ?)
+          """,
+          (normalized, token_sha, now_ts, now_ts, now_ts),
+      )
+      conn.commit()
+      return "pending"
+
+    approved = int(row["approved"]) == 1
+    stored_sha = str(row["token_sha256"])
+
+    if approved:
+      if _secure_equal(token_sha, stored_sha):
+        conn.execute(
+            "UPDATE device_tokens SET last_seen_epoch = ?, updated_at = ? WHERE device_id = ?",
+            (now_ts, now_ts, normalized),
+        )
+        conn.commit()
+        return "ok"
+      return "invalid"
+
+    # 未审批状态允许覆盖为最新 token，方便设备侧重置后重新发起配对。
+    conn.execute(
+        """
+        UPDATE device_tokens
+        SET token_sha256 = ?, last_seen_epoch = ?, updated_at = ?
+        WHERE device_id = ?
+        """,
+        (token_sha, now_ts, now_ts, normalized),
+    )
+    conn.commit()
+    return "pending"
+
+
+def _list_device_tokens(only_pending: bool = False) -> list[dict[str, Any]]:
+  conn = _ensure_db()
+  where = "WHERE approved = 0" if only_pending else ""
+  rows = conn.execute(
+      f"""
+      SELECT device_id, approved, first_seen_epoch, last_seen_epoch, approved_epoch, updated_at
+      FROM device_tokens
+      {where}
+      ORDER BY approved ASC, last_seen_epoch DESC, device_id ASC
+      """
+  ).fetchall()
+
+  items: list[dict[str, Any]] = []
+  for row in rows:
+    items.append(
+        {
+            "device_id": str(row["device_id"]),
+            "approved": bool(row["approved"]),
+            "first_seen_epoch": int(row["first_seen_epoch"]),
+            "last_seen_epoch": int(row["last_seen_epoch"]),
+            "approved_epoch": int(row["approved_epoch"]),
+            "updated_at": int(row["updated_at"]),
+        }
+    )
+  return items
+
+
 def _require_token(header_token: str | None) -> None:
   token = (TOKEN or "").strip()
   if not token:
@@ -265,7 +364,20 @@ def _require_device_token(device_id: str, header_token: str | None) -> None:
       raise HTTPException(status_code=401, detail="invalid device token")
     return
 
-  # 向后兼容：未配置 device token map 时，沿用原有全局 token。
+  if provided:
+    global_token = (TOKEN or "").strip()
+    if global_token and _secure_equal(provided, global_token):
+      _require_token(header_token)
+      return
+
+    status = _register_or_check_device_token(device_id, provided)
+    if status == "ok":
+      return
+    if status == "pending":
+      raise HTTPException(status_code=401, detail="device token pending approval")
+    raise HTTPException(status_code=401, detail="invalid device token")
+
+  # 向后兼容：未配置设备 token 且请求未携带 token 时，沿用全局 token。
   _require_token(header_token)
 
 
@@ -957,6 +1069,76 @@ def device_config_publish(
       "created_epoch": now_ts,
       "config": config,
   }
+
+
+@app.get("/api/v1/device-tokens")
+def device_tokens(
+    pending_only: int = Query(default=1),
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+
+  now_ts = _now_epoch()
+  only_pending = bool(pending_only)
+  items = _list_device_tokens(only_pending=only_pending)
+  return {"now_epoch": now_ts, "count": len(items), "pending_only": only_pending, "items": items}
+
+
+@app.post("/api/v1/device-tokens/{device_id}/approve")
+def approve_device_token(
+    device_id: str,
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+
+  target = _normalize_device_id(device_id)
+  if target == "*":
+    raise HTTPException(status_code=400, detail="device_id invalid")
+
+  now_ts = _now_epoch()
+  conn = _ensure_db()
+  with DB_LOCK:
+    row = conn.execute(
+        "SELECT device_id FROM device_tokens WHERE device_id = ?",
+        (target,),
+    ).fetchone()
+    if row is None:
+      raise HTTPException(status_code=404, detail="device token request not found")
+
+    conn.execute(
+        """
+        UPDATE device_tokens
+        SET approved = 1,
+            approved_epoch = CASE WHEN approved_epoch > 0 THEN approved_epoch ELSE ? END,
+            updated_at = ?
+        WHERE device_id = ?
+        """,
+        (now_ts, now_ts, target),
+    )
+    conn.commit()
+
+  return {"ok": True, "device_id": target, "approved_epoch": now_ts}
+
+
+@app.delete("/api/v1/device-tokens/{device_id}")
+def delete_device_token(
+    device_id: str,
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+
+  target = _normalize_device_id(device_id)
+  if target == "*":
+    raise HTTPException(status_code=400, detail="device_id invalid")
+
+  conn = _ensure_db()
+  with DB_LOCK:
+    cur = conn.execute("DELETE FROM device_tokens WHERE device_id = ?", (target,))
+    conn.commit()
+
+  if cur.rowcount == 0:
+    raise HTTPException(status_code=404, detail="device token not found")
+  return {"ok": True, "device_id": target}
 
 
 @app.get("/api/v1/devices")

@@ -390,6 +390,24 @@
         </div>
 
         <div class="card">
+          <h3>设备配对审批</h3>
+          <p class="help">设备首次携带新 token 访问时会出现在这里。点击“信任”后即可正常调用设备接口。</p>
+          <table>
+            <thead>
+              <tr>
+                <th>device_id</th>
+                <th>首次发现</th>
+                <th>最近请求</th>
+                <th>状态</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="deviceTokensBody"></tbody>
+          </table>
+          <p id="deviceTokensHint" class="muted"></p>
+        </div>
+
+        <div class="card">
           <h3>创建插播</h3>
           <form id="overrideForm">
             <div class="row">
@@ -418,7 +436,7 @@
 
         <div class="card">
           <h3>连接与刷新</h3>
-          <p class="help">如果启用了 PHOTOFRAME_TOKEN，请在这里填写后刷新数据。</p>
+          <p class="help">如果启用了 PHOTOFRAME_TOKEN，请在这里填写后刷新数据。浏览器会在本地记住你输入的 token。</p>
           <div class="row">
             <label>Token
               <input id="token" type="password" placeholder="可选：X-PhotoFrame-Token" />
@@ -497,8 +515,8 @@
               <label>显示旋转
                 <select id="cfgDisplayRotation">
                   <option value="">保持不变</option>
-                  <option value="2">旋转 180（推荐）</option>
-                  <option value="0">旋转 0</option>
+                  <option value="0">旋转 0（推荐）</option>
+                  <option value="2">旋转 180</option>
                 </select>
                 <span id="cfgHintDisplayRotation" class="muted">当前: -</span>
               </label>

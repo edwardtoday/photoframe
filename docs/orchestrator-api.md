@@ -10,7 +10,10 @@
 
 - 管理接口使用 `PHOTOFRAME_TOKEN`（请求头 `X-PhotoFrame-Token`）。
 - 设备接口（`/api/v1/device/*`）优先使用设备 token 映射（`DEVICE_TOKEN_MAP_JSON` / `DEVICE_TOKEN_MAP`）校验 `X-PhotoFrame-Token`，并绑定 `device_id`。
-- 若未配置设备 token 映射，设备接口会回退到 `PHOTOFRAME_TOKEN`（兼容旧配置）。
+- 若未配置设备 token 映射：
+  - 设备首次携带新 token 请求时会进入“待审批”；
+  - 管理端通过 `POST /api/v1/device-tokens/{device_id}/approve` 信任后放行；
+  - 兼容旧配置：当设备仍使用 `PHOTOFRAME_TOKEN` 时可继续访问。
 
 ## 1) 设备拉取当前任务
 
@@ -78,7 +81,7 @@
   "vbus_good": 1,
   "reported_config": {
     "interval_minutes": 60,
-    "image_url_template": "https://901.qingpei.me:40009/daily.bmp?device_id=%DEVICE_ID%",
+    "image_url_template": "https://901.qingpei.me:40009/daily.bmp",
     "color_process_mode": 0
   }
 }
@@ -100,7 +103,7 @@
   "note": "公网 token 切换",
   "config": {
     "interval_minutes": 60,
-    "image_url_template": "https://901.qingpei.me:40009/daily.bmp?device_id=%DEVICE_ID%",
+    "image_url_template": "https://901.qingpei.me:40009/daily.bmp",
     "photo_token": "..."
   }
 }
@@ -150,7 +153,7 @@ Response:
   "config_version": 18,
   "config": {
     "interval_minutes": 60,
-    "image_url_template": "https://901.qingpei.me:40009/daily.bmp?device_id=%DEVICE_ID%"
+    "image_url_template": "https://901.qingpei.me:40009/daily.bmp"
   },
   "note": "公网 token 切换"
 }
@@ -226,6 +229,9 @@ Query:
 - `GET /api/v1/devices`：设备状态（含 `next_wakeup_epoch` 与配置同步状态）
 - `GET /api/v1/overrides`：插播列表（含状态 active/upcoming/expired）
 - `DELETE /api/v1/overrides/{id}`：取消插播
+- `GET /api/v1/device-tokens?pending_only=1`：查看待审批设备 token 列表
+- `POST /api/v1/device-tokens/{device_id}/approve`：审批并信任设备 token
+- `DELETE /api/v1/device-tokens/{device_id}`：移除设备 token 记录（重新配对）
 
 `/api/v1/devices` 额外字段：
 
@@ -324,18 +330,22 @@ Header：
 
 ## 9) 认证
 
-设置环境变量 `PHOTOFRAME_TOKEN` 后，以下接口需要请求头：
+管理端（编辑页、插播、配置发布、审批）使用：
 
-- `X-PhotoFrame-Token: <token>`
+- `X-PhotoFrame-Token: <PHOTOFRAME_TOKEN>`
 
-涉及：
+设备端（`/api/v1/device/*`）使用：
 
-- `POST /api/v1/device/checkin`
-- `GET /api/v1/device/next`
+- `X-PhotoFrame-Token: <device_token>`
+- 当配置了 `DEVICE_TOKEN_MAP_JSON` / `DEVICE_TOKEN_MAP` 时，按映射强校验。
+- 当未配置映射时，设备首次会进入 pending，需管理端审批后放行。
+
+常见管理接口：
+
 - `POST /api/v1/overrides/upload`
 - `DELETE /api/v1/overrides/{id}`
 - `GET /api/v1/publish-history`
-- `GET /api/v1/device/config`
-- `POST /api/v1/device/config/applied`
 - `POST /api/v1/device-config`
 - `GET /api/v1/device-configs`
+- `GET /api/v1/device-tokens`
+- `POST /api/v1/device-tokens/{device_id}/approve`

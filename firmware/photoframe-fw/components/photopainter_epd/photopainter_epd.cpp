@@ -193,7 +193,10 @@ bool PhotoPainterEpd::Init() {
   if (!EnsureBuffers() || !InitBus()) {
     return false;
   }
-  ApplyPanelInitSequence();
+  if (!ApplyPanelInitSequence()) {
+    ESP_LOGE(kTag, "panel init sequence failed");
+    return false;
+  }
   initialized_ = true;
   ESP_LOGI(kTag, "epd init done");
   return true;
@@ -208,10 +211,24 @@ void PhotoPainterEpd::Reset() {
   vTaskDelay(pdMS_TO_TICKS(50));
 }
 
-void PhotoPainterEpd::WaitBusy() {
+bool PhotoPainterEpd::WaitBusy(const char* stage, int timeout_ms) {
+  const int64_t start_us = esp_timer_get_time();
+  int waited_ms = 0;
   while (gpio_get_level(static_cast<gpio_num_t>(pin_busy_)) == 0) {
+    if (waited_ms >= timeout_ms) {
+      ESP_LOGE(kTag, "busy timeout at stage=%s waited=%dms", stage, waited_ms);
+      return false;
+    }
     vTaskDelay(pdMS_TO_TICKS(10));
+    waited_ms += 10;
   }
+
+  const int64_t cost_ms = (esp_timer_get_time() - start_us) / 1000;
+  if (cost_ms >= 1000) {
+    ESP_LOGI(kTag, "busy cleared stage=%s cost=%lldms", stage,
+             static_cast<long long>(cost_ms));
+  }
+  return true;
 }
 
 void PhotoPainterEpd::WriteByte(uint8_t value) {
@@ -253,9 +270,11 @@ void PhotoPainterEpd::WriteBuffer(const uint8_t* data, size_t len) {
   gpio_set_level(static_cast<gpio_num_t>(pin_cs_), 1);
 }
 
-void PhotoPainterEpd::TurnOnDisplay() {
+bool PhotoPainterEpd::TurnOnDisplay() {
   WriteCommand(0x04);
-  WaitBusy();
+  if (!WaitBusy("turn_on/0x04")) {
+    return false;
+  }
 
   WriteCommand(0x06);
   WriteData(0x6F);
@@ -265,16 +284,23 @@ void PhotoPainterEpd::TurnOnDisplay() {
 
   WriteCommand(0x12);
   WriteData(0x00);
-  WaitBusy();
+  if (!WaitBusy("turn_on/0x12")) {
+    return false;
+  }
 
   WriteCommand(0x02);
   WriteData(0x00);
-  WaitBusy();
+  if (!WaitBusy("turn_on/0x02")) {
+    return false;
+  }
+  return true;
 }
 
-void PhotoPainterEpd::ApplyPanelInitSequence() {
+bool PhotoPainterEpd::ApplyPanelInitSequence() {
   Reset();
-  WaitBusy();
+  if (!WaitBusy("panel_init/reset")) {
+    return false;
+  }
   vTaskDelay(pdMS_TO_TICKS(50));
 
   WriteCommand(0xAA);
@@ -339,10 +365,16 @@ void PhotoPainterEpd::ApplyPanelInitSequence() {
   WriteData(0x2F);
 
   WriteCommand(0x04);
-  WaitBusy();
+  if (!WaitBusy("panel_init/0x04")) {
+    return false;
+  }
 
   ClearDisplayBuffer(kWhite);
-  FlushDisplay();
+  RotateBuffer(0);
+  if (!FlushDisplay()) {
+    return false;
+  }
+  return true;
 }
 
 void PhotoPainterEpd::SetPackedPixel(uint8_t* buf, int width, int x, int y, uint8_t px) {
@@ -414,10 +446,10 @@ void PhotoPainterEpd::ClearDisplayBuffer(EpdColor color) {
   memset(display_buf_, packed, display_len_);
 }
 
-void PhotoPainterEpd::FlushDisplay() {
+bool PhotoPainterEpd::FlushDisplay() {
   WriteCommand(0x10);
   WriteBuffer(tx_buf_, static_cast<size_t>(display_len_));
-  TurnOnDisplay();
+  return TurnOnDisplay();
 }
 
 void PhotoPainterEpd::Clear(EpdColor color) {
@@ -426,7 +458,9 @@ void PhotoPainterEpd::Clear(EpdColor color) {
   }
   ClearDisplayBuffer(color);
   RotateBuffer(0);
-  FlushDisplay();
+  if (!FlushDisplay()) {
+    ESP_LOGE(kTag, "clear display flush failed");
+  }
 }
 
 bool PhotoPainterEpd::DrawBmp24(const uint8_t* bmp, size_t len, const RenderOptions& options) {
@@ -558,6 +592,9 @@ bool PhotoPainterEpd::DrawBmp24(const uint8_t* bmp, size_t len, const RenderOpti
            static_cast<unsigned>(kPanelWidth * kPanelHeight));
 
   RotateBuffer(options.panel_rotation);
-  FlushDisplay();
+  if (!FlushDisplay()) {
+    ESP_LOGE(kTag, "flush display failed");
+    return false;
+  }
   return true;
 }

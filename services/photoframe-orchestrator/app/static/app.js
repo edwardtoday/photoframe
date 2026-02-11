@@ -76,6 +76,37 @@ function optionLabel(value, mapping) {
   return mapping[key] || key;
 }
 
+function batteryStatusText(device) {
+  const percent = Number(device?.battery_percent);
+  const mv = Number(device?.battery_mv);
+
+  if (Number.isFinite(percent) && percent >= 0) {
+    if (Number.isFinite(mv) && mv > 0) {
+      return `${percent}% / ${mv}mV`;
+    }
+    return `${percent}%`;
+  }
+
+  if (Number.isFinite(mv) && mv > 0) {
+    return `${mv}mV`;
+  }
+
+  return '-';
+}
+
+function powerSourceText(device) {
+  const vbus = Number(device?.vbus_good);
+  const charging = Number(device?.charging);
+
+  const vbusText = vbus === 1 ? 'USB' : vbus === 0 ? 'Battery' : '-';
+  const chargeText = charging === 1 ? '充电中' : charging === 0 ? '未充电' : '-';
+
+  if (vbusText === '-' && chargeText === '-') {
+    return '-';
+  }
+  return `${vbusText} / ${chargeText}`;
+}
+
 function setText(id, text) {
   const el = document.getElementById(id);
   if (el) {
@@ -320,6 +351,8 @@ async function loadDevices() {
       <td>${fmtDuration(d.poll_interval_seconds)}</td>
       <td>${escapeHtml(d.failure_count)}</td>
       <td>${escapeHtml(d.image_source || 'daily')}</td>
+      <td>${escapeHtml(batteryStatusText(d))}</td>
+      <td>${escapeHtml(powerSourceText(d))}</td>
       <td>${escapeHtml(cfgVersion)}</td>
       <td>${cfgQuery}</td>
       <td>${renderConfigApplyStatus(d)}</td>

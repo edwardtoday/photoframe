@@ -5,10 +5,12 @@ idf_component_register(
     "portal_server.cpp"
     "image_client.cpp"
     "orchestrator_client.cpp"
+    "power_manager.cpp"
   INCLUDE_DIRS "."
   REQUIRES
     nvs_flash
     esp_wifi
+    esp_driver_i2c
     esp_http_client
     esp_http_server
     esp_netif

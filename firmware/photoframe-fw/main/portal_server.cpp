@@ -281,6 +281,10 @@ esp_err_t PortalServer::SendConfigJson(httpd_req_t* req) {
   cJSON_AddBoolToObject(root, "image_changed", status_->image_changed);
   cJSON_AddStringToObject(root, "image_source", status_->image_source.c_str());
   cJSON_AddNumberToObject(root, "next_wakeup_epoch", static_cast<double>(status_->next_wakeup_epoch));
+  cJSON_AddNumberToObject(root, "battery_mv", status_->battery_mv);
+  cJSON_AddNumberToObject(root, "battery_percent", status_->battery_percent);
+  cJSON_AddNumberToObject(root, "charging", status_->charging);
+  cJSON_AddNumberToObject(root, "vbus_good", status_->vbus_good);
   cJSON_AddStringToObject(root, "last_error", status_->last_error.c_str());
 
   char* str = cJSON_PrintUnformatted(root);

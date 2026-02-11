@@ -59,6 +59,11 @@
    - `POST /api/config`：更新 Wi-Fi、编排服务地址、轮询间隔、重试参数、时区、旋转参数。
    - `GET /api/wifi/scan`：扫描 AP 列表。
 
+10. **电源状态采集与上报（每轮唤醒）**
+   - 固件会读取 AXP2101 的电源状态：`battery_mv`、`battery_percent`、`charging`、`vbus_good`。
+   - 串口每轮会打印 `power:` 与 `cycle ok/fail:` 日志，便于确认电池/充电状态。
+   - 若启用 orchestrator，以上状态会随 `checkin` 一起上报，控制台可看到设备电量与供电状态。
+
 ## 配置项（NVS 持久化）
 
 - `wifi_ssid` / `wifi_password`
@@ -156,5 +161,21 @@ scripts/flash-host.py \
 ## 串口监控
 
 ```bash
+# 默认自动重连（设备深睡或串口重枚举后会继续监听）
 scripts/monitor-host.sh /dev/cu.usbmodemXXXX 115200
+
+# 单次模式（行为与旧版一致）
+scripts/monitor-host.sh --once /dev/cu.usbmodemXXXX 115200
 ```
+
+
+## USB / 供电说明
+
+- 连接 USB 后，设备会被主机枚举为串口（可用于烧录与日志）。
+- 连接 USB 时，`vbus_good=1` 表示检测到外部供电；通常会进入充电路径（`charging=1` 时为充电中）。
+- 目前已验证并上报的指标：
+  - `battery_mv`：电池电压（mV）
+  - `battery_percent`：电池百分比（若 PMIC 能提供）
+  - `charging`：是否充电中（1/0）
+  - `vbus_good`：USB/外部供电是否存在（1/0）
+- “充电电流”暂未在固件中开放为用户态指标（后续可按需求再加寄存器读数并展示）。

@@ -10,6 +10,7 @@
 #include "orchestrator_client.h"
 #include "photopainter_epd.h"
 #include "portal_server.h"
+#include "power_manager.h"
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -379,6 +380,33 @@ std::string StaIpString() {
   return ip_buf;
 }
 
+void RefreshPowerStatus(RuntimeStatus* status) {
+  if (status == nullptr) {
+    return;
+  }
+
+  if (!PowerManager::Init()) {
+    ESP_LOGW(kTag, "pmic init failed, skip battery status");
+    return;
+  }
+
+  PowerStatus power = {};
+  if (!PowerManager::ReadStatus(&power)) {
+    ESP_LOGW(kTag, "pmic read failed, skip battery status");
+    return;
+  }
+
+  status->battery_mv = power.battery_mv;
+  status->battery_percent = power.battery_percent;
+  status->charging = power.charging ? 1 : 0;
+  status->vbus_good = power.vbus_good ? 1 : 0;
+
+  ESP_LOGI(kTag,
+           "power: vbus=%d charging=%d batt=%dmV percent=%d state=%s",
+           status->vbus_good, status->charging, status->battery_mv, status->battery_percent,
+           PowerManager::ChargerStateName(power.charger_state));
+}
+
 void RunPortalWindowOnSta(AppConfig* config, RuntimeStatus* status, ConfigStore* store) {
   PortalServer portal;
   if (!portal.Start(config, status, store, false)) {
@@ -432,6 +460,7 @@ extern "C" void app_main(void) {
   }
 
   ConfigureButtonGpio();
+  RefreshPowerStatus(&status);
 
   const bool long_press_portal = ShouldEnterPortalByLongPress();
   if (long_press_portal) {
@@ -536,26 +565,47 @@ extern "C" void app_main(void) {
   ImageFetchResult fetch = ImageClient::FetchBmp(url, config.last_image_sha256, config.photo_token);
   status.last_http_status = fetch.status_code;
   status.image_changed = fetch.image_changed;
-
-  PhotoPainterEpd epd;
-  PhotoPainterEpd::RenderOptions render_opts;
-  render_opts.panel_rotation = static_cast<uint8_t>(config.display_rotation);
-  render_opts.color_process_mode = static_cast<uint8_t>(config.color_process_mode);
-  render_opts.dithering_mode = static_cast<uint8_t>(config.dither_mode);
-  render_opts.six_color_tolerance = static_cast<uint8_t>(config.six_color_tolerance);
-  if (!epd.Init()) {
-    status.last_error = "epd init failed";
-  } else if (fetch.ok && fetch.data != nullptr) {
-    if (status.force_refresh || fetch.image_changed) {
-      if (!epd.DrawBmp24(fetch.data, fetch.data_len, render_opts)) {
-        status.last_error = "bmp decode/render failed";
-      }
-    } else {
-      ESP_LOGI(kTag, "image hash unchanged, skip e-paper refresh");
-    }
+  if (fetch.ok) {
+    ESP_LOGI(kTag,
+             "fetch ok: changed=%d force_refresh=%d prev_sha=%s new_sha=%s",
+             fetch.image_changed ? 1 : 0, status.force_refresh ? 1 : 0,
+             config.last_image_sha256.empty() ? "-" : config.last_image_sha256.c_str(),
+             fetch.sha256.c_str());
   }
 
-  if (fetch.ok) {
+  const bool should_refresh_epd = status.force_refresh || fetch.image_changed;
+  bool render_ok = true;
+
+  if (fetch.ok && fetch.data != nullptr && should_refresh_epd) {
+    PhotoPainterEpd epd;
+    PhotoPainterEpd::RenderOptions render_opts;
+    render_opts.panel_rotation = static_cast<uint8_t>(config.display_rotation);
+    render_opts.color_process_mode = static_cast<uint8_t>(config.color_process_mode);
+    render_opts.dithering_mode = static_cast<uint8_t>(config.dither_mode);
+    render_opts.six_color_tolerance = static_cast<uint8_t>(config.six_color_tolerance);
+
+    ESP_LOGI(kTag,
+             "start e-paper refresh: force=%d changed=%d bytes=%u",
+             status.force_refresh ? 1 : 0, fetch.image_changed ? 1 : 0,
+             static_cast<unsigned>(fetch.data_len));
+    if (!epd.Init()) {
+      render_ok = false;
+      status.last_error = "epd init failed";
+      ESP_LOGE(kTag, "%s", status.last_error.c_str());
+    } else if (!epd.DrawBmp24(fetch.data, fetch.data_len, render_opts)) {
+      render_ok = false;
+      status.last_error = "bmp decode/render failed";
+      ESP_LOGE(kTag, "%s", status.last_error.c_str());
+    } else {
+      ESP_LOGI(kTag, "e-paper refresh done");
+    }
+  } else if (fetch.ok && fetch.data != nullptr) {
+    ESP_LOGI(kTag, "image hash unchanged, skip e-paper refresh");
+  }
+
+  const bool cycle_ok = fetch.ok && render_ok;
+
+  if (cycle_ok) {
     config.failure_count = 0;
     if (fetch.image_changed) {
       config.last_image_sha256 = fetch.sha256;
@@ -576,10 +626,20 @@ extern "C" void app_main(void) {
       payload.sleep_seconds = success_sleep_seconds;
       payload.now_epoch = now_epoch;
       payload.next_wakeup_epoch = status.next_wakeup_epoch;
+      payload.battery_mv = status.battery_mv;
+      payload.battery_percent = status.battery_percent;
+      payload.charging = status.charging;
+      payload.vbus_good = status.vbus_good;
       payload.image_source = status.image_source;
       payload.last_error = status.last_error;
       OrchestratorClient::ReportCheckin(config, payload);
     }
+
+    ESP_LOGI(kTag,
+             "cycle ok: source=%s http=%d changed=%d sleep=%llus batt=%d%%/%dmV charging=%d",
+             status.image_source.c_str(), status.last_http_status, status.image_changed ? 1 : 0,
+             static_cast<unsigned long long>(success_sleep_seconds), status.battery_percent,
+             status.battery_mv, status.charging);
 
     ImageClient::FreeResultBuffer(&fetch);
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_stop());
@@ -588,8 +648,14 @@ extern "C" void app_main(void) {
     return;
   }
 
-  status.last_error = fetch.error;
-  ESP_LOGW(kTag, "fetch failed: %s", fetch.error.c_str());
+  if (!fetch.ok) {
+    status.last_error = fetch.error;
+    ESP_LOGW(kTag, "fetch failed: %s", fetch.error.c_str());
+  } else if (status.last_error.empty()) {
+    status.last_error = "render failed";
+    ESP_LOGW(kTag, "render failed without detail, treat as fetch failure");
+  }
+
   config.failure_count += 1;
   store.Save(config);
 
@@ -607,10 +673,20 @@ extern "C" void app_main(void) {
     payload.sleep_seconds = backoff_sleep_seconds;
     payload.now_epoch = now_epoch;
     payload.next_wakeup_epoch = status.next_wakeup_epoch;
+    payload.battery_mv = status.battery_mv;
+    payload.battery_percent = status.battery_percent;
+    payload.charging = status.charging;
+    payload.vbus_good = status.vbus_good;
     payload.image_source = status.image_source;
     payload.last_error = status.last_error;
     OrchestratorClient::ReportCheckin(config, payload);
   }
+
+  ESP_LOGW(kTag,
+           "cycle fail: http=%d err=%s backoff=%llus batt=%d%%/%dmV charging=%d",
+           status.last_http_status, status.last_error.c_str(),
+           static_cast<unsigned long long>(backoff_sleep_seconds), status.battery_percent,
+           status.battery_mv, status.charging);
 
   ImageClient::FreeResultBuffer(&fetch);
   ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_stop());

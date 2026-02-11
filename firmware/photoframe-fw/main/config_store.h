@@ -48,6 +48,10 @@ struct RuntimeStatus {
   bool image_changed = false;
   std::string image_source = "daily";
   int64_t next_wakeup_epoch = 0;
+  int battery_mv = -1;
+  int battery_percent = -1;
+  int charging = -1;
+  int vbus_good = -1;
   std::string last_error;
 };
 

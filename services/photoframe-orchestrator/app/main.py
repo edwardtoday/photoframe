@@ -86,6 +86,10 @@ def _ensure_table_column(conn: sqlite3.Connection, table: str, column: str, ddl:
 def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
   _ensure_table_column(conn, "devices", "reported_config_json", "TEXT NOT NULL DEFAULT '{}'")
   _ensure_table_column(conn, "devices", "reported_config_epoch", "INTEGER NOT NULL DEFAULT 0")
+  _ensure_table_column(conn, "devices", "battery_mv", "INTEGER NOT NULL DEFAULT -1")
+  _ensure_table_column(conn, "devices", "battery_percent", "INTEGER NOT NULL DEFAULT -1")
+  _ensure_table_column(conn, "devices", "charging", "INTEGER NOT NULL DEFAULT -1")
+  _ensure_table_column(conn, "devices", "vbus_good", "INTEGER NOT NULL DEFAULT -1")
 
 
 def _init_db() -> None:
@@ -107,6 +111,10 @@ def _init_db() -> None:
           image_changed INTEGER NOT NULL DEFAULT 0,
           image_source TEXT NOT NULL DEFAULT 'daily',
           last_error TEXT NOT NULL DEFAULT '',
+          battery_mv INTEGER NOT NULL DEFAULT -1,
+          battery_percent INTEGER NOT NULL DEFAULT -1,
+          charging INTEGER NOT NULL DEFAULT -1,
+          vbus_good INTEGER NOT NULL DEFAULT -1,
           reported_config_json TEXT NOT NULL DEFAULT '{}',
           reported_config_epoch INTEGER NOT NULL DEFAULT 0,
           updated_at INTEGER NOT NULL DEFAULT 0
@@ -470,6 +478,10 @@ class DeviceCheckin(BaseModel):
   image_changed: bool = False
   image_source: str = "daily"
   last_error: str = ""
+  battery_mv: int = -1
+  battery_percent: int = -1
+  charging: int = -1
+  vbus_good: int = -1
   reported_config: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -690,9 +702,9 @@ def device_checkin(
         INSERT INTO devices (
           device_id, last_checkin_epoch, next_wakeup_epoch, sleep_seconds,
           poll_interval_seconds, failure_count, last_http_status, fetch_ok,
-          image_changed, image_source, last_error, reported_config_json,
-          reported_config_epoch, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          image_changed, image_source, last_error, battery_mv, battery_percent,
+          charging, vbus_good, reported_config_json, reported_config_epoch, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(device_id) DO UPDATE SET
           last_checkin_epoch = excluded.last_checkin_epoch,
           next_wakeup_epoch = excluded.next_wakeup_epoch,
@@ -704,6 +716,10 @@ def device_checkin(
           image_changed = excluded.image_changed,
           image_source = excluded.image_source,
           last_error = excluded.last_error,
+          battery_mv = excluded.battery_mv,
+          battery_percent = excluded.battery_percent,
+          charging = excluded.charging,
+          vbus_good = excluded.vbus_good,
           reported_config_json = excluded.reported_config_json,
           reported_config_epoch = excluded.reported_config_epoch,
           updated_at = excluded.updated_at
@@ -720,6 +736,10 @@ def device_checkin(
             1 if payload.image_changed else 0,
             payload.image_source,
             payload.last_error,
+            int(payload.battery_mv),
+            int(payload.battery_percent),
+            int(payload.charging),
+            int(payload.vbus_good),
             reported_config_json,
             int(payload.checkin_epoch),
             now_ts,
@@ -902,6 +922,10 @@ def devices() -> dict[str, Any]:
             "fetch_ok": bool(row["fetch_ok"]),
             "image_source": row["image_source"],
             "last_error": row["last_error"],
+            "battery_mv": int(row["battery_mv"]),
+            "battery_percent": int(row["battery_percent"]),
+            "charging": int(row["charging"]),
+            "vbus_good": int(row["vbus_good"]),
             "reported_config_epoch": int(row["reported_config_epoch"]),
             "reported_config": _redact_reported_config_for_view(reported_config),
             "config_target_version": target_version,

@@ -482,6 +482,10 @@ bool OrchestratorClient::ReportCheckin(const AppConfig& cfg, const DeviceCheckin
   cJSON_AddBoolToObject(root, "image_changed", payload.image_changed);
   cJSON_AddStringToObject(root, "image_source", payload.image_source.c_str());
   cJSON_AddStringToObject(root, "last_error", payload.last_error.c_str());
+  cJSON_AddNumberToObject(root, "battery_mv", payload.battery_mv);
+  cJSON_AddNumberToObject(root, "battery_percent", payload.battery_percent);
+  cJSON_AddNumberToObject(root, "charging", payload.charging);
+  cJSON_AddNumberToObject(root, "vbus_good", payload.vbus_good);
   AddReportedConfig(root, cfg);
 
   char* json = cJSON_PrintUnformatted(root);

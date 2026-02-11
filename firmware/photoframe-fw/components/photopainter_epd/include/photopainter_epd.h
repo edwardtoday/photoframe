@@ -48,20 +48,20 @@ class PhotoPainterEpd {
   bool EnsureBuffers();
   bool InitBus();
   void Reset();
-  void WaitBusy();
+  bool WaitBusy(const char* stage, int timeout_ms = 45000);
   void WriteByte(uint8_t value);
   void WriteCommand(uint8_t cmd);
   void WriteData(uint8_t data);
   void WriteBuffer(const uint8_t* data, size_t len);
-  void TurnOnDisplay();
-  void ApplyPanelInitSequence();
+  bool TurnOnDisplay();
+  bool ApplyPanelInitSequence();
   void RotateBuffer(uint8_t rotation);
   uint8_t QuantizeColor(uint8_t r, uint8_t g, uint8_t b) const;
   void SetPackedPixel(uint8_t* buf, int width, int x, int y, uint8_t px);
   uint8_t GetPackedPixel(const uint8_t* buf, int width, int x, int y);
 
   void ClearDisplayBuffer(EpdColor color);
-  void FlushDisplay();
+  bool FlushDisplay();
 
   bool initialized_ = false;
   int display_len_ = (kPanelWidth * kPanelHeight) / 2;

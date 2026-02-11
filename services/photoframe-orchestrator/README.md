@@ -96,12 +96,13 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 建议仅对公网放行以下路径，管理页与编辑接口继续只在内网开放：
 
 - `GET /public/daily.bmp`
-- `GET /api/v1/device/next`
 - `POST /api/v1/device/checkin`
 - `GET /api/v1/device/config`
 - `POST /api/v1/device/config/applied`
 
 其中 `/api/v1/device/*` 通过 `X-PhotoFrame-Token` 做设备身份校验（按 `DEVICE_TOKEN_MAP_JSON` / `DEVICE_TOKEN_MAP`）。
+
+若你需要公网侧直接走 `/api/v1/device/next` 指令流，还需额外放行 `/api/v1/assets/*`。
 
 ## 插播开始时间规则
 

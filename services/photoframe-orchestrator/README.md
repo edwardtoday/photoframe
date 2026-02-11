@@ -52,6 +52,12 @@ scripts/release-orchestrator-image.sh
 
 # 指定 tag
 scripts/release-orchestrator-image.sh 0.1.0
+
+# 指定 buildx builder（例如带 DNS 配置的 builder）
+BUILDER_NAME=photoframe-dns scripts/release-orchestrator-image.sh
+
+# 关闭“rebase latest”失败兜底路径
+ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 ```
 
 访问：`http://<NAS_IP>:18081/`

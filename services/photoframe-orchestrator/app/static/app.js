@@ -11,11 +11,39 @@ let deviceMap = new Map();
 
 const PUBLIC_DAILY_EXAMPLE_URL = 'https://example.com/daily.bmp';
 const TOKEN_STORAGE_KEY = 'photoframe.console.token';
+const TOKEN_COOKIE_KEY = 'photoframe_console_token';
+
+function readCookie(name) {
+  const encodedName = `${name}=`;
+  const parts = document.cookie.split(';');
+  for (const part of parts) {
+    const item = part.trim();
+    if (item.startsWith(encodedName)) {
+      return decodeURIComponent(item.slice(encodedName.length));
+    }
+  }
+  return '';
+}
+
+function writeCookie(name, value, maxAgeSeconds) {
+  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${maxAgeSeconds}; samesite=lax`;
+}
 
 function loadStoredConsoleToken() {
   const input = document.getElementById('token');
   if (!input) return;
-  const saved = window.localStorage.getItem(TOKEN_STORAGE_KEY) || '';
+
+  let saved = '';
+  try {
+    saved = window.localStorage.getItem(TOKEN_STORAGE_KEY) || '';
+  } catch (_) {
+    // localStorage 受限时退化到 cookie
+  }
+
+  if (!saved) {
+    saved = readCookie(TOKEN_COOKIE_KEY);
+  }
+
   if (saved) {
     input.value = saved;
   }
@@ -25,10 +53,21 @@ function persistConsoleToken() {
   const input = document.getElementById('token');
   if (!input) return;
   const token = input.value.trim();
+
+  try {
+    if (token) {
+      window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    } else {
+      window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+    }
+  } catch (_) {
+    // ignore
+  }
+
   if (token) {
-    window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    writeCookie(TOKEN_COOKIE_KEY, token, 180 * 24 * 3600);
   } else {
-    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+    writeCookie(TOKEN_COOKIE_KEY, '', 0);
   }
 }
 
@@ -699,6 +738,7 @@ document.getElementById('deviceConfigForm').addEventListener('submit', async (ev
 });
 
 document.getElementById('refreshBtn').addEventListener('click', async () => {
+  persistConsoleToken();
   try {
     await refreshAll();
   } catch (err) {
@@ -746,8 +786,15 @@ document.getElementById('fillPublicDailyBtn').addEventListener('click', () => {
 document.getElementById('token').addEventListener('input', () => {
   persistConsoleToken();
 });
+document.getElementById('token').addEventListener('change', () => {
+  persistConsoleToken();
+});
+document.getElementById('token').addEventListener('blur', () => {
+  persistConsoleToken();
+});
 
 loadStoredConsoleToken();
+persistConsoleToken();
 
 setInterval(() => {
   refreshAll().catch(() => {});

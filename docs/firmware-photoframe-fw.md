@@ -127,7 +127,7 @@ JSON
 
 - 串口出现 `fetch url: ...date=1970-01-01`：说明设备未完成校时且模板里显式用了 `%DATE%`。若使用公网 `daily.bmp`，建议模板不带 `%DATE%`。
 - `time synced` 日志会同时打印 `epoch/local/utc`，可直接确认设备当前时间是否正确。
-- Portal 保存时若 Wi-Fi 密码留空，不会覆盖现有密码。
+- Portal 保存时若 Wi-Fi 密码留空，不会覆盖现有密码；且当已有 SSID 时，空 SSID 提交会被忽略，避免误清空网络配置。
 - 浏览器访问设备 STA IP 显示 `ERR_CONNECTION_REFUSED`：正常情况。仅在“按键唤醒后的 120 秒窗口”或 AP 配网模式下开放 Web 配置页。
 
 ## 失败重试行为
@@ -144,7 +144,9 @@ JSON
 - `reason=<code>(<name>)`：ESP-IDF 断开原因码与名称
 - `hint=<text>`：可执行排查建议（如检查密码、2.4GHz 覆盖或 WPA 模式）
 
+连接开始时会先打印 `wifi connect start: ssid=... password_len=...`，便于快速判断是否带上了密码。
 连接超时失败时，还会在 `wifi connect failed` 中带上最后一次断开原因，便于定位“密码错误 / 安全模式不兼容 / 信号问题”。
+每轮结束会打印 `cycle ok: local=... epoch=...`，校时成功后可直接按本地时间排查。
 
 ## 编译
 

@@ -80,6 +80,7 @@ constexpr const char* kPortalHtml = R"HTML(
 
   <script>
     const out = (msg) => document.getElementById('out').textContent = msg;
+    let loadedConfig = null;
 
     async function api(path, opt = {}) {
       const r = await fetch(path, {headers: {'Content-Type': 'application/json'}, ...opt});
@@ -92,6 +93,7 @@ constexpr const char* kPortalHtml = R"HTML(
 
     async function loadConfig() {
       const cfg = await api('/api/config');
+      loadedConfig = cfg;
       document.getElementById('ssid').value = cfg.wifi_ssid ?? '';
       document.getElementById('urlTemplate').value = cfg.image_url_template ?? '';
       document.getElementById('orchEnabled').value = String(cfg.orchestrator_enabled ?? 1);
@@ -135,7 +137,6 @@ constexpr const char* kPortalHtml = R"HTML(
 
     async function saveAll() {
       const payload = {
-        wifi_ssid: document.getElementById('ssid').value,
         image_url_template: document.getElementById('urlTemplate').value,
         orchestrator_enabled: Number(document.getElementById('orchEnabled').value),
         orchestrator_base_url: document.getElementById('orchBaseUrl').value,
@@ -152,6 +153,14 @@ constexpr const char* kPortalHtml = R"HTML(
         six_color_tolerance: Number(document.getElementById('colorTol').value),
         timezone: document.getElementById('timezone').value,
       };
+
+      const ssid = document.getElementById('ssid').value.trim();
+      const oldSsid = (loadedConfig?.wifi_ssid ?? '').trim();
+      if (ssid !== '') {
+        payload.wifi_ssid = ssid;
+      } else if (oldSsid === '') {
+        payload.wifi_ssid = '';
+      }
 
       const password = document.getElementById('password').value;
       if (password !== '') {
@@ -321,21 +330,32 @@ esp_err_t PortalServer::HandlePostConfig(httpd_req_t* req) {
 
   const cJSON* ssid = cJSON_GetObjectItemCaseSensitive(root, "wifi_ssid");
   const cJSON* password = cJSON_GetObjectItemCaseSensitive(root, "wifi_password");
-  if (cJSON_IsString(ssid) && ssid->valuestring != nullptr) {
+  const bool ssid_provided = cJSON_IsString(ssid) && ssid->valuestring != nullptr;
+  const bool password_provided = cJSON_IsString(password) && password->valuestring != nullptr;
+  if (ssid_provided) {
     const std::string next_ssid = ssid->valuestring;
-    if (self->config_->wifi_ssid != next_ssid) {
+    if (next_ssid.empty() && !self->config_->wifi_ssid.empty()) {
+      ESP_LOGW(kTag, "ignore empty wifi_ssid update to keep existing credentials");
+    } else if (self->config_->wifi_ssid != next_ssid) {
       self->config_->wifi_ssid = next_ssid;
       wifi_changed = true;
     }
   }
-  if (cJSON_IsString(password) && password->valuestring != nullptr &&
-      password->valuestring[0] != '\0') {
-    const std::string next_password = password->valuestring;
-    if (self->config_->wifi_password != next_password) {
-      self->config_->wifi_password = next_password;
-      wifi_changed = true;
+  if (password_provided) {
+    if (password->valuestring[0] == '\0') {
+      ESP_LOGI(kTag, "wifi password left blank in portal request, keep existing password");
+    } else {
+      const std::string next_password = password->valuestring;
+      if (self->config_->wifi_password != next_password) {
+        self->config_->wifi_password = next_password;
+        wifi_changed = true;
+      }
     }
   }
+
+  ESP_LOGI(kTag, "apply config request: ssid_provided=%d pwd_provided=%d pwd_len=%u wifi_changed=%d",
+           ssid_provided ? 1 : 0, password_provided ? 1 : 0,
+           static_cast<unsigned>(self->config_->wifi_password.size()), wifi_changed ? 1 : 0);
 
   const cJSON* url = cJSON_GetObjectItemCaseSensitive(root, "image_url_template");
   if (cJSON_IsString(url) && url->valuestring != nullptr) {

@@ -267,6 +267,12 @@ bool ConnectToSta(const AppConfig& cfg, RuntimeStatus* status) {
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
 
+  ESP_LOGI(kTag, "wifi connect start: ssid=%s password_len=%u", cfg.wifi_ssid.c_str(),
+           static_cast<unsigned>(cfg.wifi_password.size()));
+  if (cfg.wifi_password.empty()) {
+    ESP_LOGW(kTag, "wifi password is empty, secured AP may reject with reason=210");
+  }
+
   g_wifi_retry = 0;
   g_wifi_retry_limit = kStaConnectRetry;
   g_last_disconnect_reason = 0;
@@ -637,6 +643,12 @@ extern "C" void app_main(void) {
     const int64_t now_epoch = static_cast<int64_t>(time(nullptr));
     status.next_wakeup_epoch = now_epoch + static_cast<int64_t>(success_sleep_seconds);
 
+    std::tm now_local_tm = {};
+    char now_local_buf[64] = {};
+    time_t now_time = static_cast<time_t>(now_epoch);
+    localtime_r(&now_time, &now_local_tm);
+    strftime(now_local_buf, sizeof(now_local_buf), "%Y-%m-%d %H:%M:%S %Z", &now_local_tm);
+
     if (config.orchestrator_enabled != 0) {
       DeviceCheckinPayload payload;
       payload.fetch_ok = true;
@@ -657,8 +669,9 @@ extern "C" void app_main(void) {
     }
 
     ESP_LOGI(kTag,
-             "cycle ok: source=%s http=%d changed=%d sleep=%llus batt=%d%%/%dmV charging=%d",
-             status.image_source.c_str(), status.last_http_status, status.image_changed ? 1 : 0,
+             "cycle ok: local=%s epoch=%lld source=%s http=%d changed=%d sleep=%llus batt=%d%%/%dmV charging=%d",
+             now_local_buf, static_cast<long long>(now_epoch), status.image_source.c_str(),
+             status.last_http_status, status.image_changed ? 1 : 0,
              static_cast<unsigned long long>(success_sleep_seconds), status.battery_percent,
              status.battery_mv, status.charging);
 

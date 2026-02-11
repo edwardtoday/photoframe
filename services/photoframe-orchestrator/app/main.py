@@ -30,6 +30,8 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 DEFAULT_POLL_SECONDS = max(60, int(os.getenv("DEFAULT_POLL_SECONDS", "3600")))
 TOKEN = os.getenv("PHOTOFRAME_TOKEN", "")
 PUBLIC_DAILY_BMP_TOKEN = os.getenv("PUBLIC_DAILY_BMP_TOKEN", "")
+DEVICE_TOKEN_MAP_JSON = os.getenv("DEVICE_TOKEN_MAP_JSON", "")
+DEVICE_TOKEN_MAP = os.getenv("DEVICE_TOKEN_MAP", "")
 try:
   DAILY_FETCH_TIMEOUT_SECONDS = max(1.0, float(os.getenv("DAILY_FETCH_TIMEOUT_SECONDS", "10")))
 except Exception:
@@ -189,9 +191,82 @@ def _clamp(v: int, low: int, high: int) -> int:
   return max(low, min(high, v))
 
 
+def _parse_device_token_map() -> dict[str, str]:
+  tokens: dict[str, str] = {}
+
+  def normalize_key(raw: str) -> str:
+    stripped = raw.strip()
+    return stripped if stripped else "*"
+
+  raw_json = (DEVICE_TOKEN_MAP_JSON or "").strip()
+  if raw_json:
+    try:
+      loaded = json.loads(raw_json)
+      if isinstance(loaded, dict):
+        for key, value in loaded.items():
+          if not isinstance(key, str) or not isinstance(value, str):
+            continue
+          device_id = normalize_key(key)
+          token = value.strip()
+          if token:
+            tokens[device_id] = token
+    except Exception:
+      # 解析失败时忽略 JSON 来源，继续尝试兼容的 CSV 写法。
+      pass
+
+  raw_csv = (DEVICE_TOKEN_MAP or "").strip()
+  if raw_csv:
+    for pair in raw_csv.split(','):
+      if '=' not in pair:
+        continue
+      key, value = pair.split('=', 1)
+      device_id = normalize_key(key)
+      token = value.strip()
+      if token:
+        tokens[device_id] = token
+
+  return tokens
+
+
+_DEVICE_TOKEN_MAP_PARSED = _parse_device_token_map()
+
+
+def _secure_equal(provided: str | None, expected: str | None) -> bool:
+  if not provided or not expected:
+    return False
+  return hmac.compare_digest(provided, expected)
+
+
 def _require_token(header_token: str | None) -> None:
-  if TOKEN and header_token != TOKEN:
+  token = (TOKEN or "").strip()
+  if not token:
+    return
+  provided = (header_token or "").strip()
+  if not _secure_equal(provided, token):
     raise HTTPException(status_code=401, detail="invalid token")
+
+
+def _resolve_device_expected_token(device_id: str) -> str:
+  device_key = _normalize_device_id(device_id)
+  expected = _DEVICE_TOKEN_MAP_PARSED.get(device_key)
+  if expected:
+    return expected
+  wildcard = _DEVICE_TOKEN_MAP_PARSED.get("*")
+  if wildcard:
+    return wildcard
+  return ""
+
+
+def _require_device_token(device_id: str, header_token: str | None) -> None:
+  provided = (header_token or "").strip()
+  expected = _resolve_device_expected_token(device_id)
+  if expected:
+    if not _secure_equal(provided, expected):
+      raise HTTPException(status_code=401, detail="invalid device token")
+    return
+
+  # 向后兼容：未配置 device token map 时，沿用原有全局 token。
+  _require_token(header_token)
 
 
 def _require_public_daily_token(header_token: str | None, query_token: str | None) -> None:
@@ -579,7 +654,7 @@ def device_next(
     failure_count: int = Query(default=0),
     x_photoframe_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
-  _require_token(x_photoframe_token)
+  _require_device_token(device_id, x_photoframe_token)
 
   now_ts = _now_epoch() if now_epoch is None else now_epoch
   poll_sec = _clamp(default_poll_seconds, 60, 86400)
@@ -689,7 +764,7 @@ def device_checkin(
     payload: DeviceCheckin,
     x_photoframe_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
-  _require_token(x_photoframe_token)
+  _require_device_token(payload.device_id, x_photoframe_token)
 
   now_ts = _now_epoch()
   reported_config = _sanitize_reported_device_config(payload.reported_config)
@@ -757,7 +832,7 @@ def device_config_get(
     current_version: int = Query(default=0),
     x_photoframe_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
-  _require_token(x_photoframe_token)
+  _require_device_token(device_id, x_photoframe_token)
 
   now_ts = _now_epoch() if now_epoch is None else now_epoch
   target_device = _normalize_device_id(device_id)
@@ -802,7 +877,7 @@ def device_config_applied(
     payload: DeviceConfigApplied,
     x_photoframe_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
-  _require_token(x_photoframe_token)
+  _require_device_token(payload.device_id, x_photoframe_token)
 
   now_ts = _now_epoch()
   applied_epoch = now_ts if payload.applied_epoch is None else int(payload.applied_epoch)

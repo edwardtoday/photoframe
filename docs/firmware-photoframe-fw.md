@@ -70,7 +70,7 @@
 - `orchestrator_enabled`（`1=启用编排` `0=关闭编排`）
 - `orchestrator_base_url`（默认 `http://192.168.58.113:18081`）
 - `device_id`（首次自动生成，可手工覆盖）
-- `orchestrator_token`（可选）
+- `orchestrator_token`（可选，作为 `X-PhotoFrame-Token`，用于设备接口身份校验）
 - `photo_token`（可选，拉图时自动携带请求头 `X-Photo-Token`）
 - `image_url_template`（编排关闭时使用，支持 `%DATE%`、`%DEVICE_ID%`；不会自动追加 `date=`）
 - `interval_minutes`（默认 60）

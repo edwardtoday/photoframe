@@ -67,7 +67,9 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 - `DAILY_IMAGE_URL_TEMPLATE`：无插播时的每日图片模板，支持 `%DATE%`
 - `PUBLIC_BASE_URL`：返回给设备的资源 URL 前缀
 - `DEFAULT_POLL_SECONDS`：默认轮询周期（秒）
-- `PHOTOFRAME_TOKEN`：可选认证 token（设备与 Web 请求都需带 `X-PhotoFrame-Token`）
+- `PHOTOFRAME_TOKEN`：管理接口 token（Web 管理页、插播编辑等后台接口）
+- `DEVICE_TOKEN_MAP_JSON`：设备 token 映射（JSON 对象，例：`{"pf-d9369c80":"devtoken-xxx"}`）
+- `DEVICE_TOKEN_MAP`：设备 token 映射（CSV 兼容写法，例：`pf-d9369c80=devtoken-xxx,pf-guest=devtoken-yyy`）
 - `PUBLIC_DAILY_BMP_TOKEN`：公网日图接口口令（`/public/daily.bmp`，为空则禁用）
 - `DAILY_FETCH_TIMEOUT_SECONDS`：公网日图代理拉取上游超时（秒，默认 10）
 - `TZ`：服务端时区
@@ -88,6 +90,18 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 
 - 若设备可能不在家，请把 `image_url_template` 配成公网 `daily.bmp` 地址（含 token）。
 - 即使设备访问不到本地 orchestrator（无法实时下发配置），仍可在每次联网唤醒时拉到应显示图片。
+
+## 公网暴露建议（仅设备接口）
+
+建议仅对公网放行以下路径，管理页与编辑接口继续只在内网开放：
+
+- `GET /public/daily.bmp`
+- `GET /api/v1/device/next`
+- `POST /api/v1/device/checkin`
+- `GET /api/v1/device/config`
+- `POST /api/v1/device/config/applied`
+
+其中 `/api/v1/device/*` 通过 `X-PhotoFrame-Token` 做设备身份校验（按 `DEVICE_TOKEN_MAP_JSON` / `DEVICE_TOKEN_MAP`）。
 
 ## 插播开始时间规则
 

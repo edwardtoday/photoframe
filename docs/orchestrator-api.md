@@ -6,6 +6,12 @@
 - Web 提交插播后，服务根据设备 `next_wakeup_epoch` 给出预计生效时间
 - 设备每次唤醒可同步“待生效配置”，并上报已应用状态
 
+鉴权约定：
+
+- 管理接口使用 `PHOTOFRAME_TOKEN`（请求头 `X-PhotoFrame-Token`）。
+- 设备接口（`/api/v1/device/*`）优先使用设备 token 映射（`DEVICE_TOKEN_MAP_JSON` / `DEVICE_TOKEN_MAP`）校验 `X-PhotoFrame-Token`，并绑定 `device_id`。
+- 若未配置设备 token 映射，设备接口会回退到 `PHOTOFRAME_TOKEN`（兼容旧配置）。
+
 ## 1) 设备拉取当前任务
 
 `GET /api/v1/device/next`
@@ -16,6 +22,10 @@
 - `now_epoch`：当前时间戳（可选）
 - `default_poll_seconds`：设备默认轮询间隔（可选）
 - `failure_count`：设备失败计数（可选）
+
+### Header
+
+- `X-PhotoFrame-Token`：设备 token
 
 ### Response
 
@@ -42,6 +52,10 @@
 ## 2) 设备上报心跳
 
 `POST /api/v1/device/checkin`
+
+### Header
+
+- `X-PhotoFrame-Token`：设备 token
 
 ### Body
 
@@ -117,6 +131,10 @@
 
 `GET /api/v1/device/config`
 
+Header:
+
+- `X-PhotoFrame-Token`：设备 token
+
 Query:
 
 - `device_id`（必填）
@@ -141,6 +159,10 @@ Response:
 ### 3.3 设备回报配置应用结果
 
 `POST /api/v1/device/config/applied`
+
+Header:
+
+- `X-PhotoFrame-Token`：设备 token
 
 ```json
 {

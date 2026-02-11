@@ -67,7 +67,7 @@
 - `device_id`（首次自动生成，可手工覆盖）
 - `orchestrator_token`（可选）
 - `photo_token`（可选，拉图时自动携带请求头 `X-Photo-Token`）
-- `image_url_template`（编排关闭时使用，支持 `%DATE%`、`%DEVICE_ID%`）
+- `image_url_template`（编排关闭时使用，支持 `%DATE%`、`%DEVICE_ID%`；不会自动追加 `date=`）
 - `interval_minutes`（默认 60）
 - `retry_base_minutes` / `retry_max_minutes`
 - `max_failure_before_long_sleep`
@@ -117,6 +117,11 @@ JSON
 ```
 
 如果设备是“按键唤醒”进入的 120 秒窗口，请访问设备当前 STA IP（串口日志会打印 URL，例如 `http://192.168.58.120/`）。
+
+## 常见现象排查
+
+- 串口出现 `fetch url: ...date=1970-01-01`：说明设备未完成校时且模板里显式用了 `%DATE%`。若使用公网 `daily.bmp`，建议模板不带 `%DATE%`。
+- 浏览器访问设备 STA IP 显示 `ERR_CONNECTION_REFUSED`：正常情况。仅在“按键唤醒后的 120 秒窗口”或 AP 配网模式下开放 Web 配置页。
 
 ## 失败重试行为
 

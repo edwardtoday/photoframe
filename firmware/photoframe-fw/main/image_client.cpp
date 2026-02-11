@@ -57,10 +57,7 @@ std::string ImageClient::BuildDatedUrl(const std::string& tpl, time_t now,
     pos += safe_device_id.size();
   }
 
-  if (url.find("%DATE%") == std::string::npos && url.find("date=") == std::string::npos) {
-    url += (url.find('?') == std::string::npos) ? "?date=" : "&date=";
-    url += date_buf;
-  }
+  // 仅替换模板占位符，不再自动补 date= 参数，避免未校时阶段出现 1970-01-01。
   return url;
 }
 

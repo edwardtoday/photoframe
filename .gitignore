@@ -5,6 +5,11 @@
 references/waveshare/downloads/**
 !references/waveshare/downloads/README.md
 !references/waveshare/downloads/manifest.json
+!references/waveshare/downloads/official/
+references/waveshare/downloads/official/**
+!references/waveshare/downloads/official/README.md
+!references/waveshare/downloads/official/releases-manifest.json
+!references/waveshare/downloads/official/ESP32-S3-PhotoPainter
 
 # ESP-IDF build artifacts
 build/

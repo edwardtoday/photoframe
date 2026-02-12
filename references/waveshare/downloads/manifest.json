@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-02-07T14:14:36.555299+00:00",
+  "generated_at": "2026-02-12T02:51:00.588603+00:00",
   "items": [
     {
       "category": "official",
@@ -136,6 +136,38 @@
       "size": 5446239,
       "sha256": "84e741dbec5526e3152bded421b4f06f990cd2d1d7e83b907c40e81f9db0f30e",
       "status": "cached"
+    },
+    {
+      "category": "official-release",
+      "file": "references/waveshare/downloads/official/releases/v1.2.0/v1.2.0_Fac_Firmware.zip",
+      "url": "https://github.com/waveshareteam/ESP32-S3-PhotoPainter/releases/download/v1.2.0/v1.2.0_Fac_Firmware.zip",
+      "size": 2299658,
+      "sha256": "6c5cd81621149359950af55a8f159e7e6026742be115d23f2dc3666a092c6098",
+      "status": "downloaded"
+    },
+    {
+      "category": "official-release",
+      "file": "references/waveshare/downloads/official/releases/v1.2.0/v1.2.0_TFCard_Assets.zip",
+      "url": "https://github.com/waveshareteam/ESP32-S3-PhotoPainter/releases/download/v1.2.0/v1.2.0_TFCard_Assets.zip",
+      "size": 14662135,
+      "sha256": "bf6112fe209674b76580471ca102910936cbc606b9c6b435894230f0e39e7379",
+      "status": "downloaded"
+    },
+    {
+      "category": "official-release",
+      "file": "references/waveshare/downloads/official/releases/v1.1.0/v1.1.0_Fac_Firmware.zip",
+      "url": "https://github.com/waveshareteam/ESP32-S3-PhotoPainter/releases/download/v1.1.0/v1.1.0_Fac_Firmware.zip",
+      "size": 2230724,
+      "sha256": "8ea257ba02af13cbbf00f1fafc356c5aafbe4f83522a203d73d1391476342340",
+      "status": "downloaded"
+    },
+    {
+      "category": "official-release",
+      "file": "references/waveshare/downloads/official/releases/v1.1.0/v1.1.0_TFCard_Assets.zip",
+      "url": "https://github.com/waveshareteam/ESP32-S3-PhotoPainter/releases/download/v1.1.0/v1.1.0_TFCard_Assets.zip",
+      "size": 573881,
+      "sha256": "4915a60f4b935bba11fd71c9de30586e53d96b500aad34e399d21427d7ee395d",
+      "status": "downloaded"
     }
   ]
 }

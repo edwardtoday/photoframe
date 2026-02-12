@@ -1,6 +1,6 @@
 # Waveshare 资料下载清单
 
-- 生成时间（UTC）: `2026-02-07T14:14:36.555299+00:00`
+- 生成时间（UTC）: `2026-02-12T02:51:00.588603+00:00`
 - Wiki 页面: `https://www.waveshare.net/wiki/ESP32-S3-PhotoPainter`
 
 ## 文件列表
@@ -24,8 +24,14 @@
 | datasheets | `references/waveshare/downloads/datasheets/Esp32-s3_technical_reference_manual_en.pdf` | 14540185 | `47bb075de167d8165fc845f4729396080cf0fc92a9f0b793a2527dddae8a2ed9` | https://www.waveshare.net/w/upload/1/11/Esp32-s3_technical_reference_manual_en.pdf |
 | espressif | `references/waveshare/downloads/espressif/flash_download_tool.zip` | 24864745 | `042280a777ca7f812f013035cddf63d64254858dc3fcbea46dc8fe6ae14560b5` | https://dl.espressif.com/public/flash_download_tool.zip |
 | espressif | `references/waveshare/downloads/espressif/idf-driver-esp32-usb-jtag-2021-07-15.zip` | 5446239 | `84e741dbec5526e3152bded421b4f06f990cd2d1d7e83b907c40e81f9db0f30e` | https://dl.espressif.com/dl/idf-driver/idf-driver-esp32-usb-jtag-2021-07-15.zip |
+| official-release | `references/waveshare/downloads/official/releases/v1.2.0/v1.2.0_Fac_Firmware.zip` | 2299658 | `6c5cd81621149359950af55a8f159e7e6026742be115d23f2dc3666a092c6098` | https://github.com/waveshareteam/ESP32-S3-PhotoPainter/releases/download/v1.2.0/v1.2.0_Fac_Firmware.zip |
+| official-release | `references/waveshare/downloads/official/releases/v1.2.0/v1.2.0_TFCard_Assets.zip` | 14662135 | `bf6112fe209674b76580471ca102910936cbc606b9c6b435894230f0e39e7379` | https://github.com/waveshareteam/ESP32-S3-PhotoPainter/releases/download/v1.2.0/v1.2.0_TFCard_Assets.zip |
+| official-release | `references/waveshare/downloads/official/releases/v1.1.0/v1.1.0_Fac_Firmware.zip` | 2230724 | `8ea257ba02af13cbbf00f1fafc356c5aafbe4f83522a203d73d1391476342340` | https://github.com/waveshareteam/ESP32-S3-PhotoPainter/releases/download/v1.1.0/v1.1.0_Fac_Firmware.zip |
+| official-release | `references/waveshare/downloads/official/releases/v1.1.0/v1.1.0_TFCard_Assets.zip` | 573881 | `4915a60f4b935bba11fd71c9de30586e53d96b500aad34e399d21427d7ee395d` | https://github.com/waveshareteam/ESP32-S3-PhotoPainter/releases/download/v1.1.0/v1.1.0_TFCard_Assets.zip |
 
 ## 说明
 
 - 下载原文件默认不纳入 git（见 `.gitignore`），用于本地离线查阅。
+- `references/waveshare/downloads/official/ESP32-S3-PhotoPainter` 为官方仓库 submodule。
+- GitHub Releases 资产下载清单见 `references/waveshare/downloads/official/releases-manifest.json`。
 - 若来源更新，可执行 `python3 scripts/fetch_waveshare_assets.py --force` 强制重拉。

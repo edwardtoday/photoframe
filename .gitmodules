@@ -1,3 +1,6 @@
 [submodule "upstream/ESP32-S3-PhotoPainter"]
 	path = upstream/ESP32-S3-PhotoPainter
 	url = https://github.com/wurongmin/ESP32-S3-PhotoPainter.git
+[submodule "references/waveshare/downloads/official/ESP32-S3-PhotoPainter"]
+	path = references/waveshare/downloads/official/ESP32-S3-PhotoPainter
+	url = https://github.com/waveshareteam/ESP32-S3-PhotoPainter.git

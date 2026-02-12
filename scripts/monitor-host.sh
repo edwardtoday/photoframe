@@ -29,7 +29,8 @@ echo "[info] Ctrl+C 退出；串口断开后会自动重连"
 
 while true; do
   set +e
-  "${VENV_PY}" -m serial.tools.miniterm "${PORT}" "${BAUD}" --raw
+  # 固定关闭 DTR/RTS，避免串口打开时触发复位导致运行流程被打断。
+  "${VENV_PY}" -m serial.tools.miniterm "${PORT}" "${BAUD}" --raw --dtr 0 --rts 0
   rc=$?
   set -e
 

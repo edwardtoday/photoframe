@@ -29,7 +29,8 @@
 namespace {
 constexpr const char* kTag = "photoframe_main";
 
-constexpr gpio_num_t kKeyButton = GPIO_NUM_4;
+constexpr gpio_num_t kKeyButton = GPIO_NUM_4;   // KEY: 唤醒后打开 120 秒配置窗口
+constexpr gpio_num_t kBootButton = GPIO_NUM_0;  // BOOT: 手动强制刷新
 constexpr int kStaConnectTimeoutSec = 25;
 constexpr int kStaConnectRetry = 5;
 constexpr const char* kApSsid = "PhotoFrame-Setup";
@@ -40,6 +41,8 @@ constexpr uint8_t kApIpC = 73;
 constexpr uint8_t kApIpD = 1;
 constexpr int kKeyWakePortalWindowSec = 120;
 constexpr int kPortalLoopStepMs = 200;
+constexpr int kEpdRefreshMaxRetries = 3;
+constexpr int kEpdRefreshRetryDelayMs = 500;
 
 EventGroupHandle_t g_wifi_events = nullptr;
 constexpr int kWifiConnectedBit = BIT0;
@@ -247,16 +250,15 @@ bool StartConfigApMode() {
   return true;
 }
 
-bool ConnectToSta(const AppConfig& cfg, RuntimeStatus* status) {
-  if (cfg.wifi_ssid.empty()) {
+bool ConnectToStaOnce(const std::string& ssid, const std::string& password, RuntimeStatus* status) {
+  if (ssid.empty()) {
     status->last_error = "wifi ssid is empty";
     return false;
   }
 
   wifi_config_t sta_cfg = {};
-  strncpy(reinterpret_cast<char*>(sta_cfg.sta.ssid), cfg.wifi_ssid.c_str(),
-          sizeof(sta_cfg.sta.ssid));
-  strncpy(reinterpret_cast<char*>(sta_cfg.sta.password), cfg.wifi_password.c_str(),
+  strncpy(reinterpret_cast<char*>(sta_cfg.sta.ssid), ssid.c_str(), sizeof(sta_cfg.sta.ssid));
+  strncpy(reinterpret_cast<char*>(sta_cfg.sta.password), password.c_str(),
           sizeof(sta_cfg.sta.password));
   sta_cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
   sta_cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
@@ -267,9 +269,9 @@ bool ConnectToSta(const AppConfig& cfg, RuntimeStatus* status) {
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
 
-  ESP_LOGI(kTag, "wifi connect start: ssid=%s password_len=%u", cfg.wifi_ssid.c_str(),
-           static_cast<unsigned>(cfg.wifi_password.size()));
-  if (cfg.wifi_password.empty()) {
+  ESP_LOGI(kTag, "wifi connect start: ssid=%s password_len=%u", ssid.c_str(),
+           static_cast<unsigned>(password.size()));
+  if (password.empty()) {
     ESP_LOGW(kTag, "wifi password is empty, secured AP may reject with reason=210");
   }
 
@@ -290,37 +292,166 @@ bool ConnectToSta(const AppConfig& cfg, RuntimeStatus* status) {
   }
 
   status->wifi_connected = false;
-  status->last_error = "wifi connect timeout/fail";
+  status->last_error = "wifi connect timeout/fail, ssid=" + ssid;
   if (g_last_disconnect_reason > 0) {
     const wifi_err_reason_t reason = static_cast<wifi_err_reason_t>(g_last_disconnect_reason);
     status->last_error += ", reason=" + std::to_string(g_last_disconnect_reason) + "(" +
-                          WifiReasonToString(reason) + ")";
-    ESP_LOGW(kTag, "wifi connect failed, last reason=%d(%s), hint=%s", g_last_disconnect_reason,
-             WifiReasonToString(reason), WifiReasonHint(reason));
+                         WifiReasonToString(reason) + ")";
+    ESP_LOGW(kTag, "wifi connect failed, ssid=%s last reason=%d(%s), hint=%s", ssid.c_str(),
+             g_last_disconnect_reason, WifiReasonToString(reason), WifiReasonHint(reason));
   }
   return false;
 }
 
-bool IsButtonPressed() {
+void EnsurePrimaryWifiInProfiles(AppConfig* cfg) {
+  if (cfg == nullptr || cfg->wifi_ssid.empty()) {
+    return;
+  }
+
+  for (int i = 0; i < cfg->wifi_profile_count; ++i) {
+    if (cfg->wifi_profiles[i].ssid == cfg->wifi_ssid) {
+      if (!cfg->wifi_password.empty()) {
+        cfg->wifi_profiles[i].password = cfg->wifi_password;
+      }
+      return;
+    }
+  }
+
+  if (cfg->wifi_profile_count < AppConfig::kMaxWifiProfiles) {
+    cfg->wifi_profiles[cfg->wifi_profile_count].ssid = cfg->wifi_ssid;
+    cfg->wifi_profiles[cfg->wifi_profile_count].password = cfg->wifi_password;
+    cfg->wifi_profile_count += 1;
+    return;
+  }
+
+  // 超出容量时淘汰最旧配置，保证最近配置过的 Wi-Fi 可被保留。
+  for (int i = 1; i < AppConfig::kMaxWifiProfiles; ++i) {
+    cfg->wifi_profiles[i - 1] = cfg->wifi_profiles[i];
+  }
+  cfg->wifi_profiles[AppConfig::kMaxWifiProfiles - 1].ssid = cfg->wifi_ssid;
+  cfg->wifi_profiles[AppConfig::kMaxWifiProfiles - 1].password = cfg->wifi_password;
+  if (cfg->last_connected_wifi_index > 0) {
+    cfg->last_connected_wifi_index -= 1;
+  }
+}
+
+void PersistConnectedProfile(AppConfig* cfg, int profile_index, ConfigStore* store) {
+  if (cfg == nullptr || profile_index < 0 || profile_index >= cfg->wifi_profile_count) {
+    return;
+  }
+
+  cfg->wifi_ssid = cfg->wifi_profiles[profile_index].ssid;
+  cfg->wifi_password = cfg->wifi_profiles[profile_index].password;
+  cfg->last_connected_wifi_index = profile_index;
+
+  if (store != nullptr) {
+    (void)store->Save(*cfg);
+  }
+}
+
+bool ConnectToSta(AppConfig* cfg, RuntimeStatus* status, ConfigStore* store) {
+  if (cfg == nullptr || status == nullptr) {
+    return false;
+  }
+
+  EnsurePrimaryWifiInProfiles(cfg);
+  if (cfg->wifi_profile_count <= 0) {
+    status->last_error = "no wifi profile configured";
+    return false;
+  }
+
+  int candidate_indexes[AppConfig::kMaxWifiProfiles] = {};
+  int candidate_count = 0;
+  auto push_candidate = [&](int idx) {
+    if (idx < 0 || idx >= cfg->wifi_profile_count) {
+      return;
+    }
+    if (cfg->wifi_profiles[idx].ssid.empty()) {
+      return;
+    }
+    for (int i = 0; i < candidate_count; ++i) {
+      if (candidate_indexes[i] == idx) {
+        return;
+      }
+    }
+    candidate_indexes[candidate_count++] = idx;
+  };
+
+  push_candidate(cfg->last_connected_wifi_index);
+  for (int i = 0; i < cfg->wifi_profile_count; ++i) {
+    push_candidate(i);
+  }
+
+  for (int i = 0; i < candidate_count; ++i) {
+    const int profile_index = candidate_indexes[i];
+    const auto& profile = cfg->wifi_profiles[profile_index];
+    ESP_LOGI(kTag, "wifi profile try %d/%d idx=%d ssid=%s", i + 1, candidate_count, profile_index,
+             profile.ssid.c_str());
+    if (ConnectToStaOnce(profile.ssid, profile.password, status)) {
+      ESP_LOGI(kTag, "wifi connected with profile idx=%d ssid=%s", profile_index,
+               profile.ssid.c_str());
+      PersistConnectedProfile(cfg, profile_index, store);
+      return true;
+    }
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_stop());
+  }
+
+  status->wifi_connected = false;
+  if (status->last_error.empty()) {
+    status->last_error = "wifi connect failed for all profiles";
+  }
+  return false;
+}
+
+bool IsKeyButtonPressed() {
   return gpio_get_level(kKeyButton) == 0;
 }
 
+bool IsBootButtonPressed() {
+  return gpio_get_level(kBootButton) == 0;
+}
+
 bool ShouldEnterPortalByLongPress() {
-  if (!IsButtonPressed()) {
+  if (!IsKeyButtonPressed() && !IsBootButtonPressed()) {
     return false;
   }
   ESP_LOGI(kTag, "button pressed at boot, waiting for long-press...");
   vTaskDelay(pdMS_TO_TICKS(3000));
-  return IsButtonPressed();
+  return IsKeyButtonPressed() || IsBootButtonPressed();
 }
 
 void EnterDeepSleep(uint64_t seconds) {
   ESP_LOGI(kTag, "enter deep sleep for %llu seconds", static_cast<unsigned long long>(seconds));
   ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(seconds * 1000000ULL));
-  ESP_ERROR_CHECK(
-      esp_sleep_enable_ext1_wakeup(1ULL << static_cast<int>(kKeyButton), ESP_EXT1_WAKEUP_ANY_LOW));
+  const uint64_t wakeup_pins =
+      (1ULL << static_cast<int>(kKeyButton)) | (1ULL << static_cast<int>(kBootButton));
+  ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup(wakeup_pins, ESP_EXT1_WAKEUP_ANY_LOW));
   vTaskDelay(pdMS_TO_TICKS(150));
   esp_deep_sleep_start();
+}
+
+enum class WakeSource {
+  TIMER,
+  KEY,
+  BOOT,
+  OTHER,
+};
+
+WakeSource GetWakeSource() {
+  const esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+  if (cause == ESP_SLEEP_WAKEUP_TIMER) {
+    return WakeSource::TIMER;
+  }
+  if (cause == ESP_SLEEP_WAKEUP_EXT1) {
+    const uint64_t pins = esp_sleep_get_ext1_wakeup_status();
+    if (pins & (1ULL << static_cast<int>(kBootButton))) {
+      return WakeSource::BOOT;
+    }
+    if (pins & (1ULL << static_cast<int>(kKeyButton))) {
+      return WakeSource::KEY;
+    }
+  }
+  return WakeSource::OTHER;
 }
 
 bool SyncTime(const std::string& timezone) {
@@ -374,7 +505,8 @@ uint64_t CalcBackoffSeconds(AppConfig* cfg) {
 
 void ConfigureButtonGpio() {
   gpio_config_t cfg = {};
-  cfg.pin_bit_mask = 1ULL << static_cast<int>(kKeyButton);
+  cfg.pin_bit_mask =
+      (1ULL << static_cast<int>(kKeyButton)) | (1ULL << static_cast<int>(kBootButton));
   cfg.mode = GPIO_MODE_INPUT;
   cfg.pull_up_en = GPIO_PULLUP_ENABLE;
   cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
@@ -497,9 +629,29 @@ extern "C" void app_main(void) {
     config.wifi_password.clear();
   }
 
-  const esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
-  // 由按键唤醒时强制刷新，避免 hash 未变化导致用户误以为按键无效。
-  status.force_refresh = (wake_cause == ESP_SLEEP_WAKEUP_EXT1) && !long_press_portal;
+  const WakeSource wake_source = GetWakeSource();
+  bool open_sta_portal_window = false;
+  if (!long_press_portal) {
+    switch (wake_source) {
+      case WakeSource::BOOT:
+        status.force_refresh = true;
+        ESP_LOGI(kTag, "wake source=BOOT, force refresh enabled");
+        break;
+      case WakeSource::KEY:
+        status.force_refresh = false;
+        open_sta_portal_window = true;
+        ESP_LOGI(kTag, "wake source=KEY, open portal window for %d seconds", kKeyWakePortalWindowSec);
+        break;
+      case WakeSource::TIMER:
+        status.force_refresh = false;
+        ESP_LOGI(kTag, "wake source=TIMER");
+        break;
+      default:
+        status.force_refresh = false;
+        ESP_LOGI(kTag, "wake source=OTHER");
+        break;
+    }
+  }
 
   if (!EnsureWifiStack()) {
     ESP_LOGE(kTag, "wifi stack init failed");
@@ -535,7 +687,7 @@ extern "C" void app_main(void) {
     }
   }
 
-  if (!ConnectToSta(config, &status)) {
+  if (!ConnectToSta(&config, &status, &store)) {
     ESP_LOGW(kTag, "wifi connect failed, fallback sleep");
     config.failure_count += 1;
     store.Save(config);
@@ -544,8 +696,8 @@ extern "C" void app_main(void) {
     return;
   }
 
-  if (status.force_refresh) {
-    // 按键唤醒后提供 120 秒本地配置窗口，便于直接通过设备局域网 IP 调整参数。
+  if (open_sta_portal_window) {
+    // KEY 唤醒时提供 120 秒本地配置窗口，便于直接通过设备局域网 IP 调整参数。
     RunPortalWindowOnSta(&config, &status, &store);
   }
 
@@ -556,7 +708,8 @@ extern "C" void app_main(void) {
     const DeviceConfigSyncResult sync_result =
         OrchestratorClient::SyncDeviceConfig(&config, &store, static_cast<int64_t>(now));
     if (!sync_result.ok) {
-      ESP_LOGW(kTag, "orchestrator config sync failed: %s", sync_result.error.c_str());
+      ESP_LOGW(kTag, "orchestrator config sync failed: base=%s err=%s",
+               config.orchestrator_base_url.c_str(), sync_result.error.c_str());
     } else if (sync_result.updated) {
       ESP_LOGI(kTag, "orchestrator config updated to version=%d, reboot to apply",
                sync_result.config_version);
@@ -583,7 +736,8 @@ extern "C" void app_main(void) {
       ESP_LOGI(kTag, "orchestrator source=%s poll_after=%llus", status.image_source.c_str(),
                static_cast<unsigned long long>(success_sleep_seconds));
     } else {
-      ESP_LOGW(kTag, "orchestrator unavailable, fallback daily url: %s", directive.error.c_str());
+      ESP_LOGW(kTag, "orchestrator unavailable, base=%s, fallback daily url: %s",
+               config.orchestrator_base_url.c_str(), directive.error.c_str());
     }
   }
 
@@ -604,27 +758,39 @@ extern "C" void app_main(void) {
   bool render_ok = true;
 
   if (fetch.ok && fetch.data != nullptr && should_refresh_epd) {
-    PhotoPainterEpd epd;
-    PhotoPainterEpd::RenderOptions render_opts;
-    render_opts.panel_rotation = static_cast<uint8_t>(config.display_rotation);
-    render_opts.color_process_mode = static_cast<uint8_t>(config.color_process_mode);
-    render_opts.dithering_mode = static_cast<uint8_t>(config.dither_mode);
-    render_opts.six_color_tolerance = static_cast<uint8_t>(config.six_color_tolerance);
+    int retry_count = 0;
+    while (retry_count < kEpdRefreshMaxRetries) {
+      if (retry_count > 0) {
+        ESP_LOGW(kTag, "epd refresh retry %d/%d", retry_count, kEpdRefreshMaxRetries);
+        vTaskDelay(pdMS_TO_TICKS(kEpdRefreshRetryDelayMs));
+      }
 
-    ESP_LOGI(kTag,
-             "start e-paper refresh: force=%d changed=%d bytes=%u",
-             status.force_refresh ? 1 : 0, fetch.image_changed ? 1 : 0,
-             static_cast<unsigned>(fetch.data_len));
-    if (!epd.Init()) {
-      render_ok = false;
-      status.last_error = "epd init failed";
-      ESP_LOGE(kTag, "%s", status.last_error.c_str());
-    } else if (!epd.DrawBmp24(fetch.data, fetch.data_len, render_opts)) {
-      render_ok = false;
-      status.last_error = "bmp decode/render failed";
-      ESP_LOGE(kTag, "%s", status.last_error.c_str());
-    } else {
-      ESP_LOGI(kTag, "e-paper refresh done");
+      PhotoPainterEpd epd;
+      PhotoPainterEpd::RenderOptions render_opts;
+      render_opts.panel_rotation = static_cast<uint8_t>(config.display_rotation);
+      render_opts.color_process_mode = static_cast<uint8_t>(config.color_process_mode);
+      render_opts.dithering_mode = static_cast<uint8_t>(config.dither_mode);
+      render_opts.six_color_tolerance = static_cast<uint8_t>(config.six_color_tolerance);
+
+      ESP_LOGI(kTag,
+               "start e-paper refresh: force=%d changed=%d bytes=%u retry=%d",
+               status.force_refresh ? 1 : 0, fetch.image_changed ? 1 : 0,
+               static_cast<unsigned>(fetch.data_len), retry_count);
+
+      if (!epd.Init()) {
+        render_ok = false;
+        status.last_error = "epd init failed";
+        ESP_LOGE(kTag, "%s", status.last_error.c_str());
+      } else if (!epd.DrawBmp24(fetch.data, fetch.data_len, render_opts)) {
+        render_ok = false;
+        status.last_error = "bmp decode/render failed";
+        ESP_LOGE(kTag, "%s", status.last_error.c_str());
+      } else {
+        render_ok = true;
+        ESP_LOGI(kTag, "e-paper refresh done");
+        break;
+      }
+      retry_count += 1;
     }
   } else if (fetch.ok && fetch.data != nullptr) {
     ESP_LOGI(kTag, "image hash unchanged, skip e-paper refresh");
@@ -665,7 +831,9 @@ extern "C" void app_main(void) {
       payload.vbus_good = status.vbus_good;
       payload.image_source = status.image_source;
       payload.last_error = status.last_error;
-      OrchestratorClient::ReportCheckin(config, payload);
+      const bool checkin_ok = OrchestratorClient::ReportCheckin(config, payload);
+      ESP_LOGI(kTag, "orchestrator checkin (ok cycle): url=%s result=%s",
+               config.orchestrator_base_url.c_str(), checkin_ok ? "ok" : "fail");
     }
 
     ESP_LOGI(kTag,
@@ -713,7 +881,9 @@ extern "C" void app_main(void) {
     payload.vbus_good = status.vbus_good;
     payload.image_source = status.image_source;
     payload.last_error = status.last_error;
-    OrchestratorClient::ReportCheckin(config, payload);
+    const bool checkin_ok = OrchestratorClient::ReportCheckin(config, payload);
+    ESP_LOGI(kTag, "orchestrator checkin (fail cycle): url=%s result=%s",
+             config.orchestrator_base_url.c_str(), checkin_ok ? "ok" : "fail");
   }
 
   ESP_LOGW(kTag,

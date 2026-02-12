@@ -274,6 +274,17 @@ esp_err_t PortalServer::HandleGetConfig(httpd_req_t* req) {
 esp_err_t PortalServer::SendConfigJson(httpd_req_t* req) {
   cJSON* root = cJSON_CreateObject();
   cJSON_AddStringToObject(root, "wifi_ssid", config_->wifi_ssid.c_str());
+  cJSON_AddNumberToObject(root, "wifi_profile_count", config_->wifi_profile_count);
+  cJSON_AddNumberToObject(root, "last_connected_wifi_index", config_->last_connected_wifi_index);
+  cJSON* wifi_profiles = cJSON_CreateArray();
+  for (int i = 0; i < config_->wifi_profile_count && i < AppConfig::kMaxWifiProfiles; ++i) {
+    cJSON* item = cJSON_CreateObject();
+    cJSON_AddStringToObject(item, "ssid", config_->wifi_profiles[i].ssid.c_str());
+    cJSON_AddNumberToObject(item, "password_len",
+                            static_cast<double>(config_->wifi_profiles[i].password.size()));
+    cJSON_AddItemToArray(wifi_profiles, item);
+  }
+  cJSON_AddItemToObject(root, "wifi_profiles", wifi_profiles);
   cJSON_AddStringToObject(root, "image_url_template", config_->image_url_template.c_str());
   cJSON_AddNumberToObject(root, "orchestrator_enabled", config_->orchestrator_enabled);
   cJSON_AddStringToObject(root, "orchestrator_base_url", config_->orchestrator_base_url.c_str());

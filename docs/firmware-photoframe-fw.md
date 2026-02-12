@@ -9,7 +9,7 @@
 ## 已实现能力（阶段 C + D + 编排接入）
 
 1. **配网（Captive Portal）**
-   - 长按按键（GPIO4）上电 3 秒进入配网模式。
+   - 长按 KEY 或 BOOT 任一按键上电 3 秒进入配网模式。
    - 设备启动 AP：`PhotoFrame-Setup` / `12345678`
    - AP 网段固定为 `192.168.73.1/24`（避免与常见 `192.168.4.1` 冲突）。
    - 浏览器访问 `http://192.168.73.1/`
@@ -30,43 +30,49 @@
    - 退避上限 `retry_max_minutes`。
    - 连续失败计数持久化到 NVS。
 
-4. **按键唤醒增强（强制刷新 + 本地配置窗口）**
-   - 深睡时按键可触发外部唤醒（EXT1）。
-   - 按键唤醒后：
-     - 强制拉图（即使图片 hash 未变化也允许刷新）
-     - 在已连接家里 Wi-Fi 的情况下，开放 120 秒本地配置页（设备局域网 IP）
+4. **按键语义（KEY/BOOT 区分）**
+   - `KEY`：唤醒后仅开放 120 秒本地配置页（省电优先，不强制拉图）。
+   - `BOOT`：唤醒后强制拉图刷新（即使图片 hash 未变化也会刷新）。
+   - 深睡时 KEY/BOOT 都可作为 EXT1 唤醒源。
 
-5. **断网恢复机制**
+5. **多 Wi-Fi 记忆与自动回连**
+   - 最多记住 3 组 Wi-Fi 凭据（按最近配置顺序保留）。
+   - 唤醒时优先尝试上次成功连接的网络，再依次尝试其他已保存网络。
+   - 成功后会自动更新“上次成功网络索引”，下次优先同一网络。
+
+6. **断网恢复机制**
    - STA 模式自动重连 + 有限重试。
    - 连接失败进入退避深睡，下一轮自动恢复。
 
-6. **主任务稳定性加固**
+7. **主任务稳定性加固**
    - 将 `ESP main task` 栈提升到 8192，避免 HTTPS/TLS 超时路径触发栈溢出重启。
 
 
-7. **设备心跳上报（编排模式）**
+8. **设备心跳上报（编排模式）**
    - 每轮完成后上报 `checkin`（含 `next_wakeup_epoch`、失败计数、最近错误）。
    - 同时上报当前生效配置快照（用于 orchestrator 管理页“填空式配置”灰字提示）。
    - 后端可据此在 Web 端提示“插播预计生效时间”。
 
-8. **远端配置下发与应用回报**
+9. **远端配置下发与应用回报**
    - 每次唤醒后，设备会向编排服务查询配置版本：`GET /api/v1/device/config`
    - 有新版本时写入 NVS，并上报应用结果：`POST /api/v1/device/config/applied`
    - 应用新配置后自动重启，保证后续拉图流程按新参数执行。
 
-9. **本地配置接口（Portal）**
+10. **本地配置接口（Portal）**
    - `GET /api/config`：查询当前配置与运行状态。
    - `POST /api/config`：更新 Wi-Fi、编排服务地址、轮询间隔、重试参数、时区、旋转参数。
    - `GET /api/wifi/scan`：扫描 AP 列表。
 
-10. **电源状态采集与上报（每轮唤醒）**
+11. **电源状态采集与上报（每轮唤醒）**
    - 固件会读取 AXP2101 的电源状态：`battery_mv`、`battery_percent`、`charging`、`vbus_good`。
    - 串口每轮会打印 `power:` 与 `cycle ok/fail:` 日志，便于确认电池/充电状态。
    - 若启用 orchestrator，以上状态会随 `checkin` 一起上报，控制台可看到设备电量与供电状态。
 
 ## 配置项（NVS 持久化）
 
-- `wifi_ssid` / `wifi_password`
+- `wifi_ssid` / `wifi_password`（当前主用网络）
+- `wifi1_ssid` / `wifi1_pwd`、`wifi2_ssid` / `wifi2_pwd`（额外保存网络）
+- `last_wifi_idx`（上次成功连接网络索引）
 - `orchestrator_enabled`（`1=启用编排` `0=关闭编排`）
 - `orchestrator_base_url`（默认 `http://192.168.58.113:18081`）
 - `device_id`（首次自动生成，可手工覆盖）
@@ -121,7 +127,7 @@ curl -s -X POST http://192.168.73.1/api/config \
 JSON
 ```
 
-如果设备是“按键唤醒”进入的 120 秒窗口，请访问设备当前 STA IP（串口日志会打印 URL，例如 `http://192.168.58.120/`）。
+如果设备是 KEY 唤醒进入的 120 秒窗口，请访问设备当前 STA IP（串口日志会打印 URL，例如 `http://192.168.58.120/`）。
 
 ## 常见现象排查
 
@@ -147,6 +153,7 @@ JSON
 连接开始时会先打印 `wifi connect start: ssid=... password_len=...`，便于快速判断是否带上了密码。
 连接超时失败时，还会在 `wifi connect failed` 中带上最后一次断开原因，便于定位“密码错误 / 安全模式不兼容 / 信号问题”。
 每轮结束会打印 `cycle ok: local=... epoch=...`，校时成功后可直接按本地时间排查。
+每轮还会打印 `orchestrator checkin ... result=ok/fail`，用于确认设备状态上报是否成功。
 
 ## 编译
 
@@ -172,6 +179,7 @@ scripts/monitor-host.sh /dev/cu.usbmodemXXXX 115200
 scripts/monitor-host.sh --once /dev/cu.usbmodemXXXX 115200
 ```
 
+> 监控脚本固定 `--dtr 0 --rts 0`，尽量避免 USB 串口打开时触发复位造成刷新流程中断。
 
 ## USB / 供电说明
 

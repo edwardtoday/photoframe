@@ -33,7 +33,13 @@ git submodule update --init --recursive
 python3 scripts/fetch_waveshare_assets.py
 ```
 
-3) 查看 ESP-IDF Docker 工作流（编译/烧录/调试）：
+3) 一键更新 Waveshare 官方 submodule + 重拉 releases：
+
+```bash
+scripts/sync-waveshare-official.sh
+```
+
+4) 查看 ESP-IDF Docker 工作流（编译/烧录/调试）：
 
 ```bash
 cat docs/workflow-esp-idf-docker.md

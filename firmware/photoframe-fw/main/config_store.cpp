@@ -18,6 +18,51 @@ int ClampInt(int value, int min_v, int max_v) {
   }
   return value;
 }
+
+int FindWifiProfile(const WifiCredential* profiles, int count, const std::string& ssid) {
+  for (int i = 0; i < count; ++i) {
+    if (profiles[i].ssid == ssid) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+void AppendOrUpdateWifiProfile(WifiCredential* profiles, int* count, const std::string& ssid,
+                               const std::string& password) {
+  if (profiles == nullptr || count == nullptr || ssid.empty()) {
+    return;
+  }
+
+  const int existing = FindWifiProfile(profiles, *count, ssid);
+  if (existing >= 0) {
+    if (!password.empty()) {
+      profiles[existing].password = password;
+    }
+    return;
+  }
+
+  if (*count >= AppConfig::kMaxWifiProfiles) {
+    // 容量满时丢弃最旧条目，保留最近录入的 Wi-Fi 凭据。
+    for (int i = 1; i < AppConfig::kMaxWifiProfiles; ++i) {
+      profiles[i - 1] = profiles[i];
+    }
+    *count = AppConfig::kMaxWifiProfiles - 1;
+  }
+
+  profiles[*count].ssid = ssid;
+  profiles[*count].password = password;
+  *count += 1;
+}
+
+bool EraseKeyIfExists(nvs_handle_t nvs, const char* key) {
+  const esp_err_t err = nvs_erase_key(nvs, key);
+  if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) {
+    return true;
+  }
+  ESP_LOGE(kTag, "nvs_erase_key(%s) failed: %s", key, esp_err_to_name(err));
+  return false;
+}
 }  // namespace
 
 bool ConfigStore::Init() {
@@ -46,6 +91,27 @@ bool ConfigStore::Load(AppConfig* cfg) {
 
   cfg->wifi_ssid = GetString("wifi_ssid", "");
   cfg->wifi_password = GetString("wifi_pwd", "");
+
+  for (int i = 0; i < AppConfig::kMaxWifiProfiles; ++i) {
+    cfg->wifi_profiles[i] = WifiCredential{};
+  }
+  cfg->wifi_profile_count = 0;
+  AppendOrUpdateWifiProfile(cfg->wifi_profiles, &cfg->wifi_profile_count, cfg->wifi_ssid,
+                            cfg->wifi_password);
+
+  for (int i = 1; i < AppConfig::kMaxWifiProfiles; ++i) {
+    const std::string idx = std::to_string(i);
+    const std::string ssid = GetString(("wifi" + idx + "_ssid").c_str(), "");
+    const std::string password = GetString(("wifi" + idx + "_pwd").c_str(), "");
+    AppendOrUpdateWifiProfile(cfg->wifi_profiles, &cfg->wifi_profile_count, ssid, password);
+  }
+
+  cfg->last_connected_wifi_index =
+      GetI32("last_wifi_idx", static_cast<int32_t>(cfg->last_connected_wifi_index));
+  if (cfg->last_connected_wifi_index < 0 || cfg->last_connected_wifi_index >= cfg->wifi_profile_count) {
+    cfg->last_connected_wifi_index = -1;
+  }
+
   cfg->image_url_template = GetString("url_tpl", cfg->image_url_template);
   cfg->photo_token = GetString("photo_tok", cfg->photo_token);
   cfg->orchestrator_enabled = GetI32("orch_en", cfg->orchestrator_enabled) ? 1 : 0;
@@ -87,6 +153,22 @@ bool ConfigStore::Save(const AppConfig& cfg) {
     return false;
   }
 
+  WifiCredential profiles[AppConfig::kMaxWifiProfiles] = {};
+  int profile_count = 0;
+  AppendOrUpdateWifiProfile(profiles, &profile_count, cfg.wifi_ssid, cfg.wifi_password);
+  for (int i = 0; i < std::min(cfg.wifi_profile_count, AppConfig::kMaxWifiProfiles); ++i) {
+    AppendOrUpdateWifiProfile(profiles, &profile_count, cfg.wifi_profiles[i].ssid,
+                              cfg.wifi_profiles[i].password);
+  }
+
+  int32_t last_wifi_idx = static_cast<int32_t>(cfg.last_connected_wifi_index);
+  if (last_wifi_idx < 0 || last_wifi_idx >= profile_count) {
+    last_wifi_idx = static_cast<int32_t>(FindWifiProfile(profiles, profile_count, cfg.wifi_ssid));
+  }
+  if (last_wifi_idx < 0 || last_wifi_idx >= profile_count) {
+    last_wifi_idx = -1;
+  }
+
   if (!SetString("wifi_ssid", cfg.wifi_ssid) || !SetString("wifi_pwd", cfg.wifi_password) ||
       !SetString("url_tpl", cfg.image_url_template) || !SetString("photo_tok", cfg.photo_token) ||
       !SetI32("orch_en", cfg.orchestrator_enabled) ||
@@ -99,8 +181,25 @@ bool ConfigStore::Save(const AppConfig& cfg) {
       !SetI32("dither", cfg.dither_mode) || !SetI32("clr_tol", cfg.six_color_tolerance) ||
       !SetString("img_sha256", cfg.last_image_sha256) ||
       !SetI64("last_ok", cfg.last_success_epoch) || !SetI32("fail_cnt", cfg.failure_count) ||
-      !SetI32("cfg_ver", cfg.remote_config_version)) {
+      !SetI32("cfg_ver", cfg.remote_config_version) || !SetI32("last_wifi_idx", last_wifi_idx)) {
     return false;
+  }
+
+  for (int i = 1; i < AppConfig::kMaxWifiProfiles; ++i) {
+    const std::string idx = std::to_string(i);
+    const std::string ssid_key = "wifi" + idx + "_ssid";
+    const std::string pwd_key = "wifi" + idx + "_pwd";
+
+    if (i < profile_count) {
+      if (!SetString(ssid_key.c_str(), profiles[i].ssid) ||
+          !SetString(pwd_key.c_str(), profiles[i].password)) {
+        return false;
+      }
+    } else {
+      if (!EraseKeyIfExists(nvs_, ssid_key.c_str()) || !EraseKeyIfExists(nvs_, pwd_key.c_str())) {
+        return false;
+      }
+    }
   }
 
   esp_err_t err = nvs_commit(nvs_);
@@ -125,8 +224,20 @@ bool ConfigStore::ClearWifi() {
   if (nvs_ == 0) {
     return false;
   }
-  ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_erase_key(nvs_, "wifi_ssid"));
-  ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_erase_key(nvs_, "wifi_pwd"));
+
+  if (!EraseKeyIfExists(nvs_, "wifi_ssid") || !EraseKeyIfExists(nvs_, "wifi_pwd") ||
+      !EraseKeyIfExists(nvs_, "last_wifi_idx")) {
+    return false;
+  }
+
+  for (int i = 1; i < AppConfig::kMaxWifiProfiles; ++i) {
+    const std::string idx = std::to_string(i);
+    if (!EraseKeyIfExists(nvs_, ("wifi" + idx + "_ssid").c_str()) ||
+        !EraseKeyIfExists(nvs_, ("wifi" + idx + "_pwd").c_str())) {
+      return false;
+    }
+  }
+
   return nvs_commit(nvs_) == ESP_OK;
 }
 

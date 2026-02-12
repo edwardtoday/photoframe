@@ -5,6 +5,11 @@
 
 #include "nvs.h"
 
+struct WifiCredential {
+  std::string ssid;
+  std::string password;
+};
+
 struct AppConfig {
   enum ColorProcessMode {
     kColorProcessAuto = 0,
@@ -16,6 +21,11 @@ struct AppConfig {
     kDitherNone = 0,
     kDitherOrdered = 1,
   };
+
+  static constexpr int kMaxWifiProfiles = 3;
+  WifiCredential wifi_profiles[kMaxWifiProfiles];
+  int wifi_profile_count = 0;
+  int last_connected_wifi_index = -1;
 
   std::string wifi_ssid;
   std::string wifi_password;

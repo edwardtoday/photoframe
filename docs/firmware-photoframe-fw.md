@@ -172,11 +172,14 @@ scripts/flash-host.py \
 ## 串口监控
 
 ```bash
-# 默认自动重连（设备深睡或串口重枚举后会继续监听）
+# 默认在 rc=0 时停止重连，避免设备深睡后被串口反复唤醒
 scripts/monitor-host.sh /dev/cu.usbmodemXXXX 115200
 
 # 单次模式（行为与旧版一致）
 scripts/monitor-host.sh --once /dev/cu.usbmodemXXXX 115200
+
+# 如需恢复“rc=0 也自动重连”的旧行为
+MONITOR_AUTO_RECONNECT_ON_CLEAN_EXIT=1 scripts/monitor-host.sh /dev/cu.usbmodemXXXX 115200
 ```
 
 > 监控脚本固定 `--dtr 0 --rts 0`，尽量避免 USB 串口打开时触发复位造成刷新流程中断。

@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "cJSON.h"
+#include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -14,6 +15,20 @@
 namespace {
 constexpr const char* kTag = "orchestrator";
 constexpr int kHttpTimeoutMs = 12000;
+
+bool IsHttpsUrl(const std::string& url) {
+  return url.rfind("https://", 0) == 0;
+}
+
+void ConfigureTlsForHttps(const std::string& url, esp_http_client_config_t* cfg) {
+  if (cfg == nullptr) {
+    return;
+  }
+  if (IsHttpsUrl(url)) {
+    // Orchestrator 使用 HTTPS 时必须启用证书校验，避免在 IDF 5.5 下握手阶段直接失败。
+    cfg->crt_bundle_attach = esp_crt_bundle_attach;
+  }
+}
 
 std::string TrimTrailingSlash(const std::string& input) {
   std::string out = input;
@@ -260,6 +275,7 @@ FrameDirective OrchestratorClient::FetchDirective(const AppConfig& cfg, time_t n
   http_cfg.url = url.c_str();
   http_cfg.timeout_ms = kHttpTimeoutMs;
   http_cfg.disable_auto_redirect = false;
+  ConfigureTlsForHttps(url, &http_cfg);
 
   esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
   if (client == nullptr) {
@@ -356,6 +372,7 @@ DeviceConfigSyncResult OrchestratorClient::SyncDeviceConfig(AppConfig* cfg, Conf
   http_cfg.url = url.c_str();
   http_cfg.timeout_ms = kHttpTimeoutMs;
   http_cfg.disable_auto_redirect = false;
+  ConfigureTlsForHttps(url, &http_cfg);
 
   esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
   if (client == nullptr) {
@@ -470,6 +487,7 @@ bool OrchestratorClient::ReportConfigApplied(const AppConfig& cfg, int config_ve
   http_cfg.timeout_ms = kHttpTimeoutMs;
   http_cfg.method = HTTP_METHOD_POST;
   http_cfg.disable_auto_redirect = false;
+  ConfigureTlsForHttps(url, &http_cfg);
 
   esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
   if (client == nullptr) {
@@ -534,6 +552,7 @@ bool OrchestratorClient::ReportCheckin(const AppConfig& cfg, const DeviceCheckin
   http_cfg.timeout_ms = kHttpTimeoutMs;
   http_cfg.method = HTTP_METHOD_POST;
   http_cfg.disable_auto_redirect = false;
+  ConfigureTlsForHttps(url, &http_cfg);
 
   esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
   if (client == nullptr) {

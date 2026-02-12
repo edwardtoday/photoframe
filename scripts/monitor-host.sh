@@ -25,7 +25,9 @@ if [[ ! -x "${VENV_PY}" ]]; then
 fi
 
 echo "[info] 监控串口 ${PORT} @ ${BAUD}"
-echo "[info] Ctrl+C 退出；串口断开后会自动重连"
+echo "[info] Ctrl+C 退出；异常断开会自动重连（rc=0 默认停止，避免深睡被唤醒）"
+
+AUTO_RECONNECT_ON_CLEAN_EXIT="${MONITOR_AUTO_RECONNECT_ON_CLEAN_EXIT:-0}"
 
 while true; do
   set +e
@@ -39,6 +41,11 @@ while true; do
   fi
 
   if [[ ${rc} -eq 0 ]]; then
+    if [[ "${AUTO_RECONNECT_ON_CLEAN_EXIT}" != "1" ]]; then
+      echo "[info] 监控已退出（rc=0）。默认停止重连，避免在设备深睡后被串口反复唤醒。"
+      echo "[hint] 如需保持旧行为，请设置 MONITOR_AUTO_RECONNECT_ON_CLEAN_EXIT=1"
+      exit 0
+    fi
     echo "[info] 监控已退出（rc=0），1 秒后重连；按 Ctrl+C 可结束。"
   else
     echo "[warn] 串口已断开（rc=${rc}），1 秒后自动重连..."

@@ -45,6 +45,28 @@ docker compose -f docker-compose.photoframe-orchestrator.prod.yml pull
 docker compose -f docker-compose.photoframe-orchestrator.prod.yml up -d
 ```
 
+## 生产 Docker（NAS，离线投送，不 pull）
+
+适合 NAS 外网不稳定、或希望明确绕过 `docker compose pull` 的场景。
+
+```bash
+# 默认目标：tvs675（ssh config）
+# 默认 tag：当前 git 短 SHA
+scripts/deploy-orchestrator-offline-to-tvs675.sh
+
+# 指定 tag
+scripts/deploy-orchestrator-offline-to-tvs675.sh 0.1.0
+
+# 只预演不执行
+DRY_RUN=1 scripts/deploy-orchestrator-offline-to-tvs675.sh
+```
+
+脚本关键行为：
+- 本机构建 `linux/amd64` 镜像并导出 tar
+- 通过 `scp` 投送到 NAS
+- NAS 执行 `docker load`
+- 在远端 compose 目录执行 `docker compose up -d --pull never --force-recreate`
+
 ## 发布 multi-arch 镜像
 
 ```bash

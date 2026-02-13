@@ -6,6 +6,7 @@
 
 - 设备拉取：`GET /api/v1/device/next`
 - 设备心跳：`POST /api/v1/device/checkin`
+- 电池采样历史：`GET /api/v1/power-samples`（用于控制台曲线/续航估算）
 - 设备配置同步：
   - 管理端发布：`POST /api/v1/device-config`
   - 设备查询：`GET /api/v1/device/config`

@@ -8,6 +8,8 @@ function authHeaders() {
 
 let previewBlobUrl = null;
 let deviceMap = new Map();
+let powerChartCache = null;
+let powerResizeTimer = null;
 
 const PUBLIC_DAILY_EXAMPLE_URL = 'https://example.com/daily.bmp';
 const TOKEN_STORAGE_KEY = 'photoframe.console.token';
@@ -165,6 +167,393 @@ function powerSourceText(device) {
     return '-';
   }
   return `${vbusText} / ${chargeText}`;
+}
+
+function normalizeBinaryFlag(value) {
+  const v = Number(value);
+  if (v === 0 || v === 1) return v;
+  return null;
+}
+
+function medianInt(values) {
+  if (!values || values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+function estimateSampleIntervalSeconds(items) {
+  if (!items || items.length < 2) return null;
+  const diffs = [];
+  for (let i = 1; i < items.length; i++) {
+    const prev = Number(items[i - 1]?.sample_epoch);
+    const cur = Number(items[i]?.sample_epoch);
+    if (!Number.isFinite(prev) || !Number.isFinite(cur)) continue;
+    const diff = cur - prev;
+    if (diff > 0 && diff < 365 * 24 * 3600) {
+      diffs.push(diff);
+    }
+  }
+  return medianInt(diffs);
+}
+
+function fmtEpochCompact(ts) {
+  if (!ts) return '-';
+  const d = new Date(ts * 1000);
+  // 避免表格太长：优先展示 月-日 时:分
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  return `${mm}-${dd} ${hh}:${mi}`;
+}
+
+function analyzeLatestDischarge(items, thresholdPercent) {
+  // 口径：最近一次 vbus_good 1->0（拔 USB）到 battery_percent <= 阈值 的时长（估算）。
+  if (!items || items.length === 0) {
+    return { ok: false, reason: '暂无采样数据' };
+  }
+
+  let prevVbus = null;
+  let unplugIdx = null;
+  for (let i = 0; i < items.length; i++) {
+    const vbus = normalizeBinaryFlag(items[i]?.vbus_good);
+    if (prevVbus === 1 && vbus === 0) {
+      unplugIdx = i;
+    }
+    if (vbus != null) {
+      prevVbus = vbus;
+    }
+  }
+
+  if (unplugIdx == null) {
+    const anyBattery = items.some((it) => normalizeBinaryFlag(it?.vbus_good) === 0);
+    if (anyBattery) {
+      return { ok: false, reason: '窗口内一直处于电池供电或缺少 USB→电池 转折点，可尝试扩大时间窗' };
+    }
+    return { ok: false, reason: '未检测到拔 USB(vbus_good 1→0) 事件（可能 vbus_good 未上报）' };
+  }
+
+  const start = items[unplugIdx];
+  const startEpoch = Number(start.sample_epoch);
+  const startPercentRaw = Number(start.battery_percent);
+  const startPercent = Number.isFinite(startPercentRaw) && startPercentRaw >= 0 ? startPercentRaw : null;
+
+  let minPercent = null;
+  let endEpoch = null;
+  let endPercent = null;
+  let endReason = 'ongoing';
+  let plugEpoch = null;
+
+  for (let i = unplugIdx; i < items.length; i++) {
+    const item = items[i];
+    const vbus = normalizeBinaryFlag(item?.vbus_good);
+    if (i > unplugIdx && vbus === 1) {
+      plugEpoch = Number(item.sample_epoch);
+      endEpoch = plugEpoch;
+      endReason = 'plugged';
+      break;
+    }
+
+    const pRaw = Number(item?.battery_percent);
+    if (Number.isFinite(pRaw) && pRaw >= 0) {
+      minPercent = minPercent == null ? pRaw : Math.min(minPercent, pRaw);
+      if (pRaw <= thresholdPercent) {
+        endEpoch = Number(item.sample_epoch);
+        endPercent = pRaw;
+        endReason = 'threshold';
+        break;
+      }
+    }
+  }
+
+  if (endEpoch == null) {
+    const last = items[items.length - 1];
+    endEpoch = Number(last.sample_epoch) || startEpoch;
+  }
+
+  const durationSeconds = Math.max(0, endEpoch - startEpoch);
+  const last = items[items.length - 1];
+  const lastEpoch = Number(last.sample_epoch) || null;
+  const lastPercentRaw = Number(last.battery_percent);
+  const lastPercent = Number.isFinite(lastPercentRaw) && lastPercentRaw >= 0 ? lastPercentRaw : null;
+
+  return {
+    ok: true,
+    start_epoch: startEpoch,
+    start_percent: startPercent,
+    end_epoch: endEpoch,
+    end_percent: endPercent,
+    end_reason: endReason,
+    plug_epoch: plugEpoch,
+    duration_seconds: durationSeconds,
+    min_percent: minPercent,
+    last_epoch: lastEpoch,
+    last_percent: lastPercent,
+  };
+}
+
+function prepareHiDPICanvas(canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = Math.max(1, Math.floor(rect.width));
+  const cssH = Math.max(1, Math.floor(rect.height));
+  const pixW = Math.max(1, Math.floor(cssW * dpr));
+  const pixH = Math.max(1, Math.floor(cssH * dpr));
+
+  if (canvas.width !== pixW || canvas.height !== pixH) {
+    canvas.width = pixW;
+    canvas.height = pixH;
+  }
+
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, width: cssW, height: cssH };
+}
+
+function drawPowerChart(canvas, items, opts) {
+  const { ctx, width, height } = prepareHiDPICanvas(canvas);
+  ctx.clearRect(0, 0, width, height);
+
+  const pad = { l: 54, r: 68, t: 26, b: 30 };
+  const x0 = pad.l;
+  const x1 = width - pad.r;
+  const y0 = pad.t;
+  const y1 = height - pad.b;
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+
+  if (!items || items.length === 0) {
+    ctx.fillStyle = '#5f6980';
+    ctx.font = '12px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('暂无电池采样数据（等待设备 checkin 上报）', width / 2, height / 2);
+    return;
+  }
+
+  const fromEpoch = Number(opts?.fromEpoch);
+  const toEpoch = Number(opts?.toEpoch);
+  const xMin = Number.isFinite(fromEpoch) ? fromEpoch : Number(items[0].sample_epoch);
+  const xMaxRaw = Number.isFinite(toEpoch) ? toEpoch : Number(items[items.length - 1].sample_epoch);
+  const xMax = xMaxRaw > xMin ? xMaxRaw : xMin + 1;
+
+  const mvValues = items
+    .map((it) => Number(it?.battery_mv))
+    .filter((mv) => Number.isFinite(mv) && mv > 0);
+  let mvMin = null;
+  let mvMax = null;
+  if (mvValues.length > 0) {
+    mvMin = Math.min(...mvValues);
+    mvMax = Math.max(...mvValues);
+    if (mvMax === mvMin) {
+      mvMax = mvMin + 1;
+    }
+    // 适当加一点 padding，避免线条顶到边。
+    mvMin = Math.max(0, mvMin - 60);
+    mvMax = mvMax + 60;
+  }
+
+  const xScale = (epoch) => x0 + ((epoch - xMin) / (xMax - xMin)) * (x1 - x0);
+  const yPercent = (p) => y1 - (p / 100) * (y1 - y0);
+  const yMv = (mv) => y1 - ((mv - mvMin) / (mvMax - mvMin)) * (y1 - y0);
+
+  // 背景：USB / 电池 供电区间（按 vbus_good 分段）。
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const vbus = normalizeBinaryFlag(item?.vbus_good);
+    if (vbus == null) continue;
+    const segStart = Number(item.sample_epoch);
+    const segEnd = i + 1 < items.length ? Number(items[i + 1].sample_epoch) : xMax;
+    if (!Number.isFinite(segStart) || !Number.isFinite(segEnd)) continue;
+
+    ctx.fillStyle = vbus === 1 ? 'rgba(53, 88, 229, 0.06)' : 'rgba(212, 133, 28, 0.06)';
+    const sx = xScale(segStart);
+    const ex = xScale(Math.min(segEnd, xMax));
+    ctx.fillRect(sx, y0, Math.max(0, ex - sx), y1 - y0);
+  }
+
+  // 顶部条：充电中/未充电（按 charging 分段）。
+  const chargeBarH = 6;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const charging = normalizeBinaryFlag(item?.charging);
+    if (charging == null) continue;
+    const segStart = Number(item.sample_epoch);
+    const segEnd = i + 1 < items.length ? Number(items[i + 1].sample_epoch) : xMax;
+    if (!Number.isFinite(segStart) || !Number.isFinite(segEnd)) continue;
+
+    ctx.fillStyle = charging === 1 ? 'rgba(47, 158, 100, 0.38)' : 'rgba(58, 66, 87, 0.22)';
+    const sx = xScale(segStart);
+    const ex = xScale(Math.min(segEnd, xMax));
+    ctx.fillRect(sx, y0, Math.max(0, ex - sx), chargeBarH);
+  }
+
+  // 网格：百分比 0/25/50/75/100
+  ctx.strokeStyle = 'rgba(230, 233, 240, 1)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (const p of [0, 25, 50, 75, 100]) {
+    const y = yPercent(p);
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x1, y);
+  }
+  ctx.stroke();
+
+  // 轴与标注
+  ctx.fillStyle = '#5f6980';
+  ctx.font = '11px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (const p of [0, 50, 100]) {
+    ctx.fillText(`${p}%`, x0 - 8, yPercent(p));
+  }
+
+  if (mvMin != null && mvMax != null) {
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const mid = Math.round((mvMin + mvMax) / 2);
+    for (const mv of [mvMin, mid, mvMax]) {
+      ctx.fillText(`${Math.round(mv)}mV`, x1 + 8, yMv(mv));
+    }
+  }
+
+  // X 轴：起点/中点/终点
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const xTicks = [xMin, Math.floor((xMin + xMax) / 2), xMax];
+  for (const ts of xTicks) {
+    const x = xScale(ts);
+    ctx.fillText(fmtEpochCompact(ts), x, y1 + 6);
+  }
+
+  // 线条：battery_percent
+  ctx.strokeStyle = 'rgba(53, 88, 229, 0.95)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  let moved = false;
+  for (const it of items) {
+    const ts = Number(it?.sample_epoch);
+    const p = Number(it?.battery_percent);
+    if (!Number.isFinite(ts) || !Number.isFinite(p) || p < 0) {
+      moved = false;
+      continue;
+    }
+    const x = xScale(ts);
+    const y = yPercent(Math.max(0, Math.min(100, p)));
+    if (!moved) {
+      ctx.moveTo(x, y);
+      moved = true;
+    } else {
+      ctx.lineTo(x, y);
+    }
+  }
+  ctx.stroke();
+
+  // 线条：battery_mv
+  if (mvMin != null && mvMax != null) {
+    ctx.strokeStyle = 'rgba(212, 133, 28, 0.95)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    moved = false;
+    for (const it of items) {
+      const ts = Number(it?.sample_epoch);
+      const mv = Number(it?.battery_mv);
+      if (!Number.isFinite(ts) || !Number.isFinite(mv) || mv <= 0) {
+        moved = false;
+        continue;
+      }
+      const x = xScale(ts);
+      const y = yMv(mv);
+      if (!moved) {
+        ctx.moveTo(x, y);
+        moved = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.stroke();
+  }
+}
+
+async function loadPowerSamples() {
+  const deviceId = (document.getElementById('powerDeviceId')?.value || '').trim();
+  const daysRaw = Number(document.getElementById('powerDays')?.value || 30);
+  const thresholdRaw = Number(document.getElementById('powerLowThreshold')?.value || 10);
+
+  if (!deviceId) {
+    setText('powerSummary', '请选择设备后再刷新曲线。');
+    setText('powerHint', '');
+    const canvas = document.getElementById('powerCanvas');
+    if (canvas) {
+      // 画一个空白提示，避免看起来像“没生效”。
+      canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    return;
+  }
+
+  const days = Math.max(1, Math.min(365, Math.floor(daysRaw)));
+  const threshold = Math.max(0, Math.min(100, Math.floor(thresholdRaw)));
+
+  setText('powerSummary', `加载中：${deviceId} · 最近 ${days} 天…`);
+  setText('powerHint', '');
+
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  const fromEpoch = nowEpoch - days * 24 * 3600;
+  const query = `?device_id=${encodeURIComponent(deviceId)}&from_epoch=${fromEpoch}&to_epoch=${nowEpoch}&limit=20000`;
+  const data = await fetchJson(`/api/v1/power-samples${query}`);
+
+  const items = data.items || [];
+  const interval = estimateSampleIntervalSeconds(items);
+  const intervalText = interval ? `采样间隔≈${fmtDuration(interval)}（估算误差不超过一个采样周期）` : '采样间隔：-';
+
+  const discharge = analyzeLatestDischarge(items, threshold);
+  if (!discharge.ok) {
+    setText('powerSummary', `${deviceId} · ${discharge.reason}`);
+  } else {
+    const startText = fmtEpoch(discharge.start_epoch);
+    const durationText = fmtDuration(discharge.duration_seconds);
+    const startPercent = discharge.start_percent != null ? `${discharge.start_percent}%` : '-';
+    const minPercent = discharge.min_percent != null ? `${discharge.min_percent}%` : '-';
+
+    if (discharge.end_reason === 'threshold') {
+      const endText = fmtEpoch(discharge.end_epoch);
+      const endPercent = discharge.end_percent != null ? `${discharge.end_percent}%` : '-';
+      setText(
+        'powerSummary',
+        `最近一次放电：${startText} 拔 USB → ${endText} ≤ ${threshold}%（${durationText}，${startPercent} → ${endPercent}）`
+      );
+    } else if (discharge.end_reason === 'plugged') {
+      const plugText = fmtEpoch(discharge.plug_epoch);
+      setText(
+        'powerSummary',
+        `最近一次拔 USB：${startText}（起始 ${startPercent}，最低 ${minPercent}）· 在达到 ${threshold}% 前于 ${plugText} 接入 USB`
+      );
+    } else {
+      const lastText = fmtEpoch(discharge.last_epoch);
+      const lastPercent = discharge.last_percent != null ? `${discharge.last_percent}%` : '-';
+      setText(
+        'powerSummary',
+        `最近一次拔 USB：${startText}（起始 ${startPercent}）· 已持续 ${durationText}，最新 ${lastText} 电量 ${lastPercent}（阈值 ${threshold}%）`
+      );
+    }
+  }
+
+  setText(
+    'powerHint',
+    `${items.length} 点 · ${fmtEpoch(data.from_epoch)} ~ ${fmtEpoch(data.to_epoch)} · ${intervalText}`
+  );
+
+  const canvas = document.getElementById('powerCanvas');
+  if (canvas) {
+    powerChartCache = {
+      device_id: deviceId,
+      from_epoch: data.from_epoch,
+      to_epoch: data.to_epoch,
+      items,
+    };
+    drawPowerChart(canvas, items, { fromEpoch: data.from_epoch, toEpoch: data.to_epoch });
+  }
 }
 
 function setText(id, text) {
@@ -384,12 +773,17 @@ async function loadDevices() {
   const body = document.getElementById('devicesBody');
   const overrideDeviceSelect = document.getElementById('deviceId');
   const configDeviceSelect = document.getElementById('configDeviceId');
+  const powerDeviceSelect = document.getElementById('powerDeviceId');
   const selectedOverrideBefore = overrideDeviceSelect.value;
   const selectedConfigBefore = configDeviceSelect.value;
+  const selectedPowerBefore = powerDeviceSelect ? powerDeviceSelect.value : '';
 
   body.innerHTML = '';
   overrideDeviceSelect.innerHTML = '<option value="*">全部设备 (*)</option>';
   configDeviceSelect.innerHTML = '<option value="*">全部设备 (*)</option>';
+  if (powerDeviceSelect) {
+    powerDeviceSelect.innerHTML = '<option value="">请选择设备</option>';
+  }
 
   const devices = data.devices || [];
   deviceMap = new Map();
@@ -422,6 +816,9 @@ async function loadDevices() {
 
     appendDeviceOption(overrideDeviceSelect, d.device_id);
     appendDeviceOption(configDeviceSelect, d.device_id);
+    if (powerDeviceSelect) {
+      appendDeviceOption(powerDeviceSelect, d.device_id);
+    }
   }
 
   if ([...overrideDeviceSelect.options].some((o) => o.value === selectedOverrideBefore)) {
@@ -429,6 +826,14 @@ async function loadDevices() {
   }
   if ([...configDeviceSelect.options].some((o) => o.value === selectedConfigBefore)) {
     configDeviceSelect.value = selectedConfigBefore;
+  }
+  if (powerDeviceSelect) {
+    if ([...powerDeviceSelect.options].some((o) => o.value === selectedPowerBefore)) {
+      powerDeviceSelect.value = selectedPowerBefore;
+    } else if (powerDeviceSelect.options.length === 2) {
+      // 只有一台设备时，默认选中，减少点击。
+      powerDeviceSelect.value = powerDeviceSelect.options[1].value;
+    }
   }
 
   updateConfigHints();
@@ -752,6 +1157,45 @@ document.getElementById('previewBtn').addEventListener('click', async () => {
   } catch (err) {
     document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
   }
+});
+
+async function loadPowerSamplesSafe() {
+  try {
+    await loadPowerSamples();
+  } catch (err) {
+    setText('powerSummary', `电池曲线加载失败: ${err.message}`);
+    setText('powerHint', '');
+  }
+}
+
+document.getElementById('powerRefreshBtn').addEventListener('click', async () => {
+  await loadPowerSamplesSafe();
+});
+
+document.getElementById('powerDeviceId').addEventListener('change', async () => {
+  await loadPowerSamplesSafe();
+});
+
+document.getElementById('powerDays').addEventListener('change', async () => {
+  await loadPowerSamplesSafe();
+});
+
+document.getElementById('powerLowThreshold').addEventListener('change', async () => {
+  await loadPowerSamplesSafe();
+});
+
+window.addEventListener('resize', () => {
+  if (powerResizeTimer) {
+    clearTimeout(powerResizeTimer);
+  }
+  powerResizeTimer = setTimeout(() => {
+    const canvas = document.getElementById('powerCanvas');
+    if (!canvas || !powerChartCache) return;
+    drawPowerChart(canvas, powerChartCache.items, {
+      fromEpoch: powerChartCache.from_epoch,
+      toEpoch: powerChartCache.to_epoch,
+    });
+  }, 120);
 });
 
 document.getElementById('deviceId').addEventListener('change', async () => {

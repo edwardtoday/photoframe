@@ -227,6 +227,7 @@ Query:
 ## 5) 查询与管理
 
 - `GET /api/v1/devices`：设备状态（含 `next_wakeup_epoch` 与配置同步状态）
+- `GET /api/v1/power-samples`：电池采样历史（用于曲线展示与续航估算）
 - `GET /api/v1/overrides`：插播列表（含状态 active/upcoming/expired）
 - `DELETE /api/v1/overrides/{id}`：取消插播
 - `GET /api/v1/device-tokens?pending_only=1`：查看待审批设备 token 列表
@@ -245,6 +246,47 @@ Query:
 - `reported_config_epoch`
 - `reported_config`（设备上报配置快照，敏感值脱敏）
 - `battery_mv` / `battery_percent` / `charging` / `vbus_good`
+
+### 5.1) 电池采样历史（曲线/续航估算）
+
+`GET /api/v1/power-samples`
+
+Query：
+
+- `device_id`：必填，不能为 `*`
+- `from_epoch`：可选，默认 `now - 30 天`
+- `to_epoch`：可选，默认 `now`
+- `limit`：可选（1-20000，默认 5000）
+
+Header：
+
+- `X-PhotoFrame-Token`：管理端 token（当 `PHOTOFRAME_TOKEN` 已配置时必填）
+
+Response：
+
+```json
+{
+  "now_epoch": 1760000600,
+  "device_id": "pf-a1b2c3d4",
+  "from_epoch": 1757408600,
+  "to_epoch": 1760000600,
+  "count": 2,
+  "items": [
+    {
+      "sample_epoch": 1760000000,
+      "battery_mv": 3987,
+      "battery_percent": 84,
+      "charging": 1,
+      "vbus_good": 1
+    }
+  ]
+}
+```
+
+说明：
+
+- 服务端会在每次设备 `POST /api/v1/device/checkin` 时追加采样（`sample_epoch` 取 `checkin_epoch`）。
+- 服务端默认保留最近 365 天采样，超期数据会自动清理。
 
 ## 6) 当前下发图片预览（管理页）
 

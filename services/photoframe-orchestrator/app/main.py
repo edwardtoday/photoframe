@@ -40,6 +40,9 @@ TZ_NAME = os.getenv("TZ", "Asia/Shanghai")
 LOCAL_TZ = ZoneInfo(TZ_NAME)
 APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.5")
 DEVICE_CONFIG_MAX_HISTORY = 200
+POWER_SAMPLE_DEFAULT_DAYS = 30
+POWER_SAMPLE_RETENTION_DAYS = 365
+POWER_SAMPLE_RETENTION_SECONDS = POWER_SAMPLE_RETENTION_DAYS * 24 * 3600
 DEVICE_CONFIG_ALLOWED_KEYS = {
     "orchestrator_enabled",
     "orchestrator_base_url",
@@ -135,6 +138,20 @@ def _init_db() -> None:
           reported_config_epoch INTEGER NOT NULL DEFAULT 0,
           updated_at INTEGER NOT NULL DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS device_power_samples (
+          device_id TEXT NOT NULL,
+          sample_epoch INTEGER NOT NULL,
+          received_epoch INTEGER NOT NULL,
+          battery_mv INTEGER NOT NULL,
+          battery_percent INTEGER NOT NULL,
+          charging INTEGER NOT NULL,
+          vbus_good INTEGER NOT NULL,
+          PRIMARY KEY (device_id, sample_epoch)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_power_samples_received_epoch
+          ON device_power_samples (received_epoch);
 
         CREATE TABLE IF NOT EXISTS overrides (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -881,6 +898,10 @@ def device_checkin(
   now_ts = _now_epoch()
   reported_config = _sanitize_reported_device_config(payload.reported_config)
   reported_config_json = json.dumps(reported_config, ensure_ascii=False)
+  battery_mv = int(payload.battery_mv)
+  battery_percent = int(payload.battery_percent)
+  charging = int(payload.charging)
+  vbus_good = int(payload.vbus_good)
 
   conn = _ensure_db()
   with DB_LOCK:
@@ -923,15 +944,49 @@ def device_checkin(
             1 if payload.image_changed else 0,
             payload.image_source,
             payload.last_error,
-            int(payload.battery_mv),
-            int(payload.battery_percent),
-            int(payload.charging),
-            int(payload.vbus_good),
+            battery_mv,
+            battery_percent,
+            charging,
+            vbus_good,
             reported_config_json,
             int(payload.checkin_epoch),
             now_ts,
         ),
     )
+    # 记录电池采样历史，用于控制台曲线与续航估算。
+    has_power_sample = (
+        (battery_mv > 0)
+        or (battery_percent >= 0)
+        or (charging in (0, 1))
+        or (vbus_good in (0, 1))
+    )
+    if has_power_sample:
+      conn.execute(
+          """
+          INSERT INTO device_power_samples (
+            device_id, sample_epoch, received_epoch,
+            battery_mv, battery_percent, charging, vbus_good
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(device_id, sample_epoch) DO UPDATE SET
+            received_epoch = excluded.received_epoch,
+            battery_mv = excluded.battery_mv,
+            battery_percent = excluded.battery_percent,
+            charging = excluded.charging,
+            vbus_good = excluded.vbus_good
+          """,
+          (
+              payload.device_id,
+              int(payload.checkin_epoch),
+              now_ts,
+              battery_mv,
+              battery_percent,
+              charging,
+              vbus_good,
+          ),
+      )
+
+    cutoff = now_ts - POWER_SAMPLE_RETENTION_SECONDS
+    conn.execute("DELETE FROM device_power_samples WHERE received_epoch < ?", (cutoff,))
     conn.commit()
 
   return {"ok": True}
@@ -1196,6 +1251,63 @@ def devices() -> dict[str, Any]:
     )
 
   return {"now_epoch": now_ts, "devices": items}
+
+
+@app.get("/api/v1/power-samples")
+def power_samples(
+    device_id: str = Query(..., min_length=1, max_length=64),
+    from_epoch: int | None = Query(default=None),
+    to_epoch: int | None = Query(default=None),
+    limit: int = Query(default=5000),
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+
+  conn = _ensure_db()
+  now_ts = _now_epoch()
+  target = _normalize_device_id(device_id)
+  if target == "*":
+    raise HTTPException(status_code=400, detail="device_id invalid")
+
+  start_ts = now_ts - POWER_SAMPLE_DEFAULT_DAYS * 24 * 3600 if from_epoch is None else int(from_epoch)
+  end_ts = now_ts if to_epoch is None else int(to_epoch)
+  if end_ts < start_ts:
+    raise HTTPException(status_code=400, detail="time range invalid")
+
+  max_rows = _clamp(limit, 1, 20000)
+  rows = conn.execute(
+      """
+      SELECT sample_epoch, battery_mv, battery_percent, charging, vbus_good
+      FROM device_power_samples
+      WHERE device_id = ?
+        AND sample_epoch >= ?
+        AND sample_epoch <= ?
+      ORDER BY sample_epoch ASC
+      LIMIT ?
+      """,
+      (target, start_ts, end_ts, max_rows),
+  ).fetchall()
+
+  items: list[dict[str, int]] = []
+  for row in rows:
+    items.append(
+        {
+            "sample_epoch": int(row["sample_epoch"]),
+            "battery_mv": int(row["battery_mv"]),
+            "battery_percent": int(row["battery_percent"]),
+            "charging": int(row["charging"]),
+            "vbus_good": int(row["vbus_good"]),
+        }
+    )
+
+  return {
+      "now_epoch": now_ts,
+      "device_id": target,
+      "from_epoch": start_ts,
+      "to_epoch": end_ts,
+      "count": len(items),
+      "items": items,
+  }
 
 
 @app.get("/api/v1/device-configs")

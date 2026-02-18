@@ -61,6 +61,12 @@ scripts/deploy-orchestrator-offline-to-tvs675.sh 0.1.0
 DRY_RUN=1 scripts/deploy-orchestrator-offline-to-tvs675.sh
 ```
 
+如遇 ssh-agent 不可用/签名失败，可显式指定私钥并强制仅使用该身份：
+
+```bash
+SSH_IDENTITY_FILE=~/.ssh/id_rsa scripts/deploy-orchestrator-offline-to-tvs675.sh
+```
+
 脚本关键行为：
 - 本机构建 `linux/amd64` 镜像并导出 tar
 - 通过 `scp` 投送到 NAS

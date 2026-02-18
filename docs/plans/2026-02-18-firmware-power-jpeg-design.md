@@ -101,9 +101,9 @@
 
 ### 组件与依赖选择
 
-借鉴 upstream 的实现，使用 `espressif/esp_jpeg`（通过 ESP-IDF Component Manager）提供 `esp_jpeg_dec` 解码能力：
+借鉴 upstream 的实现，使用 `espressif/esp_new_jpeg`（通过 ESP-IDF Component Manager）提供 `esp_jpeg_dec` 解码能力：
 
-- 在 `firmware/photoframe-fw/main/idf_component.yml` 声明依赖 `espressif/esp_jpeg`
+- 在 `firmware/photoframe-fw/main/idf_component.yml` 声明依赖 `espressif/esp_new_jpeg`（当前落地版本：`0.6.1`）
 - 增加一层轻量 wrapper（参考 upstream `test_decoder.c`）：
   - 输入：JPEG bytes
   - 输出：PSRAM 中的 RGB888 buffer + width/height
@@ -152,6 +152,5 @@
 
 1. 固件：修复深睡误唤醒（RTC 上拉 + WakeSource 二次确认 + 关键日志）
 2. 固件：深睡前关闭外围供电（ALDO3/ALDO4 等）以降低静态耗电（可回滚）
-3. 固件：接入 esp_jpeg + JPEG 下载/解码/渲染链路
+3. 固件：接入 esp_new_jpeg + JPEG 下载/解码/渲染链路
 4. 文档：更新 `docs/firmware-photoframe-fw.md`，记录根因、验证、以及 upstream 借鉴点
-

@@ -21,6 +21,11 @@
      - 编排服务（推荐）：`/api/v1/device/next` 下发当前应显示图片 URL
      - 传统模板：`image_url_template`（支持 `%DATE%` 与 `%DEVICE_ID%` 占位；若未包含 `device_id` 参数会自动追加）
    - 若编排服务暂时不可达，会自动回退到 `image_url_template`，保证“只要联网就能取图”。
+   - 支持图片格式：
+     - `BMP`（原有路径）
+     - `JPEG/JPG`：解码为 `RGB888` 后复用既有 6 色量化 + 抖动渲染链路（依赖 `espressif/esp_new_jpeg`）
+   - 格式识别优先使用 `Content-Type`，缺失时回退到文件 magic（`BM` / `FFD8FF`）。
+   - 分辨率仍保持严格要求：只接受 `800x480` 或 `480x800`（设备端不做缩放）。
    - 自动判断图片是否已是 6 色：已是则直通显示，否则设备端转换。
    - 串口日志会输出处理耗时（`detect=xxms total=xxms`），便于评估设备端转换成本。
    - 成功后刷新墨水屏，进入深度睡眠。
@@ -34,6 +39,7 @@
    - `KEY`：唤醒后仅开放 120 秒本地配置页（省电优先，不强制拉图）。
    - `BOOT`：唤醒后强制拉图刷新（即使图片 hash 未变化也会刷新）。
    - 深睡时 KEY/BOOT 都可作为 EXT1 唤醒源。
+   - 为避免 EXT1 ANY_LOW 在深睡阶段因引脚浮空导致误唤醒：深睡前会启用 KEY/BOOT 的 RTC 上拉，并在唤醒后读 GPIO 电平做二次确认。
 
 5. **多 Wi-Fi 记忆与自动回连**
    - 最多记住 3 组 Wi-Fi 凭据（按最近配置顺序保留）。
@@ -194,3 +200,11 @@ MONITOR_AUTO_RECONNECT_ON_CLEAN_EXIT=1 scripts/monitor-host.sh /dev/cu.usbmodemX
   - `charging`：是否充电中（1/0）
   - `vbus_good`：USB/外部供电是否存在（1/0）
 - “充电电流”暂未在固件中开放为用户态指标（后续可按需求再加寄存器读数并展示）。
+
+## 耗电异常排查（优先）
+
+- 若 orchestrator 控制台显示设备 `publish_history` / `power_samples` 间隔稳定在约 2 分钟，优先怀疑 **深睡误唤醒（EXT1 ANY_LOW 浮空）** 或 **按键唤醒窗口被误触发**。
+- 串口日志里应看到：
+  - `wakeup cause=TIMER`：正常定时唤醒
+  - `wakeup cause=EXT1 pins=... key=... boot=...`：按键唤醒；若随后打印 `ext1 wake but buttons released, treat as OTHER` 说明曾发生误唤醒但已被归类为 OTHER（避免打开 120 秒窗口放大耗电）。
+- 固件进入深睡前会调用 `PowerManager::PrepareForDeepSleep()` 关闭外围供电（ALDO3/ALDO4）及电池采样通道，以降低待机漏电；若遇到外设异常，可通过回滚对应 commit 快速定位。

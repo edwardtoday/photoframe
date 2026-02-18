@@ -206,5 +206,5 @@ MONITOR_AUTO_RECONNECT_ON_CLEAN_EXIT=1 scripts/monitor-host.sh /dev/cu.usbmodemX
 - 若 orchestrator 控制台显示设备 `publish_history` / `power_samples` 间隔稳定在约 2 分钟，优先怀疑 **深睡误唤醒（EXT1 ANY_LOW 浮空）** 或 **按键唤醒窗口被误触发**。
 - 串口日志里应看到：
   - `wakeup cause=TIMER`：正常定时唤醒
-  - `wakeup cause=EXT1 pins=... key=... boot=...`：按键唤醒；若随后打印 `ext1 wake but buttons released, treat as OTHER` 说明曾发生误唤醒但已被归类为 OTHER（避免打开 120 秒窗口放大耗电）。
+  - `wakeup cause=EXT1 pins=... key=... boot=...`：按键唤醒；若随后打印 `ext1 wake but buttons released, treat as SPURIOUS_EXT1` 说明曾发生误唤醒，但固件已识别为“误触发 EXT1”并会 **跳过本轮联网/拉图**，直接进入仅 TIMER 的深睡兜底（避免 2 分钟循环把电池拉爆）。
 - 固件进入深睡前会调用 `PowerManager::PrepareForDeepSleep()` 关闭外围供电（ALDO3/ALDO4）及电池采样通道，以降低待机漏电；若遇到外设异常，可通过回滚对应 commit 快速定位。

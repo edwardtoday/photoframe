@@ -46,6 +46,7 @@ constexpr int kKeyWakePortalWindowSec = 120;
 constexpr int kPortalLoopStepMs = 200;
 constexpr int kEpdRefreshMaxRetries = 3;
 constexpr int kEpdRefreshRetryDelayMs = 500;
+constexpr uint64_t kSpuriousExt1TimerOnlyMaxSec = 600;
 
 EventGroupHandle_t g_wifi_events = nullptr;
 constexpr int kWifiConnectedBit = BIT0;
@@ -426,6 +427,7 @@ bool ShouldEnterPortalByLongPress() {
 void EnterDeepSleep(uint64_t seconds) {
   ESP_LOGI(kTag, "enter deep sleep for %llu seconds", static_cast<unsigned long long>(seconds));
   PowerManager::PrepareForDeepSleep();
+  ESP_ERROR_CHECK(esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL));
   ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(seconds * 1000000ULL));
   const uint64_t wakeup_pins =
       (1ULL << static_cast<int>(kKeyButton)) | (1ULL << static_cast<int>(kBootButton));
@@ -451,10 +453,21 @@ void EnterDeepSleep(uint64_t seconds) {
   esp_deep_sleep_start();
 }
 
+void EnterDeepSleepTimerOnly(uint64_t seconds) {
+  ESP_LOGW(kTag, "enter timer-only deep sleep for %llu seconds",
+           static_cast<unsigned long long>(seconds));
+  PowerManager::PrepareForDeepSleep();
+  ESP_ERROR_CHECK(esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL));
+  ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(seconds * 1000000ULL));
+  vTaskDelay(pdMS_TO_TICKS(150));
+  esp_deep_sleep_start();
+}
+
 enum class WakeSource {
   TIMER,
   KEY,
   BOOT,
+  SPURIOUS_EXT1,
   OTHER,
 };
 
@@ -479,8 +492,8 @@ WakeSource GetWakeSource() {
     if ((pins & (1ULL << static_cast<int>(kKeyButton))) && key_level == 0) {
       return WakeSource::KEY;
     }
-    ESP_LOGW(kTag, "ext1 wake but buttons released, treat as OTHER");
-    return WakeSource::OTHER;
+    ESP_LOGW(kTag, "ext1 wake but buttons released, treat as SPURIOUS_EXT1");
+    return WakeSource::SPURIOUS_EXT1;
   }
   ESP_LOGI(kTag, "wakeup cause=OTHER(%d)", static_cast<int>(cause));
   return WakeSource::OTHER;
@@ -663,6 +676,7 @@ extern "C" void app_main(void) {
 
   const WakeSource wake_source = GetWakeSource();
   bool open_sta_portal_window = false;
+  bool skip_network_cycle = false;
   if (!long_press_portal) {
     switch (wake_source) {
       case WakeSource::BOOT:
@@ -678,11 +692,25 @@ extern "C" void app_main(void) {
         status.force_refresh = false;
         ESP_LOGI(kTag, "wake source=TIMER");
         break;
+      case WakeSource::SPURIOUS_EXT1:
+        status.force_refresh = false;
+        skip_network_cycle = true;
+        ESP_LOGW(kTag, "wake source=SPURIOUS_EXT1, skip network cycle to avoid drain");
+        break;
       default:
         status.force_refresh = false;
         ESP_LOGI(kTag, "wake source=OTHER");
         break;
     }
+  }
+
+  if (skip_network_cycle) {
+    const uint64_t normal_sleep_seconds =
+        static_cast<uint64_t>(std::max(1, config.interval_minutes)) * 60ULL;
+    const uint64_t sleep_seconds =
+        std::max<uint64_t>(60ULL, std::min<uint64_t>(normal_sleep_seconds, kSpuriousExt1TimerOnlyMaxSec));
+    EnterDeepSleepTimerOnly(sleep_seconds);
+    return;
   }
 
   if (!EnsureWifiStack()) {

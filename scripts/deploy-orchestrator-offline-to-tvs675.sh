@@ -21,6 +21,9 @@ usage() {
   BUILDER_NAME=photoframe-offline
   REMOTE_DIR=/share/ZFS19_DATA/Container/docker/photoframe-orchestrator
   REMOTE_DOCKER=...   # 可显式指定 QNAP Container Station 的 docker 路径
+  SSH_IDENTITY_FILE=... # 额外指定 ssh 私钥（会自动加 -o IdentitiesOnly=yes -i）
+  SSH_EXTRA_OPTS=...    # 追加 ssh 参数（按空格分割），用于 StrictHostKeyChecking 等
+  SCP_EXTRA_OPTS=...    # 追加 scp 参数（按空格分割）
 
 可选开关：
   DRY_RUN=1           # 只打印将执行的命令
@@ -44,12 +47,12 @@ run_remote_sh() {
   local host="$1"
   local script="$2"
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
-    log "[dry-run] ssh ${host} <<'SH'"
+    log "[dry-run] ssh ${SSH_ARGS[*]} ${host} <<'SH'"
     printf '%s\n' "${script}"
     log "[dry-run] SH"
     return 0
   fi
-  ssh "${host}" "${script}"
+  ssh "${SSH_ARGS[@]}" "${host}" "${script}"
 }
 
 detect_remote_docker() {
@@ -66,7 +69,7 @@ detect_remote_docker() {
   fi
 
   # QNAP 的 docker 常由 Container Station 提供，PATH 不一定包含它。
-  ssh "${host}" '(
+  ssh "${SSH_ARGS[@]}" "${host}" '(
     if command -v docker >/dev/null 2>&1; then
       command -v docker
       exit 0
@@ -124,6 +127,24 @@ PLATFORM="${PLATFORM:-linux/amd64}"
 BUILDER_NAME="${BUILDER_NAME:-photoframe-offline}"
 REMOTE_DIR="${REMOTE_DIR:-/share/ZFS19_DATA/Container/docker/photoframe-orchestrator}"
 
+SSH_ARGS=()
+SCP_ARGS=()
+if [[ -n "${SSH_IDENTITY_FILE:-}" ]]; then
+  SSH_ARGS+=(-o IdentitiesOnly=yes -i "${SSH_IDENTITY_FILE}")
+  SCP_ARGS+=(-o IdentitiesOnly=yes -i "${SSH_IDENTITY_FILE}")
+fi
+if [[ -n "${SSH_EXTRA_OPTS:-}" ]]; then
+  # Intentionally split on whitespace so users can pass multiple "-o ..." options.
+  # shellcheck disable=SC2206
+  extra=( ${SSH_EXTRA_OPTS} )
+  SSH_ARGS+=("${extra[@]}")
+fi
+if [[ -n "${SCP_EXTRA_OPTS:-}" ]]; then
+  # shellcheck disable=SC2206
+  extra=( ${SCP_EXTRA_OPTS} )
+  SCP_ARGS+=("${extra[@]}")
+fi
+
 if [[ -z "${TAG}" ]]; then
   TAG="$(git -C "${REPO_ROOT}" rev-parse --short HEAD)"
 fi
@@ -161,7 +182,7 @@ run docker buildx build \
   "${REPO_ROOT}/services/photoframe-orchestrator"
 
 log "scp to NAS: ${HOST}:${REMOTE_TAR}"
-run scp -q "${LOCAL_TAR}" "${HOST}:${REMOTE_TAR}"
+run scp "${SCP_ARGS[@]}" -q "${LOCAL_TAR}" "${HOST}:${REMOTE_TAR}"
 
 log "detect remote docker path"
 REMOTE_DOCKER_RESOLVED="$(detect_remote_docker "${HOST}" || true)"

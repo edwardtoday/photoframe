@@ -40,6 +40,8 @@ class PhotoPainterEpd {
   bool Init();
   void Clear(EpdColor color = kWhite);
   bool DrawBmp24(const uint8_t* bmp, size_t len, const RenderOptions& options);
+  // 输入为 RGB888（每像素 3 字节，R/G/B），分辨率需为 800x480 或 480x800。
+  bool DrawRgb24(const uint8_t* rgb, int width, int height, const RenderOptions& options);
 
  private:
   static constexpr int kPanelWidth = 800;

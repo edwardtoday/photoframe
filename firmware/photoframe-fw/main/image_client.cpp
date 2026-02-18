@@ -19,6 +19,40 @@ bool IsHttpsUrl(const std::string& url) {
   return url.rfind("https://", 0) == 0;
 }
 
+ImageFetchResult::ImageFormat DetectFormat(const std::string& content_type,
+                                          const uint8_t* data,
+                                          size_t len) {
+  std::string ct = content_type;
+  std::transform(ct.begin(), ct.end(), ct.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  if (ct.find("image/bmp") != std::string::npos) {
+    return ImageFetchResult::ImageFormat::kBmp;
+  }
+  if (ct.find("image/jpeg") != std::string::npos || ct.find("image/jpg") != std::string::npos) {
+    return ImageFetchResult::ImageFormat::kJpeg;
+  }
+
+  // Content-Type 缺失或不可靠时，回退到 magic 判断。
+  if (len >= 2 && data != nullptr && data[0] == 'B' && data[1] == 'M') {
+    return ImageFetchResult::ImageFormat::kBmp;
+  }
+  if (len >= 3 && data != nullptr && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF) {
+    return ImageFetchResult::ImageFormat::kJpeg;
+  }
+  return ImageFetchResult::ImageFormat::kUnknown;
+}
+
+const char* FormatName(ImageFetchResult::ImageFormat format) {
+  switch (format) {
+    case ImageFetchResult::ImageFormat::kBmp:
+      return "bmp";
+    case ImageFetchResult::ImageFormat::kJpeg:
+      return "jpeg";
+    default:
+      return "unknown";
+  }
+}
+
 std::string Sha256Hex(const uint8_t* data, size_t len) {
   uint8_t digest[32] = {0};
   mbedtls_sha256_context ctx;
@@ -94,9 +128,9 @@ std::string ImageClient::BuildDatedUrl(const std::string& tpl, time_t now,
   return url;
 }
 
-ImageFetchResult ImageClient::FetchBmp(const std::string& url,
-                                       const std::string& previous_sha256,
-                                       const std::string& photo_token) {
+ImageFetchResult ImageClient::FetchImage(const std::string& url,
+                                         const std::string& previous_sha256,
+                                         const std::string& photo_token) {
   ImageFetchResult result;
   esp_http_client_config_t cfg = {};
   cfg.url = url.c_str();
@@ -141,12 +175,7 @@ ImageFetchResult ImageClient::FetchBmp(const std::string& url,
 
   char* ctype = nullptr;
   if (esp_http_client_get_header(client, "Content-Type", &ctype) == ESP_OK && ctype != nullptr) {
-    if (std::string(ctype).find("image/bmp") == std::string::npos) {
-      result.error = std::string("unexpected Content-Type: ") + ctype;
-      esp_http_client_close(client);
-      esp_http_client_cleanup(client);
-      return result;
-    }
+    result.content_type = ctype;
   }
 
   if (content_len <= 0 || content_len > (4 * 1024 * 1024)) {
@@ -159,7 +188,7 @@ ImageFetchResult ImageClient::FetchBmp(const std::string& url,
   uint8_t* buf = static_cast<uint8_t*>(
       heap_caps_malloc(static_cast<size_t>(content_len), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (buf == nullptr) {
-    result.error = "failed to allocate bmp buffer";
+    result.error = "failed to allocate image buffer";
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return result;
@@ -194,8 +223,13 @@ ImageFetchResult ImageClient::FetchBmp(const std::string& url,
   result.ok = true;
   result.data = buf;
   result.data_len = static_cast<size_t>(content_len);
+  result.format = DetectFormat(result.content_type, buf, result.data_len);
 
-  ESP_LOGI(kTag, "downloaded bmp %d bytes sha256=%s", content_len, result.sha256.c_str());
+  ESP_LOGI(kTag, "downloaded image %d bytes format=%s content_type=%s sha256=%s",
+           content_len,
+           FormatName(result.format),
+           result.content_type.empty() ? "-" : result.content_type.c_str(),
+           result.sha256.c_str());
   return result;
 }
 

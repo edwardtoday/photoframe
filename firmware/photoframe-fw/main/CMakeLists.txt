@@ -4,6 +4,7 @@ idf_component_register(
     "config_store.cpp"
     "portal_server.cpp"
     "image_client.cpp"
+    "jpeg_decoder.cpp"
     "orchestrator_client.cpp"
     "power_manager.cpp"
   INCLUDE_DIRS "."
@@ -14,6 +15,7 @@ idf_component_register(
     esp_http_client
     esp_http_server
     esp_netif
+    esp_new_jpeg
     json
     mbedtls
     lwip

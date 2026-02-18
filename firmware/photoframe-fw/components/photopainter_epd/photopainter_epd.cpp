@@ -598,3 +598,114 @@ bool PhotoPainterEpd::DrawBmp24(const uint8_t* bmp, size_t len, const RenderOpti
   }
   return true;
 }
+
+bool PhotoPainterEpd::DrawRgb24(const uint8_t* rgb, int width, int height, const RenderOptions& options) {
+  if (!initialized_ || rgb == nullptr || width <= 0 || height <= 0) {
+    return false;
+  }
+
+  const int in_w = width;
+  const int in_h_abs = height;
+
+  if (!((in_w == kPanelWidth && in_h_abs == kPanelHeight) ||
+        (in_w == kPanelHeight && in_h_abs == kPanelWidth))) {
+    ESP_LOGE(kTag, "unsupported rgb dimension: %dx%d", in_w, in_h_abs);
+    return false;
+  }
+
+  const size_t row_stride = static_cast<size_t>(in_w) * 3;
+  ClearDisplayBuffer(kWhite);
+
+  const int64_t render_start_us = esp_timer_get_time();
+
+  const uint8_t color_mode =
+      std::min<uint8_t>(options.color_process_mode, kColorProcessAssumeSixColor);
+  const uint8_t dithering_mode = std::min<uint8_t>(options.dithering_mode, kDitherOrdered);
+  const uint8_t tolerance = std::min<uint8_t>(options.six_color_tolerance, 64);
+
+  auto get_rgb = [&](int sx, int sy, uint8_t& r, uint8_t& g, uint8_t& b) {
+    const uint8_t* p = rgb + static_cast<size_t>(sy) * row_stride + static_cast<size_t>(sx) * 3;
+    r = p[0];
+    g = p[1];
+    b = p[2];
+  };
+
+  auto map_source_xy = [&](int x, int y, int* sx, int* sy) {
+    if (in_w == kPanelWidth && in_h_abs == kPanelHeight) {
+      *sx = x;
+      *sy = y;
+      return;
+    }
+    // 输入是 480x800：先旋转成 800x480。
+    *sx = y;
+    *sy = in_h_abs - 1 - x;
+  };
+
+  bool treat_as_six_color = (color_mode == kColorProcessAssumeSixColor);
+  int64_t detect_cost_us = 0;
+  if (color_mode == kColorProcessAuto) {
+    const int64_t detect_start_us = esp_timer_get_time();
+    treat_as_six_color = true;
+    for (int y = 0; y < kPanelHeight && treat_as_six_color; ++y) {
+      for (int x = 0; x < kPanelWidth; ++x) {
+        int sx = 0;
+        int sy = 0;
+        map_source_xy(x, y, &sx, &sy);
+        uint8_t r = 255;
+        uint8_t g = 255;
+        uint8_t b = 255;
+        get_rgb(sx, sy, r, g, b);
+        if (!MatchPaletteColor(r, g, b, tolerance).matched) {
+          treat_as_six_color = false;
+          break;
+        }
+      }
+    }
+    detect_cost_us = esp_timer_get_time() - detect_start_us;
+  }
+
+  const bool use_dither = !treat_as_six_color && (dithering_mode == kDitherOrdered);
+
+  for (int y = 0; y < kPanelHeight; ++y) {
+    for (int x = 0; x < kPanelWidth; ++x) {
+      int sx = 0;
+      int sy = 0;
+      map_source_xy(x, y, &sx, &sy);
+      uint8_t r = 255;
+      uint8_t g = 255;
+      uint8_t b = 255;
+      get_rgb(sx, sy, r, g, b);
+
+      uint8_t color_code = kWhite;
+      if (treat_as_six_color) {
+        const auto match = MatchPaletteColor(r, g, b, tolerance);
+        color_code = match.matched ? match.code : QuantizeColor(r, g, b);
+      } else {
+        if (use_dither) {
+          ApplyOrderedDither(x, y, &r, &g, &b);
+        }
+        color_code = QuantizeColor(r, g, b);
+      }
+
+      SetPackedPixel(display_buf_, kPanelWidth, x, y, color_code);
+    }
+  }
+
+  ESP_LOGI(kTag, "rgb color process: mode=%s dither=%s tolerance=%u",
+           treat_as_six_color ? "passthrough-6color" : "convert",
+           use_dither ? "ordered" : "none", static_cast<unsigned>(tolerance));
+
+  const int64_t render_cost_us = esp_timer_get_time() - render_start_us;
+  ESP_LOGI(kTag,
+           "rgb process cost: detect=%lldms total=%lldms pixels=%u",
+           static_cast<long long>(detect_cost_us / 1000),
+           static_cast<long long>(render_cost_us / 1000),
+           static_cast<unsigned>(kPanelWidth * kPanelHeight));
+
+  RotateBuffer(options.panel_rotation);
+  if (!FlushDisplay()) {
+    ESP_LOGE(kTag, "flush display failed");
+    return false;
+  }
+  return true;
+}

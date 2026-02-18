@@ -7,6 +7,7 @@
 
 #include "config_store.h"
 #include "image_client.h"
+#include "jpeg_decoder.h"
 #include "orchestrator_client.h"
 #include "photopainter_epd.h"
 #include "portal_server.h"
@@ -443,6 +444,8 @@ void EnterDeepSleep(uint64_t seconds) {
   // 若不显式配置 RTC 上拉，按键脚可能浮空导致 ANY_LOW 误唤醒，形成“每几分钟醒一次”的耗电灾难。
   ESP_ERROR_CHECK_WITHOUT_ABORT(rtc_gpio_pulldown_dis(kKeyButton));
   ESP_ERROR_CHECK_WITHOUT_ABORT(rtc_gpio_pullup_en(kKeyButton));
+  ESP_ERROR_CHECK_WITHOUT_ABORT(rtc_gpio_pulldown_dis(kBootButton));
+  ESP_ERROR_CHECK_WITHOUT_ABORT(rtc_gpio_pullup_en(kBootButton));
 
   vTaskDelay(pdMS_TO_TICKS(150));
   esp_deep_sleep_start();
@@ -772,7 +775,7 @@ extern "C" void app_main(void) {
 
   ESP_LOGI(kTag, "fetch url: %s", url.c_str());
 
-  ImageFetchResult fetch = ImageClient::FetchBmp(url, config.last_image_sha256, config.photo_token);
+  ImageFetchResult fetch = ImageClient::FetchImage(url, config.last_image_sha256, config.photo_token);
   status.last_http_status = fetch.status_code;
   status.image_changed = fetch.image_changed;
   if (fetch.ok) {
@@ -786,7 +789,18 @@ extern "C" void app_main(void) {
   const bool should_refresh_epd = status.force_refresh || fetch.image_changed;
   bool render_ok = true;
 
-  if (fetch.ok && fetch.data != nullptr && should_refresh_epd) {
+  JpegDecodedImage jpeg_img;
+  if (fetch.ok && fetch.data != nullptr && should_refresh_epd &&
+      fetch.format == ImageFetchResult::ImageFormat::kJpeg) {
+    std::string decode_err;
+    if (!JpegDecoder::DecodeRgb888(fetch.data, fetch.data_len, &jpeg_img, &decode_err)) {
+      render_ok = false;
+      status.last_error = "jpeg decode failed: " + decode_err;
+      ESP_LOGE(kTag, "%s", status.last_error.c_str());
+    }
+  }
+
+  if (fetch.ok && fetch.data != nullptr && should_refresh_epd && render_ok) {
     int retry_count = 0;
     while (retry_count < kEpdRefreshMaxRetries) {
       if (retry_count > 0) {
@@ -810,19 +824,43 @@ extern "C" void app_main(void) {
         render_ok = false;
         status.last_error = "epd init failed";
         ESP_LOGE(kTag, "%s", status.last_error.c_str());
-      } else if (!epd.DrawBmp24(fetch.data, fetch.data_len, render_opts)) {
-        render_ok = false;
-        status.last_error = "bmp decode/render failed";
-        ESP_LOGE(kTag, "%s", status.last_error.c_str());
+      } else if (fetch.format == ImageFetchResult::ImageFormat::kBmp) {
+        if (!epd.DrawBmp24(fetch.data, fetch.data_len, render_opts)) {
+          render_ok = false;
+          status.last_error = "bmp decode/render failed";
+          ESP_LOGE(kTag, "%s", status.last_error.c_str());
+        } else {
+          render_ok = true;
+          ESP_LOGI(kTag, "e-paper refresh done");
+          break;
+        }
+      } else if (fetch.format == ImageFetchResult::ImageFormat::kJpeg) {
+        if (jpeg_img.rgb == nullptr) {
+          render_ok = false;
+          status.last_error = "jpeg decode missing buffer";
+          ESP_LOGE(kTag, "%s", status.last_error.c_str());
+        } else if (!epd.DrawRgb24(jpeg_img.rgb, jpeg_img.width, jpeg_img.height, render_opts)) {
+          render_ok = false;
+          status.last_error = "jpeg render failed";
+          ESP_LOGE(kTag, "%s", status.last_error.c_str());
+        } else {
+          render_ok = true;
+          ESP_LOGI(kTag, "e-paper refresh done");
+          break;
+        }
       } else {
-        render_ok = true;
-        ESP_LOGI(kTag, "e-paper refresh done");
-        break;
+        render_ok = false;
+        status.last_error = "unsupported image format";
+        ESP_LOGE(kTag, "%s", status.last_error.c_str());
       }
       retry_count += 1;
     }
   } else if (fetch.ok && fetch.data != nullptr) {
     ESP_LOGI(kTag, "image hash unchanged, skip e-paper refresh");
+  }
+
+  if (jpeg_img.rgb != nullptr) {
+    JpegDecoder::FreeDecodedImage(&jpeg_img);
   }
 
   const bool cycle_ok = fetch.ok && render_ok;

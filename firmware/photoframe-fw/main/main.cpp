@@ -21,10 +21,12 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "lwip/ip4_addr.h"
+#include "esp_idf_version.h"
 
 namespace {
 constexpr const char* kTag = "photoframe_main";
@@ -425,7 +427,22 @@ void EnterDeepSleep(uint64_t seconds) {
   ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(seconds * 1000000ULL));
   const uint64_t wakeup_pins =
       (1ULL << static_cast<int>(kKeyButton)) | (1ULL << static_cast<int>(kBootButton));
+
+  // EXT1 需要 RTC 外设域保持供电，否则 RTC 上拉也可能失效。
+  ESP_ERROR_CHECK_WITHOUT_ABORT(
+      esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON));
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+  ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup_io(wakeup_pins, ESP_EXT1_WAKEUP_ANY_LOW));
+#else
   ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup(wakeup_pins, ESP_EXT1_WAKEUP_ANY_LOW));
+#endif
+
+  // 深睡阶段 GPIO 的数字域配置会丢失，EXT1 唤醒依赖 RTC 域。
+  // 若不显式配置 RTC 上拉，按键脚可能浮空导致 ANY_LOW 误唤醒，形成“每几分钟醒一次”的耗电灾难。
+  ESP_ERROR_CHECK_WITHOUT_ABORT(rtc_gpio_pulldown_dis(kKeyButton));
+  ESP_ERROR_CHECK_WITHOUT_ABORT(rtc_gpio_pullup_en(kKeyButton));
+
   vTaskDelay(pdMS_TO_TICKS(150));
   esp_deep_sleep_start();
 }
@@ -440,17 +457,28 @@ enum class WakeSource {
 WakeSource GetWakeSource() {
   const esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
   if (cause == ESP_SLEEP_WAKEUP_TIMER) {
+    ESP_LOGI(kTag, "wakeup cause=TIMER");
     return WakeSource::TIMER;
   }
   if (cause == ESP_SLEEP_WAKEUP_EXT1) {
     const uint64_t pins = esp_sleep_get_ext1_wakeup_status();
-    if (pins & (1ULL << static_cast<int>(kBootButton))) {
+    const int key_level = gpio_get_level(kKeyButton);
+    const int boot_level = gpio_get_level(kBootButton);
+    ESP_LOGI(kTag, "wakeup cause=EXT1 pins=0x%llx key=%d boot=%d",
+             static_cast<unsigned long long>(pins), key_level, boot_level);
+
+    // 二次确认：只有按键仍处于按下状态，才认为是人为唤醒。
+    // 否则很可能是深睡阶段浮空/抖动导致的误唤醒，若误判为 KEY 会打开 120 秒窗口进一步放大耗电。
+    if ((pins & (1ULL << static_cast<int>(kBootButton))) && boot_level == 0) {
       return WakeSource::BOOT;
     }
-    if (pins & (1ULL << static_cast<int>(kKeyButton))) {
+    if ((pins & (1ULL << static_cast<int>(kKeyButton))) && key_level == 0) {
       return WakeSource::KEY;
     }
+    ESP_LOGW(kTag, "ext1 wake but buttons released, treat as OTHER");
+    return WakeSource::OTHER;
   }
+  ESP_LOGI(kTag, "wakeup cause=OTHER(%d)", static_cast<int>(cause));
   return WakeSource::OTHER;
 }
 

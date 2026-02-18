@@ -90,6 +90,18 @@ bool EnableRegBits(uint8_t reg, uint8_t bits) {
   return WriteReg(reg, next);
 }
 
+bool DisableRegBits(uint8_t reg, uint8_t bits) {
+  uint8_t cur = 0;
+  if (!ReadReg(reg, &cur)) {
+    return false;
+  }
+  const uint8_t next = static_cast<uint8_t>(cur & ~bits);
+  if (next == cur) {
+    return true;
+  }
+  return WriteReg(reg, next);
+}
+
 bool ConfigureAldo3300(uint8_t reg) {
   // 仅修改电压低 5 位，保留寄存器其余控制位。
   return UpdateRegBits(reg, 0x1F, kAldoCode3300);
@@ -152,6 +164,25 @@ bool PowerManager::Init() {
   g_ready = true;
   ESP_LOGI(kTag, "pmic init done, ALDO3/ALDO4=3300mV");
   return true;
+}
+
+void PowerManager::PrepareForDeepSleep() {
+  if (!g_ready) {
+    return;
+  }
+
+  // 经验策略：让外围 IC 先断电/停采样，再进入 ESP 深睡，可显著降低待机漏电。
+  // ALDO3/ALDO4 主要用于外围供电；ESP 本体供电来自其他 rail，这里不动。
+  bool ok = true;
+  ok = DisableRegBits(kRegLdoOnOffCtrl0, static_cast<uint8_t>((1U << 2) | (1U << 3))) && ok;
+  ok = DisableRegBits(kRegAdcChannelCtrl, 0x01) && ok;  // 关闭电池电压测量通道
+  ok = DisableRegBits(kRegBattDetCtrl, 0x01) && ok;     // 关闭电池检测
+
+  if (ok) {
+    ESP_LOGI(kTag, "pmic prepared for deep sleep (ALDO3/ALDO4 off)");
+  } else {
+    ESP_LOGW(kTag, "pmic deep sleep prep partially failed");
+  }
 }
 
 bool PowerManager::ReadStatus(PowerStatus* status) {

@@ -424,6 +424,7 @@ bool ShouldEnterPortalByLongPress() {
 
 void EnterDeepSleep(uint64_t seconds) {
   ESP_LOGI(kTag, "enter deep sleep for %llu seconds", static_cast<unsigned long long>(seconds));
+  PowerManager::PrepareForDeepSleep();
   ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(seconds * 1000000ULL));
   const uint64_t wakeup_pins =
       (1ULL << static_cast<int>(kKeyButton)) | (1ULL << static_cast<int>(kBootButton));

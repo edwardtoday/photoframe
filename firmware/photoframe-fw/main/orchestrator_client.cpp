@@ -269,7 +269,8 @@ FrameDirective OrchestratorClient::FetchDirective(const AppConfig& cfg, time_t n
                     "/api/v1/device/next?device_id=" + UrlEncode(cfg.device_id) +
                     "&now_epoch=" + std::to_string(static_cast<long long>(now_epoch)) +
                     "&default_poll_seconds=" + std::to_string(default_poll_seconds) +
-                    "&failure_count=" + std::to_string(std::max(0, cfg.failure_count));
+                    "&failure_count=" + std::to_string(std::max(0, cfg.failure_count)) +
+                    "&accept_formats=jpeg,bmp";
 
   esp_http_client_config_t http_cfg = {};
   http_cfg.url = url.c_str();

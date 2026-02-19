@@ -130,7 +130,9 @@ std::string ImageClient::BuildDatedUrl(const std::string& tpl, time_t now,
 
 ImageFetchResult ImageClient::FetchImage(const std::string& url,
                                          const std::string& previous_sha256,
-                                         const std::string& photo_token) {
+                                         const std::string& photo_token,
+                                         const std::string& previous_etag,
+                                         const std::string& previous_last_modified) {
   ImageFetchResult result;
   esp_http_client_config_t cfg = {};
   cfg.url = url.c_str();
@@ -150,6 +152,12 @@ ImageFetchResult ImageClient::FetchImage(const std::string& url,
   if (!photo_token.empty()) {
     esp_http_client_set_header(client, kPhotoTokenHeader, photo_token.c_str());
   }
+  if (!previous_etag.empty()) {
+    esp_http_client_set_header(client, "If-None-Match", previous_etag.c_str());
+  }
+  if (!previous_last_modified.empty()) {
+    esp_http_client_set_header(client, "If-Modified-Since", previous_last_modified.c_str());
+  }
 
   esp_err_t err = esp_http_client_open(client, 0);
   if (err != ESP_OK) {
@@ -163,6 +171,29 @@ ImageFetchResult ImageClient::FetchImage(const std::string& url,
   result.status_code = esp_http_client_get_status_code(client);
   const int content_len = esp_http_client_get_content_length(client);
 
+  char* header = nullptr;
+  if (esp_http_client_get_header(client, "Content-Type", &header) == ESP_OK && header != nullptr) {
+    result.content_type = header;
+  }
+  header = nullptr;
+  if (esp_http_client_get_header(client, "ETag", &header) == ESP_OK && header != nullptr) {
+    result.etag = header;
+  }
+  header = nullptr;
+  if (esp_http_client_get_header(client, "Last-Modified", &header) == ESP_OK && header != nullptr) {
+    result.last_modified = header;
+  }
+
+  if (result.status_code == 304) {
+    // 条件 GET 命中：服务端告知资源未变化，无需下载正文。
+    result.ok = true;
+    result.image_changed = false;
+    result.sha256 = previous_sha256;
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return result;
+  }
+
   if (result.status_code != 200) {
     result.error = "unexpected status: " + std::to_string(result.status_code);
     if (result.status_code == 401 || result.status_code == 403) {
@@ -171,11 +202,6 @@ ImageFetchResult ImageClient::FetchImage(const std::string& url,
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return result;
-  }
-
-  char* ctype = nullptr;
-  if (esp_http_client_get_header(client, "Content-Type", &ctype) == ESP_OK && ctype != nullptr) {
-    result.content_type = ctype;
   }
 
   if (content_len <= 0 || content_len > (4 * 1024 * 1024)) {
@@ -225,11 +251,12 @@ ImageFetchResult ImageClient::FetchImage(const std::string& url,
   result.data_len = static_cast<size_t>(content_len);
   result.format = DetectFormat(result.content_type, buf, result.data_len);
 
-  ESP_LOGI(kTag, "downloaded image %d bytes format=%s content_type=%s sha256=%s",
+  ESP_LOGI(kTag, "downloaded image %d bytes format=%s content_type=%s sha256=%s etag=%s",
            content_len,
            FormatName(result.format),
            result.content_type.empty() ? "-" : result.content_type.c_str(),
-           result.sha256.c_str());
+           result.sha256.c_str(),
+           result.etag.empty() ? "-" : result.etag.c_str());
   return result;
 }
 

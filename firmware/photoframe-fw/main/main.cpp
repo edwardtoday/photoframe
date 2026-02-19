@@ -499,11 +499,32 @@ WakeSource GetWakeSource() {
   return WakeSource::OTHER;
 }
 
-bool SyncTime(const std::string& timezone) {
+void ApplyTimezone(const std::string& timezone) {
   if (!timezone.empty()) {
     setenv("TZ", timezone.c_str(), 1);
     tzset();
   }
+}
+
+bool ShouldSyncTime(const AppConfig& config, int64_t now_epoch) {
+  constexpr int64_t kMinValidEpoch = 1735689600;  // 2025-01-01 UTC
+  // RTC 时间明显不可信时强制校时。
+  if (now_epoch < kMinValidEpoch) {
+    return true;
+  }
+  // 首次或历史记录异常时也触发一次校时，避免长期漂移。
+  if (config.last_time_sync_epoch < kMinValidEpoch) {
+    return true;
+  }
+
+  // 正常情况下每天校一次即可，避免每轮都跑 SNTP 增加唤醒时长与耗电。
+  constexpr int64_t kSyncIntervalSec = 24 * 3600;
+  const int64_t age = now_epoch - config.last_time_sync_epoch;
+  return age < 0 || age >= kSyncIntervalSec;
+}
+
+bool SyncTime(const std::string& timezone) {
+  ApplyTimezone(timezone);
 
   esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
   esp_sntp_setservername(0, "pool.ntp.org");
@@ -761,7 +782,15 @@ extern "C" void app_main(void) {
     RunPortalWindowOnSta(&config, &status, &store);
   }
 
-  SyncTime(config.timezone);
+  ApplyTimezone(config.timezone);
+  const int64_t time_before_sync = static_cast<int64_t>(time(nullptr));
+  if (ShouldSyncTime(config, time_before_sync)) {
+    const bool time_ok = SyncTime(config.timezone);
+    if (time_ok) {
+      config.last_time_sync_epoch = static_cast<int64_t>(time(nullptr));
+      (void)store.Save(config);
+    }
+  }
   time_t now = time(nullptr);
 
   if (config.orchestrator_enabled != 0 && !config.orchestrator_base_url.empty()) {
@@ -803,7 +832,13 @@ extern "C" void app_main(void) {
 
   ESP_LOGI(kTag, "fetch url: %s", url.c_str());
 
-  ImageFetchResult fetch = ImageClient::FetchImage(url, config.last_image_sha256, config.photo_token);
+  // BOOT 强刷需要拿到正文并重新渲染，不能命中 304，因此这里绕过条件 GET。
+  const std::string previous_etag = status.force_refresh ? "" : config.last_image_etag;
+  const std::string previous_last_modified =
+      status.force_refresh ? "" : config.last_image_last_modified;
+
+  ImageFetchResult fetch = ImageClient::FetchImage(url, config.last_image_sha256, config.photo_token,
+                                                   previous_etag, previous_last_modified);
   status.last_http_status = fetch.status_code;
   status.image_changed = fetch.image_changed;
   if (fetch.ok) {
@@ -897,6 +932,12 @@ extern "C" void app_main(void) {
     config.failure_count = 0;
     if (fetch.image_changed) {
       config.last_image_sha256 = fetch.sha256;
+    }
+    if (!fetch.etag.empty()) {
+      config.last_image_etag = fetch.etag;
+    }
+    if (!fetch.last_modified.empty()) {
+      config.last_image_last_modified = fetch.last_modified;
     }
     config.last_success_epoch = static_cast<int64_t>(time(nullptr));
     store.Save(config);

@@ -138,7 +138,10 @@ bool ConfigStore::Load(AppConfig* cfg) {
   cfg->six_color_tolerance =
       ClampInt(GetI32("clr_tol", cfg->six_color_tolerance), 0, 64);
   cfg->last_image_sha256 = GetString("img_sha256", "");
+  cfg->last_image_etag = GetString("img_etag", "");
+  cfg->last_image_last_modified = GetString("img_lm", "");
   cfg->last_success_epoch = GetI64("last_ok", 0);
+  cfg->last_time_sync_epoch = GetI64("time_sync", 0);
   cfg->failure_count = std::max<int32_t>(0, GetI32("fail_cnt", 0));
   cfg->remote_config_version = std::max<int32_t>(0, GetI32("cfg_ver", 0));
 
@@ -180,8 +183,12 @@ bool ConfigStore::Save(const AppConfig& cfg) {
       !SetI32("rotation", cfg.display_rotation) || !SetI32("clr_mode", cfg.color_process_mode) ||
       !SetI32("dither", cfg.dither_mode) || !SetI32("clr_tol", cfg.six_color_tolerance) ||
       !SetString("img_sha256", cfg.last_image_sha256) ||
-      !SetI64("last_ok", cfg.last_success_epoch) || !SetI32("fail_cnt", cfg.failure_count) ||
-      !SetI32("cfg_ver", cfg.remote_config_version) || !SetI32("last_wifi_idx", last_wifi_idx)) {
+      !SetString("img_etag", cfg.last_image_etag) ||
+      !SetString("img_lm", cfg.last_image_last_modified) ||
+      !SetI64("last_ok", cfg.last_success_epoch) ||
+      !SetI64("time_sync", cfg.last_time_sync_epoch) ||
+      !SetI32("fail_cnt", cfg.failure_count) || !SetI32("cfg_ver", cfg.remote_config_version) ||
+      !SetI32("last_wifi_idx", last_wifi_idx)) {
     return false;
   }
 

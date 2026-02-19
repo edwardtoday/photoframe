@@ -634,11 +634,23 @@ def _read_and_convert_bmp(upload: UploadFile) -> tuple[str, str]:
   try:
     with Image.open(io.BytesIO(raw)) as image:
       rgb = image.convert("RGB")
-      # 固件只接收 480x800 BMP，服务端统一做裁剪缩放保证设备可直接显示。
+      # 固件侧以 480x800 为基准渲染（另一方向由固件旋转）。服务端统一做裁剪缩放保证设备可直接显示。
       fitted = ImageOps.fit(rgb, (480, 800), method=Image.Resampling.LANCZOS)
-      out = io.BytesIO()
-      fitted.save(out, format="BMP")
-      bmp_data = out.getvalue()
+      out_bmp = io.BytesIO()
+      fitted.save(out_bmp, format="BMP")
+      bmp_data = out_bmp.getvalue()
+
+      # 同时产出 JPEG 版本（同名 sha256.jpg），用于设备侧省流省电下载。
+      jpeg_quality = 85
+      try:
+        jpeg_quality = int(os.getenv("PHOTOFRAME_ASSET_JPEG_QUALITY", "85"))
+      except Exception:
+        jpeg_quality = 85
+      jpeg_quality = max(40, min(95, jpeg_quality))
+
+      out_jpg = io.BytesIO()
+      fitted.save(out_jpg, format="JPEG", quality=jpeg_quality, optimize=True, progressive=False)
+      jpg_data = out_jpg.getvalue()
   except Exception as exc:  # pragma: no cover
     raise HTTPException(status_code=400, detail="cannot decode image") from exc
 
@@ -647,6 +659,10 @@ def _read_and_convert_bmp(upload: UploadFile) -> tuple[str, str]:
   out_path = ASSET_DIR / asset_name
   if not out_path.exists():
     out_path.write_bytes(bmp_data)
+  jpg_name = f"{sha256}.jpg"
+  jpg_path = ASSET_DIR / jpg_name
+  if not jpg_path.exists():
+    jpg_path.write_bytes(jpg_data)
   return asset_name, sha256
 
 
@@ -724,11 +740,27 @@ def asset(asset_name: str) -> FileResponse:
   path = ASSET_DIR / safe_name
   if not path.exists():
     raise HTTPException(status_code=404, detail="asset not found")
-  return FileResponse(path=path, media_type="image/bmp", filename=safe_name)
+  ext = path.suffix.lower()
+  if ext == ".bmp":
+    media_type = "image/bmp"
+  elif ext in (".jpg", ".jpeg"):
+    media_type = "image/jpeg"
+  elif ext == ".png":
+    media_type = "image/png"
+  else:
+    media_type = "application/octet-stream"
+  # 资产文件名默认使用内容哈希，属于不可变资源，可大胆缓存。
+  return FileResponse(
+      path=path,
+      media_type=media_type,
+      filename=safe_name,
+      headers={"Cache-Control": "public, max-age=31536000, immutable"},
+  )
 
 
 @app.get("/public/daily.bmp")
 def public_daily_bmp(
+    request: Request,
     token: str | None = Query(default=None),
     device_id: str = Query(default="*", min_length=1, max_length=64),
     x_photo_token: str | None = Header(default=None),
@@ -739,12 +771,81 @@ def public_daily_bmp(
   conn = _ensure_db()
 
   payload, source = _resolve_current_payload_for_device(conn, now_ts, target_device)
+  etag_value = hashlib.sha256(payload).hexdigest()
+  etag = f"\"{etag_value}\""
+
+  inm = (request.headers.get("if-none-match") or "").strip()
+  if inm:
+    candidates = [part.strip() for part in inm.split(",") if part.strip()]
+    if etag in candidates:
+      return Response(
+          status_code=304,
+          content=b"",
+          headers={
+              "Cache-Control": "private, max-age=60",
+              "ETag": etag,
+              "X-PhotoFrame-Source": source,
+              "X-PhotoFrame-Device": target_device,
+          },
+      )
 
   return Response(
       content=payload,
       media_type="image/bmp",
       headers={
           "Cache-Control": "private, max-age=60",
+          "ETag": etag,
+          "X-PhotoFrame-Source": source,
+          "X-PhotoFrame-Device": target_device,
+      },
+  )
+
+
+@app.get("/public/daily.jpg")
+def public_daily_jpg(
+    request: Request,
+    token: str | None = Query(default=None),
+    device_id: str = Query(default="*", min_length=1, max_length=64),
+    x_photo_token: str | None = Header(default=None),
+) -> Response:
+  _require_public_daily_token(x_photo_token, token)
+  now_ts = _now_epoch()
+  target_device = _normalize_device_id(device_id)
+  conn = _ensure_db()
+
+  payload, source = _resolve_current_payload_for_device(conn, now_ts, target_device)
+  try:
+    with Image.open(io.BytesIO(payload)) as image:
+      rgb = image.convert("RGB")
+      out = io.BytesIO()
+      rgb.save(out, format="JPEG", quality=85, optimize=True, progressive=False)
+      jpg_bytes = out.getvalue()
+  except Exception as exc:
+    raise HTTPException(status_code=502, detail="cannot encode daily jpg") from exc
+
+  etag_value = hashlib.sha256(jpg_bytes).hexdigest()
+  etag = f"\"{etag_value}\""
+  inm = (request.headers.get("if-none-match") or "").strip()
+  if inm:
+    candidates = [part.strip() for part in inm.split(",") if part.strip()]
+    if etag in candidates:
+      return Response(
+          status_code=304,
+          content=b"",
+          headers={
+              "Cache-Control": "private, max-age=60",
+              "ETag": etag,
+              "X-PhotoFrame-Source": source,
+              "X-PhotoFrame-Device": target_device,
+          },
+      )
+
+  return Response(
+      content=jpg_bytes,
+      media_type="image/jpeg",
+      headers={
+          "Cache-Control": "private, max-age=60",
+          "ETag": etag,
           "X-PhotoFrame-Source": source,
           "X-PhotoFrame-Device": target_device,
       },
@@ -781,12 +882,19 @@ def device_next(
     now_epoch: int | None = Query(default=None),
     default_poll_seconds: int = Query(default=DEFAULT_POLL_SECONDS),
     failure_count: int = Query(default=0),
+    accept_formats: str | None = Query(default=None, max_length=64),
     x_photoframe_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
   _require_device_token(device_id, x_photoframe_token)
 
   now_ts = _now_epoch() if now_epoch is None else now_epoch
   poll_sec = _clamp(default_poll_seconds, 60, 86400)
+  accept = {
+      item.strip().lower()
+      for item in (accept_formats or "").split(",")
+      if item.strip() != ""
+  }
+  prefer_jpeg = ("jpeg" in accept) or ("jpg" in accept)
   conn = _ensure_db()
 
   with DB_LOCK:
@@ -836,7 +944,14 @@ def device_next(
     source = "override"
     active_override_id = int(active["id"])
     valid_until = int(active["end_epoch"])
-    image_url = f"{_public_base(request)}/api/v1/assets/{active['asset_name']}"
+    asset_name = str(active["asset_name"])
+    asset_sha256 = str(active["asset_sha256"])
+    chosen = asset_name
+    if prefer_jpeg:
+      candidate = f"{asset_sha256}.jpg"
+      if (ASSET_DIR / candidate).exists():
+        chosen = candidate
+    image_url = f"{_public_base(request)}/api/v1/assets/{chosen}"
     remain = max(1, valid_until - now_ts)
     poll_sec = min(poll_sec, _clamp(remain, 60, 86400))
 

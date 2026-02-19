@@ -25,6 +25,7 @@
 - `now_epoch`：当前时间戳（可选）
 - `default_poll_seconds`：设备默认轮询间隔（可选）
 - `failure_count`：设备失败计数（可选）
+- `accept_formats`：可选，图片格式偏好（逗号分隔，如 `jpeg,bmp`）。当插播资源存在 `.jpg` 派生文件时，服务会优先下发更小的 JPEG URL。
 
 ### Header
 
@@ -51,6 +52,7 @@
 - `source=daily`：无插播，回退到每日图
 - `poll_after_seconds`：服务建议下次唤醒间隔（用于平衡省电和插播时效）
 - 服务会在每次 `device/next` 响应后记录一条图片下发历史
+- `image_url` 可能是 `.../api/v1/assets/<sha>.bmp` 或 `.../api/v1/assets/<sha>.jpg`（取决于 `accept_formats` 与资源是否存在）。
 
 ## 2) 设备上报心跳
 
@@ -348,6 +350,7 @@ Header：
 ## 8) 公网只读日图（供外网相框拉取）
 
 `GET /public/daily.bmp`
+`GET /public/daily.jpg`
 
 鉴权：
 
@@ -362,8 +365,12 @@ Header：
 行为：
 
 1. 先判断 `device_id` 当前是否有 active override（设备专属优先，其次全局）。
-2. 若有插播，直接返回插播 BMP。
-3. 若无插播，回退到 `DAILY_IMAGE_URL_TEMPLATE` 的当日图。
+2. 若有插播，直接返回插播图（`daily.bmp` 输出 BMP，`daily.jpg` 输出 JPEG）。
+3. 若无插播，回退到 `DAILY_IMAGE_URL_TEMPLATE` 的当日图（同样按扩展名输出 BMP/JPEG）。
+
+缓存与省电：
+
+- 响应会携带 `ETag`，并支持 `If-None-Match` 命中 `304 Not Modified`（不返回正文），用于设备侧省流省电轮询。
 
 响应头会包含：
 

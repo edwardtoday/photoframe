@@ -1223,6 +1223,11 @@ document.getElementById('fillCurrentDailyBtn').addEventListener('click', () => {
   document.getElementById('cfgImageUrlTemplate').value = url;
 });
 
+document.getElementById('fillCurrentDailyJpgBtn').addEventListener('click', () => {
+  const url = `${window.location.origin}/public/daily.jpg`;
+  document.getElementById('cfgImageUrlTemplate').value = url;
+});
+
 document.getElementById('fillPublicDailyBtn').addEventListener('click', () => {
   document.getElementById('cfgImageUrlTemplate').value = PUBLIC_DAILY_EXAMPLE_URL;
 });

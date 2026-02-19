@@ -16,10 +16,10 @@
 - 管理插播列表：`GET /api/v1/overrides`、`DELETE /api/v1/overrides/{id}`
 - 图片下发历史：`GET /api/v1/publish-history`
 - 管理页预览当前下发图：`GET /api/v1/preview/current.bmp`
-- 公网日图代理：`GET /public/daily.bmp`（token 保护，且优先返回当前生效插播）
+- 公网日图代理：`GET /public/daily.bmp` / `GET /public/daily.jpg`（token 保护，且优先返回当前生效插播）
 - Web 管理页：`GET /`（含图片发布历史 + 设备配置发布历史 + 当前下发预览 + 设备 token 审批）
 - 设备配置“填空式表单”：不再手写 JSON，灰字提示来自设备最近上报配置
-- 设备配置页提供 daily.bmp URL 快捷填入（当前服务 / 公网示例）
+- 设备配置页提供 daily.bmp/daily.jpg URL 快捷填入（当前服务 / 公网示例）
 - 创建插播后给出“预计生效时间/可能过期”可读提示，便于和设备唤醒周期对齐
 
 ## 本地运行（源码）
@@ -103,17 +103,18 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 - `DEVICE_TOKEN_MAP`：设备 token 映射（CSV 兼容写法，例：`pf-d9369c80=devtoken-xxx,pf-guest=devtoken-yyy`）
 - `DEVICE_TOKEN_MAP_JSON` / `DEVICE_TOKEN_MAP` 可留空：此时设备首次携带 token 请求会进入待审批，需在管理页点击“信任”后放行
 - `PUBLIC_DAILY_BMP_TOKEN`：公网日图接口口令（`/public/daily.bmp`，为空则禁用）
+- `PHOTOFRAME_ASSET_JPEG_QUALITY`：插播上传时生成 `.jpg` 派生资源的质量参数（40-95，默认 85）
 - `DAILY_FETCH_TIMEOUT_SECONDS`：公网日图代理拉取上游超时（秒，默认 10）
 - `TZ`：服务端时区
 
 ## 公网日图接口
 
-- `GET /public/daily.bmp`
+- `GET /public/daily.bmp` / `GET /public/daily.jpg`
 - 鉴权：请求头 `X-Photo-Token` 或 query `?token=`
 - 可选：`device_id`（用于按设备匹配插播）
 - 行为：
   1. 优先返回该设备当前生效的插播图（若存在）
-  2. 否则回退到 `DAILY_IMAGE_URL_TEMPLATE` 的当日 BMP
+  2. 否则回退到 `DAILY_IMAGE_URL_TEMPLATE` 的当日图（按扩展名输出 BMP/JPEG）
 
 更多字段与示例见 `docs/orchestrator-api.md`。
 

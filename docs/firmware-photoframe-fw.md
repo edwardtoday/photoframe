@@ -28,6 +28,8 @@
    - 若服务端支持 `ETag` / `Last-Modified`，固件会发送 `If-None-Match` / `If-Modified-Since` 做条件 GET：
      - 命中 `304 Not Modified` 时不下载正文，直接跳过刷新（省流省电）
      - 当 `BOOT` 强制刷新时，会绕过条件 GET（不带 `If-*`），确保一定拿到正文并重新渲染
+   - 固件会记住“上次成功拉图的 URL origin（协议+主机+端口）”，下一轮优先尝试该 origin，对跨内外网切换场景可做到“最多失败一次后恢复稳定”。
+   - 当 URL 带 `date=YYYY-MM-DD` 且当天返回 `404` 时，会自动追加尝试前一天日期，避免日切时段反复失败退避导致耗电升高。
    - 分辨率仍保持严格要求：只接受 `800x480` 或 `480x800`（设备端不做缩放）。
    - 自动判断图片是否已是 6 色：已是则直通显示，否则设备端转换。
    - 串口日志会输出处理耗时（`detect=xxms total=xxms`），便于评估设备端转换成本。
@@ -75,6 +77,7 @@
 11. **电源状态采集与上报（每轮唤醒）**
    - 固件会读取 AXP2101 的电源状态：`battery_mv`、`battery_percent`、`charging`、`vbus_good`。
    - 串口每轮会打印 `power:` 与 `cycle ok/fail:` 日志，便于确认电池/充电状态。
+   - 刷屏前会先重试初始化 PMIC（最多 3 次）；若 PMIC 仍不可用，会直接跳过 EPD 刷新并进入失败退避，避免在 `epd init` 的 BUSY 超时上长时间空耗。
    - 若启用 orchestrator，以上状态会随 `checkin` 一起上报，控制台可看到设备电量与供电状态。
 
 ## 配置项（NVS 持久化）
@@ -97,6 +100,7 @@
 - `six_color_tolerance`（0-64，判断“是否已是6色”的容差）
 - `timezone`（默认 `UTC`）
 - `last_image_sha256`（用于避免重复刷新）
+- `preferred_image_origin`（上次成功拉图的 origin，用于跨网络环境优先回连）
 - `remote_config_version`（最近已应用的远端配置版本）
 
 ## 接口示例（Portal 模式）
@@ -145,6 +149,7 @@ JSON
 - 为降低唤醒时长与耗电：当本地 RTC 时间可信时，固件默认 **每天最多校时一次**（其余轮次跳过 SNTP）。
 - Portal 保存时若 Wi-Fi 密码留空，不会覆盖现有密码；且当已有 SSID 时，空 SSID 提交会被忽略，避免误清空网络配置。
 - 浏览器访问设备 STA IP 显示 `ERR_CONNECTION_REFUSED`：正常情况。仅在“按键唤醒后的 120 秒窗口”或 AP 配网模式下开放 Web 配置页。
+- 若看到 `pmic unavailable before render` 或 `epd init failed`：当前版本会快速失败并退避休眠，不再重复多轮 45 秒 BUSY 超时；请优先检查供电链路/排线接触。
 
 ## 失败重试行为
 

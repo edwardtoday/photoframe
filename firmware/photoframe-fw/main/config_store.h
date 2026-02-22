@@ -48,6 +48,7 @@ struct AppConfig {
   std::string last_image_sha256;
   std::string last_image_etag;
   std::string last_image_last_modified;
+  std::string preferred_image_origin;
   int64_t last_success_epoch = 0;
   int64_t last_time_sync_epoch = 0;
   int failure_count = 0;

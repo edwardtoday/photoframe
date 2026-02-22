@@ -140,6 +140,7 @@ bool ConfigStore::Load(AppConfig* cfg) {
   cfg->last_image_sha256 = GetString("img_sha256", "");
   cfg->last_image_etag = GetString("img_etag", "");
   cfg->last_image_last_modified = GetString("img_lm", "");
+  cfg->preferred_image_origin = GetString("img_origin", "");
   cfg->last_success_epoch = GetI64("last_ok", 0);
   cfg->last_time_sync_epoch = GetI64("time_sync", 0);
   cfg->failure_count = std::max<int32_t>(0, GetI32("fail_cnt", 0));
@@ -185,6 +186,7 @@ bool ConfigStore::Save(const AppConfig& cfg) {
       !SetString("img_sha256", cfg.last_image_sha256) ||
       !SetString("img_etag", cfg.last_image_etag) ||
       !SetString("img_lm", cfg.last_image_last_modified) ||
+      !SetString("img_origin", cfg.preferred_image_origin) ||
       !SetI64("last_ok", cfg.last_success_epoch) ||
       !SetI64("time_sync", cfg.last_time_sync_epoch) ||
       !SetI32("fail_cnt", cfg.failure_count) || !SetI32("cfg_ver", cfg.remote_config_version) ||

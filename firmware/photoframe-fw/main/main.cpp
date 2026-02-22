@@ -4,6 +4,7 @@
 #include <cstring>
 #include <ctime>
 #include <string>
+#include <vector>
 
 #include "config_store.h"
 #include "image_client.h"
@@ -46,6 +47,8 @@ constexpr int kKeyWakePortalWindowSec = 120;
 constexpr int kPortalLoopStepMs = 200;
 constexpr int kEpdRefreshMaxRetries = 3;
 constexpr int kEpdRefreshRetryDelayMs = 500;
+constexpr int kPmicInitMaxRetries = 3;
+constexpr int kPmicInitRetryDelayMs = 150;
 constexpr uint64_t kSpuriousExt1TimerOnlyMaxSec = 600;
 
 EventGroupHandle_t g_wifi_events = nullptr;
@@ -407,6 +410,143 @@ bool ConnectToSta(AppConfig* cfg, RuntimeStatus* status, ConfigStore* store) {
   return false;
 }
 
+bool SplitUrlOriginAndRest(const std::string& url, std::string* origin, std::string* rest) {
+  const size_t scheme_pos = url.find("://");
+  if (scheme_pos == std::string::npos) {
+    return false;
+  }
+  const size_t host_start = scheme_pos + 3;
+  const size_t path_pos = url.find('/', host_start);
+  if (path_pos == std::string::npos) {
+    if (origin != nullptr) {
+      *origin = url;
+    }
+    if (rest != nullptr) {
+      *rest = "/";
+    }
+    return true;
+  }
+  if (origin != nullptr) {
+    *origin = url.substr(0, path_pos);
+  }
+  if (rest != nullptr) {
+    *rest = url.substr(path_pos);
+  }
+  return true;
+}
+
+std::string NormalizeOrigin(const std::string& origin) {
+  std::string out = origin;
+  while (out.size() > 1 && !out.empty() && out.back() == '/') {
+    out.pop_back();
+  }
+  return out;
+}
+
+bool BuildUrlWithOrigin(const std::string& url, const std::string& origin, std::string* out_url) {
+  if (out_url == nullptr || origin.empty()) {
+    return false;
+  }
+
+  std::string url_origin;
+  std::string url_rest;
+  if (!SplitUrlOriginAndRest(url, &url_origin, &url_rest)) {
+    return false;
+  }
+
+  const std::string normalized = NormalizeOrigin(origin);
+  std::string origin_part;
+  std::string origin_rest;
+  if (!SplitUrlOriginAndRest(normalized, &origin_part, &origin_rest) || origin_rest != "/") {
+    return false;
+  }
+
+  *out_url = origin_part + url_rest;
+  return true;
+}
+
+bool ShiftDateParamDays(const std::string& url, int delta_days, std::string* shifted_url) {
+  if (shifted_url == nullptr || delta_days == 0) {
+    return false;
+  }
+
+  const std::string marker = "date=";
+  const size_t marker_pos = url.find(marker);
+  if (marker_pos == std::string::npos) {
+    return false;
+  }
+
+  const size_t date_pos = marker_pos + marker.size();
+  if (date_pos + 10 > url.size()) {
+    return false;
+  }
+
+  const std::string date_text = url.substr(date_pos, 10);
+  int year = 0;
+  int month = 0;
+  int day = 0;
+  if (sscanf(date_text.c_str(), "%4d-%2d-%2d", &year, &month, &day) != 3) {
+    return false;
+  }
+
+  std::tm tm_date = {};
+  tm_date.tm_year = year - 1900;
+  tm_date.tm_mon = month - 1;
+  tm_date.tm_mday = day + delta_days;
+  tm_date.tm_hour = 12;
+  const time_t normalized = mktime(&tm_date);
+  if (normalized == static_cast<time_t>(-1)) {
+    return false;
+  }
+
+  std::tm shifted_tm = {};
+  localtime_r(&normalized, &shifted_tm);
+  char shifted_date[16] = {};
+  if (strftime(shifted_date, sizeof(shifted_date), "%Y-%m-%d", &shifted_tm) != 10) {
+    return false;
+  }
+
+  *shifted_url = url;
+  shifted_url->replace(date_pos, 10, shifted_date);
+  return true;
+}
+
+void AddUniqueUrl(const std::string& url, std::vector<std::string>* urls) {
+  if (urls == nullptr || url.empty()) {
+    return;
+  }
+  for (const auto& item : *urls) {
+    if (item == url) {
+      return;
+    }
+  }
+  urls->push_back(url);
+}
+
+std::vector<std::string> BuildFetchUrlCandidates(const std::string& primary_url,
+                                                 const std::string& preferred_origin) {
+  std::vector<std::string> base_urls;
+  if (!preferred_origin.empty()) {
+    std::string preferred_url;
+    if (BuildUrlWithOrigin(primary_url, preferred_origin, &preferred_url)) {
+      AddUniqueUrl(preferred_url, &base_urls);
+    }
+  }
+  AddUniqueUrl(primary_url, &base_urls);
+
+  std::vector<std::string> candidates;
+  for (const auto& url : base_urls) {
+    AddUniqueUrl(url, &candidates);
+  }
+  for (const auto& url : base_urls) {
+    std::string fallback_url;
+    if (ShiftDateParamDays(url, -1, &fallback_url)) {
+      AddUniqueUrl(fallback_url, &candidates);
+    }
+  }
+  return candidates;
+}
+
 bool IsKeyButtonPressed() {
   return gpio_get_level(kKeyButton) == 0;
 }
@@ -622,6 +762,21 @@ void RefreshPowerStatus(RuntimeStatus* status) {
            PowerManager::ChargerStateName(power.charger_state));
 }
 
+bool EnsurePmicReadyForRender() {
+  // 渲染前先确保 PMIC 可用，避免面板无电时在 BUSY 等待里空耗几十秒。
+  for (int attempt = 1; attempt <= kPmicInitMaxRetries; ++attempt) {
+    if (PowerManager::Init()) {
+      return true;
+    }
+    if (attempt < kPmicInitMaxRetries) {
+      ESP_LOGW(kTag, "pmic init failed before render, retry %d/%d", attempt, kPmicInitMaxRetries);
+      vTaskDelay(pdMS_TO_TICKS(kPmicInitRetryDelayMs));
+    }
+  }
+  ESP_LOGE(kTag, "pmic unavailable before render, skip epd refresh");
+  return false;
+}
+
 void RunPortalWindowOnSta(AppConfig* config, RuntimeStatus* status, ConfigStore* store) {
   PortalServer portal;
   if (!portal.Start(config, status, store, false)) {
@@ -830,23 +985,35 @@ extern "C" void app_main(void) {
     }
   }
 
-  ESP_LOGI(kTag, "fetch url: %s", url.c_str());
-
   // BOOT 强刷需要拿到正文并重新渲染，不能命中 304，因此这里绕过条件 GET。
   const std::string previous_etag = status.force_refresh ? "" : config.last_image_etag;
   const std::string previous_last_modified =
       status.force_refresh ? "" : config.last_image_last_modified;
 
-  ImageFetchResult fetch = ImageClient::FetchImage(url, config.last_image_sha256, config.photo_token,
-                                                   previous_etag, previous_last_modified);
+  const std::vector<std::string> fetch_urls =
+      BuildFetchUrlCandidates(url, config.preferred_image_origin);
+  ImageFetchResult fetch;
+  std::string fetch_url_used;
+  for (size_t i = 0; i < fetch_urls.size(); ++i) {
+    ESP_LOGI(kTag, "fetch url candidate %u/%u: %s", static_cast<unsigned>(i + 1),
+             static_cast<unsigned>(fetch_urls.size()), fetch_urls[i].c_str());
+    fetch = ImageClient::FetchImage(fetch_urls[i], config.last_image_sha256, config.photo_token,
+                                    previous_etag, previous_last_modified);
+    if (fetch.ok) {
+      fetch_url_used = fetch_urls[i];
+      break;
+    }
+    ESP_LOGW(kTag, "fetch candidate failed: http=%d err=%s", fetch.status_code, fetch.error.c_str());
+  }
+
   status.last_http_status = fetch.status_code;
   status.image_changed = fetch.image_changed;
   if (fetch.ok) {
     ESP_LOGI(kTag,
-             "fetch ok: changed=%d force_refresh=%d prev_sha=%s new_sha=%s",
+             "fetch ok: changed=%d force_refresh=%d prev_sha=%s new_sha=%s url=%s",
              fetch.image_changed ? 1 : 0, status.force_refresh ? 1 : 0,
              config.last_image_sha256.empty() ? "-" : config.last_image_sha256.c_str(),
-             fetch.sha256.c_str());
+             fetch.sha256.c_str(), fetch_url_used.empty() ? "-" : fetch_url_used.c_str());
   }
 
   const bool should_refresh_epd = status.force_refresh || fetch.image_changed;
@@ -864,59 +1031,74 @@ extern "C" void app_main(void) {
   }
 
   if (fetch.ok && fetch.data != nullptr && should_refresh_epd && render_ok) {
-    int retry_count = 0;
-    while (retry_count < kEpdRefreshMaxRetries) {
-      if (retry_count > 0) {
-        ESP_LOGW(kTag, "epd refresh retry %d/%d", retry_count, kEpdRefreshMaxRetries);
-        vTaskDelay(pdMS_TO_TICKS(kEpdRefreshRetryDelayMs));
-      }
+    if (!EnsurePmicReadyForRender()) {
+      render_ok = false;
+      status.last_error = "pmic init failed";
+      ESP_LOGE(kTag, "%s", status.last_error.c_str());
+    } else {
+      int retry_count = 0;
+      while (retry_count < kEpdRefreshMaxRetries) {
+        if (retry_count > 0) {
+          ESP_LOGW(kTag, "epd refresh retry %d/%d", retry_count, kEpdRefreshMaxRetries);
+          vTaskDelay(pdMS_TO_TICKS(kEpdRefreshRetryDelayMs));
+        }
 
-      PhotoPainterEpd epd;
-      PhotoPainterEpd::RenderOptions render_opts;
-      render_opts.panel_rotation = static_cast<uint8_t>(config.display_rotation);
-      render_opts.color_process_mode = static_cast<uint8_t>(config.color_process_mode);
-      render_opts.dithering_mode = static_cast<uint8_t>(config.dither_mode);
-      render_opts.six_color_tolerance = static_cast<uint8_t>(config.six_color_tolerance);
+        bool retryable_failure = true;
+        PhotoPainterEpd epd;
+        PhotoPainterEpd::RenderOptions render_opts;
+        render_opts.panel_rotation = static_cast<uint8_t>(config.display_rotation);
+        render_opts.color_process_mode = static_cast<uint8_t>(config.color_process_mode);
+        render_opts.dithering_mode = static_cast<uint8_t>(config.dither_mode);
+        render_opts.six_color_tolerance = static_cast<uint8_t>(config.six_color_tolerance);
 
-      ESP_LOGI(kTag,
-               "start e-paper refresh: force=%d changed=%d bytes=%u retry=%d",
-               status.force_refresh ? 1 : 0, fetch.image_changed ? 1 : 0,
-               static_cast<unsigned>(fetch.data_len), retry_count);
+        ESP_LOGI(kTag,
+                 "start e-paper refresh: force=%d changed=%d bytes=%u retry=%d",
+                 status.force_refresh ? 1 : 0, fetch.image_changed ? 1 : 0,
+                 static_cast<unsigned>(fetch.data_len), retry_count);
 
-      if (!epd.Init()) {
-        render_ok = false;
-        status.last_error = "epd init failed";
-        ESP_LOGE(kTag, "%s", status.last_error.c_str());
-      } else if (fetch.format == ImageFetchResult::ImageFormat::kBmp) {
-        if (!epd.DrawBmp24(fetch.data, fetch.data_len, render_opts)) {
+        if (!epd.Init()) {
+          // 面板初始化失败通常是供电/硬件路径问题，重试会重复 45s BUSY 超时，直接快速失败省电。
           render_ok = false;
-          status.last_error = "bmp decode/render failed";
+          retryable_failure = false;
+          status.last_error = "epd init failed";
           ESP_LOGE(kTag, "%s", status.last_error.c_str());
+        } else if (fetch.format == ImageFetchResult::ImageFormat::kBmp) {
+          if (!epd.DrawBmp24(fetch.data, fetch.data_len, render_opts)) {
+            render_ok = false;
+            status.last_error = "bmp decode/render failed";
+            ESP_LOGE(kTag, "%s", status.last_error.c_str());
+          } else {
+            render_ok = true;
+            ESP_LOGI(kTag, "e-paper refresh done");
+            break;
+          }
+        } else if (fetch.format == ImageFetchResult::ImageFormat::kJpeg) {
+          if (jpeg_img.rgb == nullptr) {
+            render_ok = false;
+            retryable_failure = false;
+            status.last_error = "jpeg decode missing buffer";
+            ESP_LOGE(kTag, "%s", status.last_error.c_str());
+          } else if (!epd.DrawRgb24(jpeg_img.rgb, jpeg_img.width, jpeg_img.height, render_opts)) {
+            render_ok = false;
+            status.last_error = "jpeg render failed";
+            ESP_LOGE(kTag, "%s", status.last_error.c_str());
+          } else {
+            render_ok = true;
+            ESP_LOGI(kTag, "e-paper refresh done");
+            break;
+          }
         } else {
-          render_ok = true;
-          ESP_LOGI(kTag, "e-paper refresh done");
+          render_ok = false;
+          retryable_failure = false;
+          status.last_error = "unsupported image format";
+          ESP_LOGE(kTag, "%s", status.last_error.c_str());
+        }
+
+        if (!retryable_failure) {
           break;
         }
-      } else if (fetch.format == ImageFetchResult::ImageFormat::kJpeg) {
-        if (jpeg_img.rgb == nullptr) {
-          render_ok = false;
-          status.last_error = "jpeg decode missing buffer";
-          ESP_LOGE(kTag, "%s", status.last_error.c_str());
-        } else if (!epd.DrawRgb24(jpeg_img.rgb, jpeg_img.width, jpeg_img.height, render_opts)) {
-          render_ok = false;
-          status.last_error = "jpeg render failed";
-          ESP_LOGE(kTag, "%s", status.last_error.c_str());
-        } else {
-          render_ok = true;
-          ESP_LOGI(kTag, "e-paper refresh done");
-          break;
-        }
-      } else {
-        render_ok = false;
-        status.last_error = "unsupported image format";
-        ESP_LOGE(kTag, "%s", status.last_error.c_str());
+        retry_count += 1;
       }
-      retry_count += 1;
     }
   } else if (fetch.ok && fetch.data != nullptr) {
     ESP_LOGI(kTag, "image hash unchanged, skip e-paper refresh");
@@ -938,6 +1120,10 @@ extern "C" void app_main(void) {
     }
     if (!fetch.last_modified.empty()) {
       config.last_image_last_modified = fetch.last_modified;
+    }
+    std::string used_origin;
+    if (!fetch_url_used.empty() && SplitUrlOriginAndRest(fetch_url_used, &used_origin, nullptr)) {
+      config.preferred_image_origin = used_origin;
     }
     config.last_success_epoch = static_cast<int64_t>(time(nullptr));
     store.Save(config);

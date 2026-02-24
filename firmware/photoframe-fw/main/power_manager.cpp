@@ -5,6 +5,8 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 namespace {
 constexpr const char* kTag = "power_manager";
@@ -48,6 +50,9 @@ bool ReadReg(uint8_t reg, uint8_t* value) {
     if (i2c_master_transmit_receive(g_dev, &reg, 1, value, 1, kI2cTimeoutMs) == ESP_OK) {
       return true;
     }
+    if (i + 1 < 3) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
   }
   return false;
 }
@@ -61,6 +66,9 @@ bool WriteReg(uint8_t reg, uint8_t value) {
   for (int i = 0; i < 3; ++i) {
     if (i2c_master_transmit(g_dev, payload, sizeof(payload), kI2cTimeoutMs) == ESP_OK) {
       return true;
+    }
+    if (i + 1 < 3) {
+      vTaskDelay(pdMS_TO_TICKS(10));
     }
   }
   return false;
@@ -208,18 +216,19 @@ bool PowerManager::ReadStatus(PowerStatus* status) {
   status->charging = (charge_mode == 0x01);
   status->charger_state = status2 & 0x07;
 
-  if (status->battery_present) {
-    uint8_t h = 0;
-    uint8_t l = 0;
-    if (ReadReg(kRegAdcBattH, &h) && ReadReg(kRegAdcBattL, &l)) {
-      status->battery_mv = static_cast<int>(((h & 0x1F) << 8) | l);
-    }
+  // 兼容策略：不要强依赖 battery_present 位。
+  // 实测某些板子/时序下 battery_present 可能短暂不稳定，但 0xA4 电量寄存器仍然可读。
+  uint8_t percent = 0;
+  if (ReadReg(kRegBatteryPercent, &percent) && percent <= 100) {
+    status->battery_percent = percent;
+  }
 
-    uint8_t percent = 0;
-    if (ReadReg(kRegBatteryPercent, &percent)) {
-      if (percent <= 100) {
-        status->battery_percent = percent;
-      }
+  uint8_t h = 0;
+  uint8_t l = 0;
+  if (ReadReg(kRegAdcBattH, &h) && ReadReg(kRegAdcBattL, &l)) {
+    const int mv = static_cast<int>(((h & 0x1F) << 8) | l);
+    if (mv > 0) {
+      status->battery_mv = mv;
     }
   }
 

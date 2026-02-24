@@ -746,7 +746,18 @@ void RefreshPowerStatus(RuntimeStatus* status) {
   }
 
   PowerStatus power = {};
-  if (!PowerManager::ReadStatus(&power)) {
+  bool ok = false;
+  for (int attempt = 1; attempt <= 3; ++attempt) {
+    if (!PowerManager::ReadStatus(&power)) {
+      break;
+    }
+    ok = true;
+    if (power.battery_mv > 0 || power.battery_percent >= 0) {
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(60));
+  }
+  if (!ok) {
     ESP_LOGW(kTag, "pmic read failed, skip battery status");
     return;
   }

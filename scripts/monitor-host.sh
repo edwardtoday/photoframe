@@ -28,11 +28,20 @@ echo "[info] 监控串口 ${PORT} @ ${BAUD}"
 echo "[info] Ctrl+C 退出；异常断开会自动重连（rc=0 默认停止，避免深睡被唤醒）"
 
 AUTO_RECONNECT_ON_CLEAN_EXIT="${MONITOR_AUTO_RECONNECT_ON_CLEAN_EXIT:-0}"
+# 默认强制关闭 DTR/RTS，避免某些 USB 串口在打开时触发复位。
+# 但也有设备/驱动组合在强制设置 DTR/RTS 时反而会进入下载模式；
+# 此时可设置 MONITOR_FORCE_DTR_RTS=0 让 miniterm 保持默认线状态。
+FORCE_DTR_RTS="${MONITOR_FORCE_DTR_RTS:-1}"
+MONITOR_DTR="${MONITOR_DTR:-0}"
+MONITOR_RTS="${MONITOR_RTS:-0}"
 
 while true; do
   set +e
-  # 固定关闭 DTR/RTS，避免串口打开时触发复位导致运行流程被打断。
-  "${VENV_PY}" -m serial.tools.miniterm "${PORT}" "${BAUD}" --raw --dtr 0 --rts 0
+  args=(--raw)
+  if [[ "${FORCE_DTR_RTS}" == "1" ]]; then
+    args+=(--dtr "${MONITOR_DTR}" --rts "${MONITOR_RTS}")
+  fi
+  "${VENV_PY}" -m serial.tools.miniterm "${PORT}" "${BAUD}" "${args[@]}"
   rc=$?
   set -e
 

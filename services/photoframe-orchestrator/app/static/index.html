@@ -412,7 +412,7 @@
 
         <div class="card">
           <h3>电池曲线</h3>
-          <p class="help">按设备 checkin 上报点绘制，默认最近 30 天；续航口径：拔 USB(vbus_good 1→0) → 电量 ≤ 阈值(%)（估算，精度受采样间隔影响）。</p>
+          <p class="help">按设备 checkin 上报点绘制，默认最近 3 天；续航口径：拔 USB(vbus_good 1→0) → 电量 ≤ 阈值(%)（估算，精度受采样间隔影响）。</p>
           <div class="row">
             <label>目标设备
               <select id="powerDeviceId">
@@ -420,7 +420,7 @@
               </select>
             </label>
             <label>时间窗（天）
-              <input id="powerDays" type="number" min="1" max="365" value="30" />
+              <input id="powerDays" type="number" min="1" max="365" value="3" />
             </label>
             <label>低电阈值（%）
               <input id="powerLowThreshold" type="number" min="0" max="100" value="10" />

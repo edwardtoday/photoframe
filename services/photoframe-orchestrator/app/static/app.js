@@ -14,6 +14,12 @@ let powerResizeTimer = null;
 const PUBLIC_DAILY_EXAMPLE_URL = 'https://example.com/daily.bmp';
 const TOKEN_STORAGE_KEY = 'photoframe.console.token';
 const TOKEN_COOKIE_KEY = 'photoframe_console_token';
+const POWER_DEVICE_STORAGE_KEY = 'photoframe.console.power.device_id';
+const POWER_DAYS_STORAGE_KEY = 'photoframe.console.power.days';
+const POWER_DEVICE_COOKIE_KEY = 'photoframe_console_power_device';
+const POWER_DAYS_COOKIE_KEY = 'photoframe_console_power_days';
+
+let storedPowerDeviceId = '';
 
 function readCookie(name) {
   const encodedName = `${name}=`;
@@ -70,6 +76,65 @@ function persistConsoleToken() {
     writeCookie(TOKEN_COOKIE_KEY, token, 180 * 24 * 3600);
   } else {
     writeCookie(TOKEN_COOKIE_KEY, '', 0);
+  }
+}
+
+function loadStoredPowerPrefs() {
+  const daysInput = document.getElementById('powerDays');
+
+  let savedDevice = '';
+  let savedDays = '';
+  try {
+    savedDevice = window.localStorage.getItem(POWER_DEVICE_STORAGE_KEY) || '';
+    savedDays = window.localStorage.getItem(POWER_DAYS_STORAGE_KEY) || '';
+  } catch (_) {
+    // localStorage 受限时退化到 cookie
+  }
+
+  if (!savedDevice) {
+    savedDevice = readCookie(POWER_DEVICE_COOKIE_KEY);
+  }
+  if (!savedDays) {
+    savedDays = readCookie(POWER_DAYS_COOKIE_KEY);
+  }
+
+  storedPowerDeviceId = (savedDevice || '').trim();
+
+  if (daysInput) {
+    const daysNum = Number(savedDays);
+    if (Number.isFinite(daysNum) && daysNum >= 1 && daysNum <= 365) {
+      daysInput.value = String(Math.floor(daysNum));
+    }
+  }
+}
+
+function persistPowerPrefs() {
+  const deviceId = (document.getElementById('powerDeviceId')?.value || '').trim();
+  const daysRaw = Number(document.getElementById('powerDays')?.value || '');
+  const days = Number.isFinite(daysRaw) ? Math.max(1, Math.min(365, Math.floor(daysRaw))) : null;
+
+  try {
+    if (deviceId) {
+      window.localStorage.setItem(POWER_DEVICE_STORAGE_KEY, deviceId);
+    } else {
+      window.localStorage.removeItem(POWER_DEVICE_STORAGE_KEY);
+    }
+    if (days != null) {
+      window.localStorage.setItem(POWER_DAYS_STORAGE_KEY, String(days));
+    } else {
+      window.localStorage.removeItem(POWER_DAYS_STORAGE_KEY);
+    }
+  } catch (_) {
+    // ignore
+  }
+
+  if (deviceId) {
+    writeCookie(POWER_DEVICE_COOKIE_KEY, deviceId, 180 * 24 * 3600);
+  } else {
+    writeCookie(POWER_DEVICE_COOKIE_KEY, '', 0);
+  }
+  if (days != null) {
+    writeCookie(POWER_DAYS_COOKIE_KEY, String(days), 180 * 24 * 3600);
   }
 }
 
@@ -478,7 +543,7 @@ function drawPowerChart(canvas, items, opts) {
 
 async function loadPowerSamples() {
   const deviceId = (document.getElementById('powerDeviceId')?.value || '').trim();
-  const daysRaw = Number(document.getElementById('powerDays')?.value || 30);
+  const daysRaw = Number(document.getElementById('powerDays')?.value || 3);
   const thresholdRaw = Number(document.getElementById('powerLowThreshold')?.value || 10);
 
   if (!deviceId) {
@@ -830,9 +895,13 @@ async function loadDevices() {
   if (powerDeviceSelect) {
     if ([...powerDeviceSelect.options].some((o) => o.value === selectedPowerBefore)) {
       powerDeviceSelect.value = selectedPowerBefore;
+    } else if (storedPowerDeviceId &&
+               [...powerDeviceSelect.options].some((o) => o.value === storedPowerDeviceId)) {
+      powerDeviceSelect.value = storedPowerDeviceId;
     } else if (powerDeviceSelect.options.length === 2) {
       // 只有一台设备时，默认选中，减少点击。
       powerDeviceSelect.value = powerDeviceSelect.options[1].value;
+      persistPowerPrefs();
     }
   }
 
@@ -1169,14 +1238,17 @@ async function loadPowerSamplesSafe() {
 }
 
 document.getElementById('powerRefreshBtn').addEventListener('click', async () => {
+  persistPowerPrefs();
   await loadPowerSamplesSafe();
 });
 
 document.getElementById('powerDeviceId').addEventListener('change', async () => {
+  persistPowerPrefs();
   await loadPowerSamplesSafe();
 });
 
 document.getElementById('powerDays').addEventListener('change', async () => {
+  persistPowerPrefs();
   await loadPowerSamplesSafe();
 });
 
@@ -1244,6 +1316,7 @@ document.getElementById('token').addEventListener('blur', () => {
 
 loadStoredConsoleToken();
 persistConsoleToken();
+loadStoredPowerPrefs();
 
 setInterval(() => {
   refreshAll().catch(() => {});

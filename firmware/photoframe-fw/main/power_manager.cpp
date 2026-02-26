@@ -14,7 +14,8 @@ constexpr const char* kTag = "power_manager";
 constexpr i2c_port_num_t kI2cPort = I2C_NUM_0;
 constexpr int kI2cSclPin = 48;
 constexpr int kI2cSdaPin = 47;
-constexpr int kI2cFreqHz = 300000;
+// 官方 demo 走 100k；部分板子在弱上拉/长走线场景下高频更容易读写失败，导致 PMIC 不可用并显著耗电。
+constexpr int kI2cFreqHz = 100000;
 constexpr int kI2cTimeoutMs = 200;
 
 constexpr uint8_t kAxp2101Addr = 0x34;

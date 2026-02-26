@@ -26,6 +26,10 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # 使用系统时间戳；校时成功后日志会显示可读时间。
 # CONFIG_LOG_TIMESTAMP_SOURCE_RTOS is not set
 CONFIG_LOG_TIMESTAMP_SOURCE_SYSTEM=y
+# 控制台输出走 USB Serial/JTAG：macOS 只接一根 USB 线即可烧录 + 抓日志。
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+# 主控制台已是 USB Serial/JTAG，关闭 secondary console，避免重复输出与额外开销。
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # NVS
 CONFIG_NVS_ENCRYPTION=n

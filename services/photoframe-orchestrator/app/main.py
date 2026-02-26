@@ -38,11 +38,15 @@ except Exception:
   DAILY_FETCH_TIMEOUT_SECONDS = 10.0
 TZ_NAME = os.getenv("TZ", "Asia/Shanghai")
 LOCAL_TZ = ZoneInfo(TZ_NAME)
-APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.5")
+APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.6")
 DEVICE_CONFIG_MAX_HISTORY = 200
 POWER_SAMPLE_DEFAULT_DAYS = 30
 POWER_SAMPLE_RETENTION_DAYS = 365
 POWER_SAMPLE_RETENTION_SECONDS = POWER_SAMPLE_RETENTION_DAYS * 24 * 3600
+# 设备在未校时/时钟漂移严重时可能上报 1970 或未来时间，服务端需要兜底。
+MIN_VALID_DEVICE_EPOCH = int(os.getenv("MIN_VALID_DEVICE_EPOCH", "1609459200"))  # 2021-01-01 UTC
+MAX_FUTURE_DEVICE_SKEW_SECONDS = int(os.getenv("MAX_FUTURE_DEVICE_SKEW_SECONDS", str(7 * 24 * 3600)))
+MAX_PAST_DEVICE_SKEW_SECONDS = int(os.getenv("MAX_PAST_DEVICE_SKEW_SECONDS", str(365 * 24 * 3600)))
 DEVICE_CONFIG_ALLOWED_KEYS = {
     "orchestrator_enabled",
     "orchestrator_base_url",
@@ -216,6 +220,38 @@ def _init_db() -> None:
 
 def _now_epoch() -> int:
   return int(time.time())
+
+
+def _coerce_device_epoch(device_epoch: int | None, server_epoch: int) -> tuple[int, bool]:
+  """将设备上报的 epoch 兜底到服务端时间，避免 1970/未来时间污染 UI 与日图选择。"""
+  if device_epoch is None:
+    return server_epoch, False
+  try:
+    ts = int(device_epoch)
+  except Exception:
+    return server_epoch, False
+  if ts < MIN_VALID_DEVICE_EPOCH:
+    return server_epoch, False
+  if ts > server_epoch + MAX_FUTURE_DEVICE_SKEW_SECONDS:
+    return server_epoch, False
+  if ts < server_epoch - MAX_PAST_DEVICE_SKEW_SECONDS:
+    return server_epoch, False
+  return ts, True
+
+
+def _device_epoch_for_view(device_epoch: int | None, now_epoch: int) -> int | None:
+  """用于控制台展示：过滤明显不可信的时间戳（如 1970），但不“硬改”为当前时间。"""
+  if device_epoch is None:
+    return None
+  try:
+    ts = int(device_epoch)
+  except Exception:
+    return None
+  if ts < MIN_VALID_DEVICE_EPOCH:
+    return None
+  if ts > now_epoch + MAX_FUTURE_DEVICE_SKEW_SECONDS:
+    return None
+  return ts
 
 
 def _clamp(v: int, low: int, high: int) -> int:
@@ -887,7 +923,9 @@ def device_next(
 ) -> dict[str, Any]:
   _require_device_token(device_id, x_photoframe_token)
 
-  now_ts = _now_epoch() if now_epoch is None else now_epoch
+  server_now = _now_epoch()
+  requested_now = server_now if now_epoch is None else int(now_epoch)
+  now_ts, device_clock_ok = _coerce_device_epoch(requested_now, server_now)
   poll_sec = _clamp(default_poll_seconds, 60, 86400)
   accept = {
       item.strip().lower()
@@ -906,7 +944,7 @@ def device_next(
           updated_at = excluded.updated_at,
           failure_count = excluded.failure_count
         """,
-        (device_id, now_ts, max(0, failure_count)),
+        (device_id, server_now, max(0, failure_count)),
     )
 
     active = conn.execute(
@@ -975,7 +1013,7 @@ def device_next(
             active_override_id,
             int(poll_sec),
             int(valid_until),
-            now_ts,
+            server_now,
         ),
     )
     # 控制历史表体积，保留最近 5000 条即可满足家庭场景追溯需求。
@@ -993,7 +1031,10 @@ def device_next(
 
   return {
       "device_id": device_id,
-      "server_epoch": now_ts,
+      "server_epoch": server_now,
+      "device_epoch": requested_now,
+      "device_clock_ok": device_clock_ok,
+      "effective_epoch": now_ts,
       "source": source,
       "image_url": image_url,
       "valid_until_epoch": valid_until,
@@ -1011,6 +1052,17 @@ def device_checkin(
   _require_device_token(payload.device_id, x_photoframe_token)
 
   now_ts = _now_epoch()
+  checkin_epoch, device_clock_ok = _coerce_device_epoch(int(payload.checkin_epoch), now_ts)
+  sleep_seconds = max(0, int(payload.sleep_seconds))
+  next_wakeup_epoch = int(payload.next_wakeup_epoch)
+  # 若设备时钟不可信，则用服务端时间 + sleep_seconds 生成可用的 next_wakeup，避免 UI 显示 1970。
+  if (
+      (not device_clock_ok)
+      or (next_wakeup_epoch <= 0)
+      or (next_wakeup_epoch < checkin_epoch)
+      or (next_wakeup_epoch > checkin_epoch + max(60, sleep_seconds) + 7 * 24 * 3600)
+  ):
+    next_wakeup_epoch = checkin_epoch + sleep_seconds
   reported_config = _sanitize_reported_device_config(payload.reported_config)
   reported_config_json = json.dumps(reported_config, ensure_ascii=False)
   battery_mv = int(payload.battery_mv)
@@ -1049,9 +1101,9 @@ def device_checkin(
         """,
         (
             payload.device_id,
-            int(payload.checkin_epoch),
-            int(payload.next_wakeup_epoch),
-            max(0, int(payload.sleep_seconds)),
+            checkin_epoch,
+            next_wakeup_epoch,
+            sleep_seconds,
             max(60, int(payload.poll_interval_seconds)),
             max(0, int(payload.failure_count)),
             int(payload.last_http_status),
@@ -1064,7 +1116,7 @@ def device_checkin(
             charging,
             vbus_good,
             reported_config_json,
-            int(payload.checkin_epoch),
+            checkin_epoch,
             now_ts,
         ),
     )
@@ -1091,7 +1143,7 @@ def device_checkin(
           """,
           (
               payload.device_id,
-              int(payload.checkin_epoch),
+              checkin_epoch,
               now_ts,
               battery_mv,
               battery_percent,
@@ -1116,7 +1168,9 @@ def device_config_get(
 ) -> dict[str, Any]:
   _require_device_token(device_id, x_photoframe_token)
 
-  now_ts = _now_epoch() if now_epoch is None else now_epoch
+  server_now = _now_epoch()
+  requested_now = server_now if now_epoch is None else int(now_epoch)
+  effective_now, device_clock_ok = _coerce_device_epoch(requested_now, server_now)
   target_device = _normalize_device_id(device_id)
   conn = _ensure_db()
 
@@ -1135,7 +1189,7 @@ def device_config_get(
           target_version = excluded.target_version,
           updated_at = excluded.updated_at
         """,
-        (target_device, now_ts, seen_version, target_version, now_ts),
+        (target_device, server_now, seen_version, target_version, server_now),
     )
     conn.commit()
 
@@ -1147,7 +1201,10 @@ def device_config_get(
 
   return {
       "device_id": target_device,
-      "server_epoch": now_ts,
+      "server_epoch": server_now,
+      "device_epoch": requested_now,
+      "device_clock_ok": device_clock_ok,
+      "effective_epoch": effective_now,
       "config_version": target_version,
       "config": config,
       "note": note,
@@ -1162,7 +1219,10 @@ def device_config_applied(
   _require_device_token(payload.device_id, x_photoframe_token)
 
   now_ts = _now_epoch()
-  applied_epoch = now_ts if payload.applied_epoch is None else int(payload.applied_epoch)
+  applied_epoch, _ = _coerce_device_epoch(
+      None if payload.applied_epoch is None else int(payload.applied_epoch),
+      now_ts,
+  )
   target_device = _normalize_device_id(payload.device_id)
   conn = _ensure_db()
 
@@ -1329,8 +1389,9 @@ def devices() -> dict[str, Any]:
   items: list[dict[str, Any]] = []
   for row in rows:
     device_id = str(row["device_id"])
-    next_wakeup = int(row["next_wakeup_epoch"])
-    eta = max(0, next_wakeup - now_ts) if next_wakeup > 0 else None
+    last_checkin = _device_epoch_for_view(int(row["last_checkin_epoch"]), now_ts)
+    next_wakeup = _device_epoch_for_view(int(row["next_wakeup_epoch"]), now_ts)
+    eta = max(0, int(next_wakeup) - now_ts) if next_wakeup is not None else None
     status = status_map.get(device_id)
     latest_plan = _load_latest_device_config_plan(conn, device_id)
     target_version = 0 if latest_plan is None else int(latest_plan["id"])
@@ -1339,7 +1400,7 @@ def devices() -> dict[str, Any]:
     items.append(
         {
             "device_id": device_id,
-            "last_checkin_epoch": int(row["last_checkin_epoch"]),
+            "last_checkin_epoch": last_checkin,
             "next_wakeup_epoch": next_wakeup,
             "eta_seconds": eta,
             "sleep_seconds": int(row["sleep_seconds"]),
@@ -1353,13 +1414,21 @@ def devices() -> dict[str, Any]:
             "battery_percent": int(row["battery_percent"]),
             "charging": int(row["charging"]),
             "vbus_good": int(row["vbus_good"]),
-            "reported_config_epoch": int(row["reported_config_epoch"]),
+            "reported_config_epoch": _device_epoch_for_view(int(row["reported_config_epoch"]), now_ts),
             "reported_config": _redact_reported_config_for_view(reported_config),
             "config_target_version": target_version,
             "config_seen_version": 0 if status is None else int(status["last_seen_version"]),
-            "config_last_query_epoch": 0 if status is None else int(status["last_query_epoch"]),
+            "config_last_query_epoch": (
+                None
+                if status is None
+                else _device_epoch_for_view(int(status["last_query_epoch"]), now_ts)
+            ),
             "config_applied_version": 0 if status is None else int(status["applied_version"]),
-            "config_last_apply_epoch": 0 if status is None else int(status["last_apply_epoch"]),
+            "config_last_apply_epoch": (
+                None
+                if status is None
+                else _device_epoch_for_view(int(status["last_apply_epoch"]), now_ts)
+            ),
             "config_apply_ok": False if status is None else bool(status["apply_ok"]),
             "config_apply_error": "" if status is None else str(status["apply_error"]),
         }

@@ -11,7 +11,6 @@ let deviceMap = new Map();
 let powerChartCache = null;
 let powerResizeTimer = null;
 
-const PUBLIC_DAILY_EXAMPLE_URL = 'https://example.com/daily.bmp';
 const TOKEN_STORAGE_KEY = 'photoframe.console.token';
 const TOKEN_COOKIE_KEY = 'photoframe_console_token';
 const POWER_DEVICE_STORAGE_KEY = 'photoframe.console.power.device_id';
@@ -1387,8 +1386,12 @@ document.getElementById('fillCurrentDailyJpgBtn').addEventListener('click', () =
   document.getElementById('cfgImageUrlTemplate').value = url;
 });
 
-document.getElementById('fillPublicDailyBtn').addEventListener('click', () => {
-  document.getElementById('cfgImageUrlTemplate').value = PUBLIC_DAILY_EXAMPLE_URL;
+document.getElementById('fillFeaturedCurrentBtn').addEventListener('click', () => {
+  document.getElementById('cfgImageUrlTemplate').value = 'http://192.168.58.113:8000/featured/current/480x800.jpg';
+});
+
+document.getElementById('fillImageByDateBtn').addEventListener('click', () => {
+  document.getElementById('cfgImageUrlTemplate').value = 'http://192.168.58.113:8000/image/480x800.jpg?date=%DATE%';
 });
 
 document.getElementById('token').addEventListener('input', () => {

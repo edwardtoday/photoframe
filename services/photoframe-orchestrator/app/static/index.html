@@ -563,9 +563,10 @@
             <label>图片 URL 模板（支持 %DATE% / %DEVICE_ID%）
               <input id="cfgImageUrlTemplate" placeholder="当前: -" />
               <div class="inline-actions">
-                <button id="fillCurrentDailyBtn" class="secondary" type="button">填入当前服务 daily.bmp</button>
-                <button id="fillCurrentDailyJpgBtn" class="secondary" type="button">填入当前服务 daily.jpg（省流）</button>
-                <button id="fillPublicDailyBtn" class="secondary" type="button">填入公网 daily.bmp（示例）</button>
+                <button id="fillCurrentDailyBtn" class="secondary" type="button">填入编排服务 /public/daily.bmp</button>
+                <button id="fillCurrentDailyJpgBtn" class="secondary" type="button">填入编排服务 /public/daily.jpg（省流，需图片 token）</button>
+                <button id="fillFeaturedCurrentBtn" class="secondary" type="button">填入上游 featured/current/480x800.jpg</button>
+                <button id="fillImageByDateBtn" class="secondary" type="button">填入上游 image/480x800.jpg?date=%DATE%</button>
               </div>
             </label>
 

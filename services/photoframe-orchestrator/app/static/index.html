@@ -200,6 +200,10 @@
       font-size: 12px;
       max-height: 240px;
       overflow: auto;
+      /* 允许长配置/URL 自动换行，避免页面被撑出横向滚动条。 */
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
 
     .stats {
@@ -240,6 +244,8 @@
       border-radius: 10px;
       padding: 10px;
       background: #fff;
+      /* grid item 默认 min-width:auto 会被 <pre> 的长行撑宽，导致页面横向溢出 */
+      min-width: 0;
     }
 
     .release-head {

@@ -33,7 +33,7 @@
 namespace {
 constexpr const char* kTag = "photoframe_main";
 
-constexpr gpio_num_t kKeyButton = GPIO_NUM_4;   // KEY: 唤醒后打开 120 秒配置窗口
+constexpr gpio_num_t kKeyButton = GPIO_NUM_4;   // KEY: 手动同步（不再默认打开配置窗口）
 constexpr gpio_num_t kBootButton = GPIO_NUM_0;  // BOOT: 手动强制刷新
 constexpr int kStaConnectTimeoutSec = 25;
 constexpr int kStaConnectRetry = 5;
@@ -555,20 +555,51 @@ bool IsBootButtonPressed() {
   return gpio_get_level(kBootButton) == 0;
 }
 
-bool ShouldEnterPortalByLongPress() {
+enum class LongPressAction {
+  kNone,
+  // 非破坏性：仅打开 STA 配置窗口（不清 Wi-Fi）。
+  kOpenStaPortalWindow,
+  // 破坏性：清 Wi-Fi 并进入 AP 配网（逃生口）。
+  kClearWifiAndEnterPortal,
+};
+
+LongPressAction DetectLongPressAction() {
   if (!IsKeyButtonPressed() && !IsBootButtonPressed()) {
-    return false;
+    return LongPressAction::kNone;
   }
+
   ESP_LOGI(kTag, "button pressed at boot, waiting for long-press...");
-  vTaskDelay(pdMS_TO_TICKS(3000));
-  return IsKeyButtonPressed() || IsBootButtonPressed();
+
+  constexpr int64_t kLongPressMs = 3000;
+  const int64_t deadline_us = esp_timer_get_time() + kLongPressMs * 1000LL;
+  while (esp_timer_get_time() < deadline_us) {
+    // 短按会很快松开：尽早返回，避免人为手动同步被额外阻塞 3 秒。
+    if (!IsKeyButtonPressed() && !IsBootButtonPressed()) {
+      return LongPressAction::kNone;
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+
+  // 长按阈值到达后再决定动作：优先 BOOT（作为“清 Wi-Fi 逃生口”）。
+  if (IsBootButtonPressed()) {
+    return LongPressAction::kClearWifiAndEnterPortal;
+  }
+  if (IsKeyButtonPressed()) {
+    return LongPressAction::kOpenStaPortalWindow;
+  }
+  return LongPressAction::kNone;
+}
+
+uint64_t SecondsToMicroseconds(uint64_t seconds) {
+  // 避免 32-bit 乘法导致溢出，进而出现“睡眠时长异常/频繁唤醒”的隐蔽耗电问题。
+  return seconds * 1000000ULL;
 }
 
 void EnterDeepSleep(uint64_t seconds) {
   ESP_LOGI(kTag, "enter deep sleep for %llu seconds", static_cast<unsigned long long>(seconds));
   PowerManager::PrepareForDeepSleep();
   ESP_ERROR_CHECK(esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL));
-  ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(seconds * 1000000ULL));
+  ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(SecondsToMicroseconds(seconds)));
   const uint64_t wakeup_pins =
       (1ULL << static_cast<int>(kKeyButton)) | (1ULL << static_cast<int>(kBootButton));
 
@@ -598,7 +629,7 @@ void EnterDeepSleepTimerOnly(uint64_t seconds) {
            static_cast<unsigned long long>(seconds));
   PowerManager::PrepareForDeepSleep();
   ESP_ERROR_CHECK(esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL));
-  ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(seconds * 1000000ULL));
+  ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(SecondsToMicroseconds(seconds)));
   vTaskDelay(pdMS_TO_TICKS(150));
   esp_deep_sleep_start();
 }
@@ -619,20 +650,52 @@ WakeSource GetWakeSource() {
   }
   if (cause == ESP_SLEEP_WAKEUP_EXT1) {
     const uint64_t pins = esp_sleep_get_ext1_wakeup_status();
-    const int key_level = gpio_get_level(kKeyButton);
-    const int boot_level = gpio_get_level(kBootButton);
-    ESP_LOGI(kTag, "wakeup cause=EXT1 pins=0x%llx key=%d boot=%d",
-             static_cast<unsigned long long>(pins), key_level, boot_level);
+    const bool boot_pin = (pins & (1ULL << static_cast<int>(kBootButton))) != 0;
+    const bool key_pin = (pins & (1ULL << static_cast<int>(kKeyButton))) != 0;
 
-    // 二次确认：只有按键仍处于按下状态，才认为是人为唤醒。
-    // 否则很可能是深睡阶段浮空/抖动导致的误唤醒，若误判为 KEY 会打开 120 秒窗口进一步放大耗电。
-    if ((pins & (1ULL << static_cast<int>(kBootButton))) && boot_level == 0) {
+    // 省电与易用性的折中：
+    // - 误唤醒（浮空/抖动）通常是“瞬态低电平”，唤醒后按钮已回到松开状态。
+    // - 人为短按可能在启动过程中释放；若只读一次电平，容易被误判成 SPURIOUS，导致“按了不生效”。
+    // 这里做一个很短的采样窗口：在几十毫秒内只要捕获到一次按下，就视为人为唤醒。
+    bool boot_seen_low = false;
+    bool key_seen_low = false;
+    int boot_level = gpio_get_level(kBootButton);
+    int key_level = gpio_get_level(kKeyButton);
+    if (boot_pin && boot_level == 0) {
+      boot_seen_low = true;
+    }
+    if (key_pin && key_level == 0) {
+      key_seen_low = true;
+    }
+    if (!boot_seen_low && !key_seen_low && (boot_pin || key_pin)) {
+      for (int i = 0; i < 8; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        boot_level = gpio_get_level(kBootButton);
+        key_level = gpio_get_level(kKeyButton);
+        if (boot_pin && boot_level == 0) {
+          boot_seen_low = true;
+        }
+        if (key_pin && key_level == 0) {
+          key_seen_low = true;
+        }
+        if (boot_seen_low || key_seen_low) {
+          break;
+        }
+      }
+    }
+
+    ESP_LOGI(kTag,
+             "wakeup cause=EXT1 pins=0x%llx key=%d boot=%d seen_low(key=%d boot=%d)",
+             static_cast<unsigned long long>(pins), key_level, boot_level, key_seen_low ? 1 : 0,
+             boot_seen_low ? 1 : 0);
+
+    if (boot_pin && boot_seen_low) {
       return WakeSource::BOOT;
     }
-    if ((pins & (1ULL << static_cast<int>(kKeyButton))) && key_level == 0) {
+    if (key_pin && key_seen_low) {
       return WakeSource::KEY;
     }
-    ESP_LOGW(kTag, "ext1 wake but buttons released, treat as SPURIOUS_EXT1");
+    ESP_LOGW(kTag, "ext1 wake but buttons not observed pressed, treat as SPURIOUS_EXT1");
     return WakeSource::SPURIOUS_EXT1;
   }
   ESP_LOGI(kTag, "wakeup cause=OTHER(%d)", static_cast<int>(cause));
@@ -851,20 +914,26 @@ extern "C" void app_main(void) {
   }
 
   ConfigureButtonGpio();
-  RefreshPowerStatus(&status);
+  const WakeSource wake_source = GetWakeSource();
+  const LongPressAction long_press_action = DetectLongPressAction();
+  bool enter_ap_portal = false;
+  bool open_sta_portal_window = false;
+  bool skip_network_cycle = false;
 
-  const bool long_press_portal = ShouldEnterPortalByLongPress();
-  if (long_press_portal) {
-    ESP_LOGW(kTag, "long-press detected, clear wifi and enter portal");
+  if (long_press_action == LongPressAction::kClearWifiAndEnterPortal) {
+    ESP_LOGW(kTag, "long-press BOOT detected, clear wifi and enter portal");
     store.ClearWifi();
     config.wifi_ssid.clear();
     config.wifi_password.clear();
+    enter_ap_portal = true;
+  } else if (long_press_action == LongPressAction::kOpenStaPortalWindow) {
+    open_sta_portal_window = true;
+    ESP_LOGI(kTag, "long-press KEY detected, open sta portal window");
   }
 
-  const WakeSource wake_source = GetWakeSource();
-  bool open_sta_portal_window = false;
-  bool skip_network_cycle = false;
-  if (!long_press_portal) {
+  RefreshPowerStatus(&status);
+
+  if (long_press_action == LongPressAction::kNone) {
     switch (wake_source) {
       case WakeSource::BOOT:
         status.force_refresh = true;
@@ -872,8 +941,8 @@ extern "C" void app_main(void) {
         break;
       case WakeSource::KEY:
         status.force_refresh = false;
-        open_sta_portal_window = true;
-        ESP_LOGI(kTag, "wake source=KEY, open portal window for %d seconds", kKeyWakePortalWindowSec);
+        // KEY=手动同步：不再打开 120 秒窗口，避免误触与固定成本放大耗电。
+        ESP_LOGI(kTag, "wake source=KEY, manual sync triggered");
         break;
       case WakeSource::TIMER:
         status.force_refresh = false;
@@ -889,6 +958,8 @@ extern "C" void app_main(void) {
         ESP_LOGI(kTag, "wake source=OTHER");
         break;
     }
+  } else {
+    status.force_refresh = false;
   }
 
   if (skip_network_cycle) {
@@ -907,7 +978,7 @@ extern "C" void app_main(void) {
     return;
   }
 
-  if (config.wifi_ssid.empty() || long_press_portal) {
+  if (config.wifi_ssid.empty() || enter_ap_portal) {
     if (!StartConfigApMode()) {
       ESP_LOGE(kTag, "start config ap failed");
       vTaskDelay(pdMS_TO_TICKS(2000));

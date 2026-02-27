@@ -32,6 +32,7 @@ struct DeviceCheckinPayload {
   uint64_t sleep_seconds = 3600;
   int64_t now_epoch = 0;
   int64_t next_wakeup_epoch = 0;
+  std::string sta_ip;
   int battery_mv = -1;
   int battery_percent = -1;
   int charging = -1;

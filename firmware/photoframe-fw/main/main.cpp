@@ -198,6 +198,21 @@ bool EnsureWifiStack() {
   return true;
 }
 
+void ConfigureStaHostname(const AppConfig& config) {
+  if (g_sta_netif == nullptr) {
+    return;
+  }
+  if (config.device_id.empty()) {
+    return;
+  }
+  const esp_err_t err = esp_netif_set_hostname(g_sta_netif, config.device_id.c_str());
+  if (err != ESP_OK) {
+    ESP_LOGW(kTag, "set sta hostname failed: %s", esp_err_to_name(err));
+  } else {
+    ESP_LOGI(kTag, "sta hostname=%s", config.device_id.c_str());
+  }
+}
+
 bool ConfigureApNetwork() {
   if (g_ap_netif == nullptr) {
     return false;
@@ -978,6 +993,8 @@ extern "C" void app_main(void) {
     return;
   }
 
+  ConfigureStaHostname(config);
+
   if (config.wifi_ssid.empty() || enter_ap_portal) {
     if (!StartConfigApMode()) {
       ESP_LOGE(kTag, "start config ap failed");
@@ -1235,6 +1252,7 @@ extern "C" void app_main(void) {
       payload.vbus_good = status.vbus_good;
       payload.image_source = status.image_source;
       payload.last_error = status.last_error;
+      payload.sta_ip = StaIpString();
       const bool checkin_ok = OrchestratorClient::ReportCheckin(config, payload);
       ESP_LOGI(kTag, "orchestrator checkin (ok cycle): url=%s result=%s",
                config.orchestrator_base_url.c_str(), checkin_ok ? "ok" : "fail");
@@ -1285,6 +1303,7 @@ extern "C" void app_main(void) {
     payload.vbus_good = status.vbus_good;
     payload.image_source = status.image_source;
     payload.last_error = status.last_error;
+    payload.sta_ip = StaIpString();
     const bool checkin_ok = OrchestratorClient::ReportCheckin(config, payload);
     ESP_LOGI(kTag, "orchestrator checkin (fail cycle): url=%s result=%s",
              config.orchestrator_base_url.c_str(), checkin_ok ? "ok" : "fail");

@@ -64,6 +64,51 @@ std::string GenerateDeviceToken() {
   return std::string(buf);
 }
 
+int FindWifiProfileIndex(const AppConfig* cfg, const std::string& ssid) {
+  if (cfg == nullptr || ssid.empty()) {
+    return -1;
+  }
+  const int n = std::min(cfg->wifi_profile_count, AppConfig::kMaxWifiProfiles);
+  for (int i = 0; i < n; ++i) {
+    if (cfg->wifi_profiles[i].ssid == ssid) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+void AppendOrUpdateWifiProfile(AppConfig* cfg, const std::string& ssid, const std::string& password,
+                               bool update_password) {
+  if (cfg == nullptr || ssid.empty()) {
+    return;
+  }
+
+  const int existing = FindWifiProfileIndex(cfg, ssid);
+  if (existing >= 0) {
+    if (update_password) {
+      cfg->wifi_profiles[existing].password = password;
+    }
+    return;
+  }
+
+  if (cfg->wifi_profile_count < AppConfig::kMaxWifiProfiles) {
+    cfg->wifi_profiles[cfg->wifi_profile_count].ssid = ssid;
+    cfg->wifi_profiles[cfg->wifi_profile_count].password = password;
+    cfg->wifi_profile_count += 1;
+    return;
+  }
+
+  // 容量满时丢弃最旧条目，保留最近下发/录入的 Wi-Fi 凭据。
+  for (int i = 1; i < AppConfig::kMaxWifiProfiles; ++i) {
+    cfg->wifi_profiles[i - 1] = cfg->wifi_profiles[i];
+  }
+  cfg->wifi_profiles[AppConfig::kMaxWifiProfiles - 1].ssid = ssid;
+  cfg->wifi_profiles[AppConfig::kMaxWifiProfiles - 1].password = password;
+  if (cfg->last_connected_wifi_index > 0) {
+    cfg->last_connected_wifi_index -= 1;
+  }
+}
+
 bool ReadResponseBody(esp_http_client_handle_t client, std::string* body) {
   if (body == nullptr) {
     return false;
@@ -132,6 +177,36 @@ bool ApplyRemoteConfigObject(const cJSON* config, AppConfig* cfg, std::string* e
   const cJSON* timezone = cJSON_GetObjectItemCaseSensitive(config, "timezone");
   if (cJSON_IsString(timezone) && timezone->valuestring != nullptr) {
     cfg->timezone = timezone->valuestring;
+  }
+
+  const cJSON* wifi_profiles = cJSON_GetObjectItemCaseSensitive(config, "wifi_profiles");
+  if (cJSON_IsArray(wifi_profiles)) {
+    const int n = std::min(cJSON_GetArraySize(wifi_profiles), AppConfig::kMaxWifiProfiles);
+    for (int i = 0; i < n; ++i) {
+      const cJSON* item = cJSON_GetArrayItem(wifi_profiles, i);
+      if (cJSON_IsString(item) && item->valuestring != nullptr) {
+        AppendOrUpdateWifiProfile(cfg, item->valuestring, "", false);
+        continue;
+      }
+      if (!cJSON_IsObject(item)) {
+        continue;
+      }
+
+      const cJSON* ssid = cJSON_GetObjectItemCaseSensitive(item, "ssid");
+      if (!cJSON_IsString(ssid) || ssid->valuestring == nullptr || ssid->valuestring[0] == '\0') {
+        continue;
+      }
+
+      const cJSON* password = cJSON_GetObjectItemCaseSensitive(item, "password");
+      const bool has_password = cJSON_IsString(password) && password->valuestring != nullptr;
+      const std::string pw = has_password ? std::string(password->valuestring) : std::string();
+      AppendOrUpdateWifiProfile(cfg, ssid->valuestring, pw, has_password);
+    }
+
+    if (cfg->last_connected_wifi_index < -1 ||
+        cfg->last_connected_wifi_index >= cfg->wifi_profile_count) {
+      cfg->last_connected_wifi_index = -1;
+    }
   }
 
   const cJSON* interval = cJSON_GetObjectItemCaseSensitive(config, "interval_minutes");
@@ -213,6 +288,20 @@ void AddReportedConfig(cJSON* root, const AppConfig& cfg) {
                                      static_cast<int>(AppConfig::kDitherOrdered)));
   cJSON_AddNumberToObject(reported, "six_color_tolerance", std::clamp(cfg.six_color_tolerance, 0, 64));
   cJSON_AddStringToObject(reported, "timezone", cfg.timezone.c_str());
+
+  cJSON* wifi_profiles = cJSON_CreateArray();
+  if (wifi_profiles != nullptr) {
+    for (int i = 0; i < cfg.wifi_profile_count && i < AppConfig::kMaxWifiProfiles; ++i) {
+      cJSON* item = cJSON_CreateObject();
+      if (item == nullptr) {
+        continue;
+      }
+      cJSON_AddStringToObject(item, "ssid", cfg.wifi_profiles[i].ssid.c_str());
+      cJSON_AddBoolToObject(item, "password_set", !cfg.wifi_profiles[i].password.empty());
+      cJSON_AddItemToArray(wifi_profiles, item);
+    }
+    cJSON_AddItemToObject(reported, "wifi_profiles", wifi_profiles);
+  }
 
   cJSON_AddItemToObject(root, "reported_config", reported);
 }
@@ -534,6 +623,9 @@ bool OrchestratorClient::ReportCheckin(const AppConfig& cfg, const DeviceCheckin
   cJSON_AddBoolToObject(root, "image_changed", payload.image_changed);
   cJSON_AddStringToObject(root, "image_source", payload.image_source.c_str());
   cJSON_AddStringToObject(root, "last_error", payload.last_error.c_str());
+  if (!payload.sta_ip.empty()) {
+    cJSON_AddStringToObject(root, "sta_ip", payload.sta_ip.c_str());
+  }
   cJSON_AddNumberToObject(root, "battery_mv", payload.battery_mv);
   cJSON_AddNumberToObject(root, "battery_percent", payload.battery_percent);
   cJSON_AddNumberToObject(root, "charging", payload.charging);

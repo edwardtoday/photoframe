@@ -762,6 +762,20 @@ function updateConfigHints() {
   setPlaceholder('cfgRetryMaxMinutes', `当前: ${reportedOr('retry_max_minutes', '-')}`);
   setPlaceholder('cfgMaxFailure', `当前: ${reportedOr('max_failure_before_long_sleep', '-')}`);
   setPlaceholder('cfgSixColorTolerance', `当前: ${reportedOr('six_color_tolerance', '-')}`);
+
+  const wifiProfiles = Array.isArray(reported?.wifi_profiles) ? reported.wifi_profiles : [];
+  const wifiText = wifiProfiles
+    .map((it) => {
+      if (typeof it === 'string') return it;
+      const ssid = typeof it?.ssid === 'string' ? it.ssid : '';
+      if (!ssid) return '';
+      const pset = typeof it?.password_set === 'boolean' ? it.password_set : null;
+      if (pset === false) return `${ssid}(open)`;
+      return ssid;
+    })
+    .filter((t) => t)
+    .join(', ') || '-';
+  setText('cfgHintWifiProfiles', `设备已记住: ${wifiText}`);
 }
 
 function clearConfigPatchInputs() {
@@ -771,6 +785,12 @@ function clearConfigPatchInputs() {
     'cfgImageUrlTemplate',
     'cfgOrchToken',
     'cfgPhotoToken',
+    'cfgWifiSsid1',
+    'cfgWifiPwd1',
+    'cfgWifiSsid2',
+    'cfgWifiPwd2',
+    'cfgWifiSsid3',
+    'cfgWifiPwd3',
     'cfgIntervalMinutes',
     'cfgRetryBaseMinutes',
     'cfgRetryMaxMinutes',
@@ -831,6 +851,23 @@ function collectDeviceConfigPatch() {
   addText('cfgImageUrlTemplate', 'image_url_template');
   addText('cfgOrchToken', 'orchestrator_token');
   addText('cfgPhotoToken', 'photo_token');
+
+  const wifiProfiles = [];
+  for (let i = 1; i <= 3; i++) {
+    const ssid = (document.getElementById(`cfgWifiSsid${i}`)?.value || '').trim();
+    const password = document.getElementById(`cfgWifiPwd${i}`)?.value || '';
+    if (!ssid && !password) continue;
+    if (!ssid) {
+      throw new Error(`Wi-Fi SSID ${i} 不能为空`);
+    }
+    if (!password) {
+      throw new Error(`Wi-Fi 密码 ${i} 不能为空（SSID=${ssid}）`);
+    }
+    wifiProfiles.push({ ssid, password });
+  }
+  if (wifiProfiles.length > 0) {
+    patch.wifi_profiles = wifiProfiles;
+  }
 
   const interval = parseOptionalInteger('cfgIntervalMinutes', '刷新间隔', 1, 24 * 60);
   if (interval != null) patch.interval_minutes = interval;
@@ -900,6 +937,7 @@ async function loadDevices() {
       <td>${escapeHtml(d.image_source || 'daily')}</td>
       <td>${escapeHtml(batteryStatusText(d))}</td>
       <td>${escapeHtml(powerSourceText(d))}</td>
+      <td>${escapeHtml(d.sta_ip || '-')}</td>
       <td>${escapeHtml(cfgVersion)}</td>
       <td>${cfgQuery}</td>
       <td>${renderConfigApplyStatus(d)}</td>

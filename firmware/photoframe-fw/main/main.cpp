@@ -1085,8 +1085,10 @@ extern "C" void app_main(void) {
 
   now = time(nullptr);
   std::string url = ImageClient::BuildDatedUrl(config.image_url_template, now, config.device_id);
+  const std::string fallback_url = url;
   uint64_t success_sleep_seconds = static_cast<uint64_t>(std::max(1, config.interval_minutes)) * 60ULL;
   status.image_source = "daily";
+  bool used_orchestrator_directive = false;
 
   if (config.orchestrator_enabled != 0 && !config.orchestrator_base_url.empty()) {
     const FrameDirective directive = OrchestratorClient::FetchDirective(config, now);
@@ -1096,6 +1098,7 @@ extern "C" void app_main(void) {
       if (directive.poll_after_seconds > 0) {
         success_sleep_seconds = static_cast<uint64_t>(directive.poll_after_seconds);
       }
+      used_orchestrator_directive = true;
       ESP_LOGI(kTag, "orchestrator source=%s poll_after=%llus", status.image_source.c_str(),
                static_cast<unsigned long long>(success_sleep_seconds));
     } else {
@@ -1123,6 +1126,16 @@ extern "C" void app_main(void) {
       break;
     }
     ESP_LOGW(kTag, "fetch candidate failed: http=%d err=%s", fetch.status_code, fetch.error.c_str());
+  }
+  if (!fetch.ok && used_orchestrator_directive && status.image_source == "daily" &&
+      !fallback_url.empty() && fallback_url != url) {
+    // 自动内外网切换：当编排服务给出的 URL 不可达（常见于离家后仍返回内网 URL），回退到配置模板。
+    ESP_LOGW(kTag, "fetch directive url failed, fallback to template url: %s", fallback_url.c_str());
+    fetch = ImageClient::FetchImage(fallback_url, config.last_image_sha256, config.photo_token,
+                                    previous_etag, previous_last_modified);
+    if (fetch.ok) {
+      fetch_url_used = fallback_url;
+    }
   }
 
   status.last_http_status = fetch.status_code;

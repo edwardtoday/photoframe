@@ -818,22 +818,42 @@ void RefreshPowerStatus(RuntimeStatus* status) {
     return;
   }
 
-  if (!PowerManager::Init()) {
+  bool pmic_ok = false;
+  // 经验：刚上电时 PMIC/I2C 可能短暂不稳定，做少量重试避免整轮电量缺失。
+  for (int attempt = 1; attempt <= 3; ++attempt) {
+    if (PowerManager::Init()) {
+      pmic_ok = true;
+      break;
+    }
+    if (attempt < 3) {
+      vTaskDelay(pdMS_TO_TICKS(60));
+    }
+  }
+  if (!pmic_ok) {
     ESP_LOGW(kTag, "pmic init failed, skip battery status");
     return;
   }
 
   PowerStatus power = {};
   bool ok = false;
+  // PMIC 在刚上电/刚启用 ADC 通道的瞬间可能短暂读不到电量/电压；这里做多次采样兜底。
+  // 注意：ReadStatus() 内部已做 I2C 级别重试，这里是“跨调用”的二次重试。
   for (int attempt = 1; attempt <= 3; ++attempt) {
-    if (!PowerManager::ReadStatus(&power)) {
-      break;
+    PowerStatus sample = {};
+    if (!PowerManager::ReadStatus(&sample)) {
+      if (attempt < 3) {
+        vTaskDelay(pdMS_TO_TICKS(60));
+      }
+      continue;
     }
+    power = sample;
     ok = true;
     if (power.battery_mv > 0 || power.battery_percent >= 0) {
       break;
     }
-    vTaskDelay(pdMS_TO_TICKS(60));
+    if (attempt < 3) {
+      vTaskDelay(pdMS_TO_TICKS(60));
+    }
   }
   if (!ok) {
     ESP_LOGW(kTag, "pmic read failed, skip battery status");
@@ -1237,6 +1257,9 @@ extern "C" void app_main(void) {
     strftime(now_local_buf, sizeof(now_local_buf), "%Y-%m-%d %H:%M:%S %Z", &now_local_tm);
 
     if (config.orchestrator_enabled != 0) {
+      if (status.battery_mv <= 0 && status.battery_percent < 0) {
+        RefreshPowerStatus(&status);
+      }
       DeviceCheckinPayload payload;
       payload.fetch_ok = true;
       payload.image_changed = fetch.image_changed;
@@ -1288,6 +1311,9 @@ extern "C" void app_main(void) {
   status.next_wakeup_epoch = now_epoch + static_cast<int64_t>(backoff_sleep_seconds);
 
   if (config.orchestrator_enabled != 0) {
+    if (status.battery_mv <= 0 && status.battery_percent < 0) {
+      RefreshPowerStatus(&status);
+    }
     DeviceCheckinPayload payload;
     payload.fetch_ok = false;
     payload.image_changed = fetch.image_changed;

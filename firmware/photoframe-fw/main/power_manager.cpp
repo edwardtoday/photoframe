@@ -150,7 +150,18 @@ bool PowerManager::Init() {
   }
 
   uint8_t chip_id = 0;
-  if (!ReadReg(kRegChipId, &chip_id)) {
+  bool chip_ok = false;
+  // 刚上电时 I2C/PMIC 可能尚未完全稳定，增加少量重试避免偶发“整轮电量缺失”。
+  for (int attempt = 1; attempt <= 5; ++attempt) {
+    if (ReadReg(kRegChipId, &chip_id)) {
+      chip_ok = true;
+      break;
+    }
+    if (attempt < 5) {
+      vTaskDelay(pdMS_TO_TICKS(50));
+    }
+  }
+  if (!chip_ok) {
     ESP_LOGE(kTag, "read chip id failed");
     return false;
   }

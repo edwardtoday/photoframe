@@ -245,6 +245,28 @@ function batteryStatusText(device) {
     return `${mv}mV`;
   }
 
+  const lastEpoch = Number(device?.last_power_sample_epoch);
+  const lastPercent = Number(device?.last_power_battery_percent);
+  const lastMv = Number(device?.last_power_battery_mv);
+
+  let fallback = '';
+  if (Number.isFinite(lastPercent) && lastPercent >= 0) {
+    if (Number.isFinite(lastMv) && lastMv > 0) {
+      fallback = `${lastPercent}% / ${lastMv}mV`;
+    } else {
+      fallback = `${lastPercent}%`;
+    }
+  } else if (Number.isFinite(lastMv) && lastMv > 0) {
+    fallback = `${lastMv}mV`;
+  }
+
+  if (fallback) {
+    if (Number.isFinite(lastEpoch) && lastEpoch > 0) {
+      return `${fallback} (上次 ${fmtEpochCompact(lastEpoch)})`;
+    }
+    return fallback;
+  }
+
   return '-';
 }
 
@@ -256,7 +278,20 @@ function powerSourceText(device) {
   const chargeText = charging === 1 ? '充电中' : charging === 0 ? '未充电' : '-';
 
   if (vbusText === '-' && chargeText === '-') {
-    return '-';
+    const lastVbus = Number(device?.last_power_vbus_good);
+    const lastCharging = Number(device?.last_power_charging);
+    const lastEpoch = Number(device?.last_power_sample_epoch);
+
+    const lastVbusText = lastVbus === 1 ? 'USB' : lastVbus === 0 ? 'Battery' : '-';
+    const lastChargeText = lastCharging === 1 ? '充电中' : lastCharging === 0 ? '未充电' : '-';
+    if (lastVbusText === '-' && lastChargeText === '-') {
+      return '-';
+    }
+    const text = `${lastVbusText} / ${lastChargeText}`;
+    if (Number.isFinite(lastEpoch) && lastEpoch > 0) {
+      return `${text} (上次 ${fmtEpochCompact(lastEpoch)})`;
+    }
+    return text;
   }
   return `${vbusText} / ${chargeText}`;
 }

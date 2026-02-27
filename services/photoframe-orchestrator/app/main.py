@@ -1516,6 +1516,30 @@ def devices() -> dict[str, Any]:
   status_rows = conn.execute("SELECT * FROM device_config_status").fetchall()
   status_map = {str(row["device_id"]): row for row in status_rows}
 
+  # 取每台设备最近一次电量采样（即使当前 checkin 读数缺失，也能在控制台做“上次值”兜底展示）。
+  last_power_rows = conn.execute(
+      """
+      SELECT s.device_id, s.sample_epoch, s.battery_mv, s.battery_percent, s.charging, s.vbus_good
+      FROM device_power_samples s
+      JOIN (
+        SELECT device_id, MAX(sample_epoch) AS max_epoch
+        FROM device_power_samples
+        GROUP BY device_id
+      ) t
+        ON s.device_id = t.device_id
+       AND s.sample_epoch = t.max_epoch
+      """
+  ).fetchall()
+  last_power_map: dict[str, dict[str, int]] = {}
+  for row in last_power_rows:
+    last_power_map[str(row["device_id"])] = {
+        "sample_epoch": int(row["sample_epoch"]),
+        "battery_mv": int(row["battery_mv"]),
+        "battery_percent": int(row["battery_percent"]),
+        "charging": int(row["charging"]),
+        "vbus_good": int(row["vbus_good"]),
+    }
+
   items: list[dict[str, Any]] = []
   for row in rows:
     device_id = str(row["device_id"])
@@ -1527,6 +1551,7 @@ def devices() -> dict[str, Any]:
     target_version = 0 if latest_plan is None else int(latest_plan["id"])
 
     reported_config = _decode_config_json(str(row["reported_config_json"]))
+    last_power = last_power_map.get(device_id)
     items.append(
         {
             "device_id": device_id,
@@ -1545,6 +1570,13 @@ def devices() -> dict[str, Any]:
             "battery_percent": int(row["battery_percent"]),
             "charging": int(row["charging"]),
             "vbus_good": int(row["vbus_good"]),
+            "last_power_sample_epoch": (
+                None if last_power is None else _device_epoch_for_view(last_power["sample_epoch"], now_ts)
+            ),
+            "last_power_battery_mv": -1 if last_power is None else int(last_power["battery_mv"]),
+            "last_power_battery_percent": -1 if last_power is None else int(last_power["battery_percent"]),
+            "last_power_charging": -1 if last_power is None else int(last_power["charging"]),
+            "last_power_vbus_good": -1 if last_power is None else int(last_power["vbus_good"]),
             "reported_config_epoch": _device_epoch_for_view(int(row["reported_config_epoch"]), now_ts),
             "reported_config": _redact_reported_config_for_view(reported_config),
             "config_target_version": target_version,

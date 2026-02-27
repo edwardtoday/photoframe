@@ -22,7 +22,7 @@
    - 支持两种拉图来源：
      - 编排服务（推荐）：`/api/v1/device/next` 下发当前应显示图片 URL
      - 传统模板：`image_url_template`（支持 `%DATE%` 与 `%DEVICE_ID%` 占位；若未包含 `device_id` 参数会自动追加）
-   - 若编排服务暂时不可达，会自动回退到 `image_url_template`，保证“只要联网就能取图”。
+   - 若编排服务暂时不可达，或编排服务下发的 **daily** 图片 URL 拉取失败（例如离家后仍返回内网 URL），会自动回退到 `image_url_template`，保证“只要联网就能取图”。
    - 支持图片格式：
      - `BMP`（原有路径）
      - `JPEG/JPG`：解码为 `RGB888` 后复用既有 6 色量化 + 抖动渲染链路（依赖 `espressif/esp_new_jpeg`）

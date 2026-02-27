@@ -16,10 +16,13 @@ const TOKEN_STORAGE_KEY = 'photoframe.console.token';
 const TOKEN_COOKIE_KEY = 'photoframe_console_token';
 const POWER_DEVICE_STORAGE_KEY = 'photoframe.console.power.device_id';
 const POWER_DAYS_STORAGE_KEY = 'photoframe.console.power.days';
+const POWER_LOW_THRESHOLD_STORAGE_KEY = 'photoframe.console.power.low_threshold';
 const POWER_DEVICE_COOKIE_KEY = 'photoframe_console_power_device';
 const POWER_DAYS_COOKIE_KEY = 'photoframe_console_power_days';
+const POWER_LOW_THRESHOLD_COOKIE_KEY = 'photoframe_console_power_low_threshold';
 
 let storedPowerDeviceId = '';
+let powerAutoLoaded = false;
 
 function readCookie(name) {
   const encodedName = `${name}=`;
@@ -81,12 +84,15 @@ function persistConsoleToken() {
 
 function loadStoredPowerPrefs() {
   const daysInput = document.getElementById('powerDays');
+  const thresholdInput = document.getElementById('powerLowThreshold');
 
   let savedDevice = '';
   let savedDays = '';
+  let savedThreshold = '';
   try {
     savedDevice = window.localStorage.getItem(POWER_DEVICE_STORAGE_KEY) || '';
     savedDays = window.localStorage.getItem(POWER_DAYS_STORAGE_KEY) || '';
+    savedThreshold = window.localStorage.getItem(POWER_LOW_THRESHOLD_STORAGE_KEY) || '';
   } catch (_) {
     // localStorage 受限时退化到 cookie
   }
@@ -97,6 +103,9 @@ function loadStoredPowerPrefs() {
   if (!savedDays) {
     savedDays = readCookie(POWER_DAYS_COOKIE_KEY);
   }
+  if (!savedThreshold) {
+    savedThreshold = readCookie(POWER_LOW_THRESHOLD_COOKIE_KEY);
+  }
 
   storedPowerDeviceId = (savedDevice || '').trim();
 
@@ -106,12 +115,23 @@ function loadStoredPowerPrefs() {
       daysInput.value = String(Math.floor(daysNum));
     }
   }
+
+  if (thresholdInput) {
+    const thresholdNum = Number(savedThreshold);
+    if (Number.isFinite(thresholdNum) && thresholdNum >= 0 && thresholdNum <= 100) {
+      thresholdInput.value = String(Math.floor(thresholdNum));
+    }
+  }
 }
 
 function persistPowerPrefs() {
   const deviceId = (document.getElementById('powerDeviceId')?.value || '').trim();
   const daysRaw = Number(document.getElementById('powerDays')?.value || '');
   const days = Number.isFinite(daysRaw) ? Math.max(1, Math.min(365, Math.floor(daysRaw))) : null;
+  const thresholdRaw = Number(document.getElementById('powerLowThreshold')?.value || '');
+  const threshold = Number.isFinite(thresholdRaw)
+    ? Math.max(0, Math.min(100, Math.floor(thresholdRaw)))
+    : null;
 
   try {
     if (deviceId) {
@@ -124,6 +144,11 @@ function persistPowerPrefs() {
     } else {
       window.localStorage.removeItem(POWER_DAYS_STORAGE_KEY);
     }
+    if (threshold != null) {
+      window.localStorage.setItem(POWER_LOW_THRESHOLD_STORAGE_KEY, String(threshold));
+    } else {
+      window.localStorage.removeItem(POWER_LOW_THRESHOLD_STORAGE_KEY);
+    }
   } catch (_) {
     // ignore
   }
@@ -135,6 +160,9 @@ function persistPowerPrefs() {
   }
   if (days != null) {
     writeCookie(POWER_DAYS_COOKIE_KEY, String(days), 180 * 24 * 3600);
+  }
+  if (threshold != null) {
+    writeCookie(POWER_LOW_THRESHOLD_COOKIE_KEY, String(threshold), 180 * 24 * 3600);
   }
 }
 
@@ -893,15 +921,26 @@ async function loadDevices() {
     configDeviceSelect.value = selectedConfigBefore;
   }
   if (powerDeviceSelect) {
-    if ([...powerDeviceSelect.options].some((o) => o.value === selectedPowerBefore)) {
+    // 注意：页面首次加载时，select 默认值是占位符 ""。如果这里优先恢复 ""，会吞掉 localStorage 里的记忆设备。
+    if (selectedPowerBefore &&
+        [...powerDeviceSelect.options].some((o) => o.value === selectedPowerBefore)) {
       powerDeviceSelect.value = selectedPowerBefore;
     } else if (storedPowerDeviceId &&
                [...powerDeviceSelect.options].some((o) => o.value === storedPowerDeviceId)) {
       powerDeviceSelect.value = storedPowerDeviceId;
+      // 初次载入时恢复图表状态，减少重复点击（后续 30s 自动刷新不重复拉曲线）。
+      if (!powerAutoLoaded) {
+        powerAutoLoaded = true;
+        loadPowerSamplesSafe();
+      }
     } else if (powerDeviceSelect.options.length === 2) {
       // 只有一台设备时，默认选中，减少点击。
       powerDeviceSelect.value = powerDeviceSelect.options[1].value;
       persistPowerPrefs();
+      if (!powerAutoLoaded) {
+        powerAutoLoaded = true;
+        loadPowerSamplesSafe();
+      }
     }
   }
 
@@ -1252,7 +1291,17 @@ document.getElementById('powerDays').addEventListener('change', async () => {
   await loadPowerSamplesSafe();
 });
 
+document.getElementById('powerDays').addEventListener('input', () => {
+  // 仅持久化（不触发请求），避免用户输入过程中频繁刷新。
+  persistPowerPrefs();
+});
+
+document.getElementById('powerLowThreshold').addEventListener('input', () => {
+  persistPowerPrefs();
+});
+
 document.getElementById('powerLowThreshold').addEventListener('change', async () => {
+  persistPowerPrefs();
   await loadPowerSamplesSafe();
 });
 

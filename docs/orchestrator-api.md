@@ -77,6 +77,7 @@
   "image_changed": true,
   "image_source": "override",
   "last_error": "",
+  "sta_ip": "192.168.58.120",
   "battery_mv": 3987,
   "battery_percent": 84,
   "charging": 1,
@@ -84,6 +85,10 @@
   "reported_config": {
     "interval_minutes": 60,
     "image_url_template": "https://901.qingpei.me:40009/daily.bmp",
+    "wifi_profiles": [
+      { "ssid": "HomeWiFi", "password_set": true },
+      { "ssid": "OfficeWiFi", "password_set": true }
+    ],
     "color_process_mode": 0
   }
 }
@@ -106,6 +111,10 @@
   "config": {
     "interval_minutes": 60,
     "image_url_template": "https://901.qingpei.me:40009/daily.bmp",
+    "wifi_profiles": [
+      { "ssid": "HomeWiFi", "password": "..." },
+      { "ssid": "OfficeWiFi", "password": "..." }
+    ],
     "photo_token": "..."
   }
 }
@@ -122,6 +131,7 @@
 - `orchestrator_token`
 - `image_url_template`
 - `photo_token`
+- `wifi_profiles`（数组，最多 3 条：`[{ "ssid": "...", "password": "..." }]`）
 - `interval_minutes`
 - `retry_base_minutes`
 - `retry_max_minutes`

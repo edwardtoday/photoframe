@@ -53,6 +53,7 @@ DEVICE_CONFIG_ALLOWED_KEYS = {
     "orchestrator_token",
     "image_url_template",
     "photo_token",
+    "wifi_profiles",
     "interval_minutes",
     "retry_base_minutes",
     "retry_max_minutes",
@@ -99,6 +100,7 @@ def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
   _ensure_table_column(conn, "devices", "battery_percent", "INTEGER NOT NULL DEFAULT -1")
   _ensure_table_column(conn, "devices", "charging", "INTEGER NOT NULL DEFAULT -1")
   _ensure_table_column(conn, "devices", "vbus_good", "INTEGER NOT NULL DEFAULT -1")
+  _ensure_table_column(conn, "devices", "sta_ip", "TEXT NOT NULL DEFAULT ''")
 
   conn.execute(
       """
@@ -134,6 +136,7 @@ def _init_db() -> None:
           image_changed INTEGER NOT NULL DEFAULT 0,
           image_source TEXT NOT NULL DEFAULT 'daily',
           last_error TEXT NOT NULL DEFAULT '',
+          sta_ip TEXT NOT NULL DEFAULT '',
           battery_mv INTEGER NOT NULL DEFAULT -1,
           battery_percent INTEGER NOT NULL DEFAULT -1,
           charging INTEGER NOT NULL DEFAULT -1,
@@ -492,6 +495,52 @@ def _decode_config_json(raw: str) -> dict[str, Any]:
   return {}
 
 
+def _sanitize_wifi_profiles(raw: Any) -> list[dict[str, Any]]:
+  if not isinstance(raw, list):
+    raise HTTPException(status_code=400, detail="wifi_profiles must be array")
+
+  items: list[dict[str, Any]] = []
+  seen: set[str] = set()
+
+  for entry in raw:
+    ssid = ""
+    password: str | None = None
+    password_set: bool | None = None
+
+    if isinstance(entry, str):
+      ssid = entry.strip()
+    elif isinstance(entry, dict):
+      ssid_raw = entry.get("ssid")
+      if isinstance(ssid_raw, str):
+        ssid = ssid_raw.strip()
+      pw_raw = entry.get("password")
+      if isinstance(pw_raw, str):
+        password = pw_raw
+      pw_set_raw = entry.get("password_set")
+      if isinstance(pw_set_raw, bool):
+        password_set = pw_set_raw
+
+    if not ssid:
+      continue
+
+    ssid = ssid[:64]
+    if ssid in seen:
+      continue
+
+    item: dict[str, Any] = {"ssid": ssid}
+    if password is not None:
+      item["password"] = password[:256]
+    if password_set is not None:
+      item["password_set"] = bool(password_set)
+
+    items.append(item)
+    seen.add(ssid)
+    if len(items) >= 3:
+      break
+
+  return items
+
+
 def _sanitize_device_config(raw: dict[str, Any]) -> dict[str, Any]:
   if not isinstance(raw, dict):
     raise HTTPException(status_code=400, detail="config must be object")
@@ -499,6 +548,10 @@ def _sanitize_device_config(raw: dict[str, Any]) -> dict[str, Any]:
   sanitized: dict[str, Any] = {}
   for key, value in raw.items():
     if key not in DEVICE_CONFIG_ALLOWED_KEYS:
+      continue
+
+    if key == "wifi_profiles":
+      sanitized[key] = _sanitize_wifi_profiles(value)
       continue
 
     if key in {"orchestrator_enabled", "interval_minutes", "retry_base_minutes", "retry_max_minutes",
@@ -562,6 +615,11 @@ def _mask_secret(value: str) -> str:
     return "*" * len(value)
   return f"{value[:2]}***{value[-2:]}"
 
+def _hide_secret(value: str) -> str:
+  if not value:
+    return ""
+  return "<hidden>"
+
 
 def _redact_reported_config_for_view(config: dict[str, Any]) -> dict[str, Any]:
   # Token 等敏感字段仅用于“已设置”提示，返回前统一脱敏。
@@ -570,8 +628,43 @@ def _redact_reported_config_for_view(config: dict[str, Any]) -> dict[str, Any]:
     val = redacted.get(key)
     if isinstance(val, str):
       redacted[key] = _mask_secret(val)
+
+  wifi_profiles = redacted.get("wifi_profiles")
+  if isinstance(wifi_profiles, list):
+    safe_profiles: list[dict[str, Any]] = []
+    for item in wifi_profiles:
+      if not isinstance(item, dict):
+        continue
+      out = dict(item)
+      if isinstance(out.get("password"), str):
+        out["password"] = _hide_secret(out.get("password") or "")
+      safe_profiles.append(out)
+    redacted["wifi_profiles"] = safe_profiles
   return redacted
 
+
+def _redact_device_config_for_view(config: dict[str, Any]) -> dict[str, Any]:
+  # 配置发布历史与控制台回显中，避免直接暴露敏感字段（尤其是 Wi-Fi 密码）。
+  redacted = dict(config)
+
+  for key in DEVICE_CONFIG_SECRET_KEYS:
+    val = redacted.get(key)
+    if isinstance(val, str):
+      redacted[key] = _mask_secret(val)
+
+  wifi_profiles = redacted.get("wifi_profiles")
+  if isinstance(wifi_profiles, list):
+    safe_profiles: list[dict[str, Any]] = []
+    for item in wifi_profiles:
+      if not isinstance(item, dict):
+        continue
+      out = dict(item)
+      if isinstance(out.get("password"), str):
+        out["password"] = _hide_secret(out.get("password") or "")
+      safe_profiles.append(out)
+    redacted["wifi_profiles"] = safe_profiles
+
+  return redacted
 
 
 def _load_latest_device_config_plan(conn: sqlite3.Connection, device_id: str) -> sqlite3.Row | None:
@@ -734,6 +827,7 @@ class DeviceCheckin(BaseModel):
   image_changed: bool = False
   image_source: str = "daily"
   last_error: str = ""
+  sta_ip: str = Field(default="", max_length=64)
   battery_mv: int = -1
   battery_percent: int = -1
   charging: int = -1
@@ -1065,6 +1159,7 @@ def device_checkin(
     next_wakeup_epoch = checkin_epoch + sleep_seconds
   reported_config = _sanitize_reported_device_config(payload.reported_config)
   reported_config_json = json.dumps(reported_config, ensure_ascii=False)
+  sta_ip = (payload.sta_ip or "").strip()[:64]
   battery_mv = int(payload.battery_mv)
   battery_percent = int(payload.battery_percent)
   charging = int(payload.charging)
@@ -1077,9 +1172,9 @@ def device_checkin(
         INSERT INTO devices (
           device_id, last_checkin_epoch, next_wakeup_epoch, sleep_seconds,
           poll_interval_seconds, failure_count, last_http_status, fetch_ok,
-          image_changed, image_source, last_error, battery_mv, battery_percent,
+          image_changed, image_source, last_error, sta_ip, battery_mv, battery_percent,
           charging, vbus_good, reported_config_json, reported_config_epoch, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(device_id) DO UPDATE SET
           last_checkin_epoch = excluded.last_checkin_epoch,
           next_wakeup_epoch = excluded.next_wakeup_epoch,
@@ -1091,6 +1186,7 @@ def device_checkin(
           image_changed = excluded.image_changed,
           image_source = excluded.image_source,
           last_error = excluded.last_error,
+          sta_ip = excluded.sta_ip,
           battery_mv = excluded.battery_mv,
           battery_percent = excluded.battery_percent,
           charging = excluded.charging,
@@ -1111,6 +1207,7 @@ def device_checkin(
             1 if payload.image_changed else 0,
             payload.image_source,
             payload.last_error,
+            sta_ip,
             battery_mv,
             battery_percent,
             charging,
@@ -1297,7 +1394,7 @@ def device_config_publish(
       "id": plan_id,
       "device_id": device_id,
       "created_epoch": now_ts,
-      "config": config,
+      "config": _redact_device_config_for_view(config),
   }
 
 
@@ -1410,6 +1507,7 @@ def devices() -> dict[str, Any]:
             "fetch_ok": bool(row["fetch_ok"]),
             "image_source": row["image_source"],
             "last_error": row["last_error"],
+            "sta_ip": str(row["sta_ip"] or ""),
             "battery_mv": int(row["battery_mv"]),
             "battery_percent": int(row["battery_percent"]),
             "charging": int(row["charging"]),
@@ -1525,13 +1623,14 @@ def device_configs(
 
   items: list[dict[str, Any]] = []
   for row in rows:
+    raw_config = _decode_config_json(str(row['config_json']))
     items.append(
         {
             'id': int(row['id']),
             'device_id': row['device_id'],
             'created_epoch': int(row['created_epoch']),
             'note': row['note'],
-            'config': _decode_config_json(str(row['config_json'])),
+            'config': _redact_device_config_for_view(raw_config),
         }
     )
 

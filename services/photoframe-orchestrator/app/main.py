@@ -1186,11 +1186,12 @@ def device_checkin(
           image_changed = excluded.image_changed,
           image_source = excluded.image_source,
           last_error = excluded.last_error,
-          sta_ip = excluded.sta_ip,
-          battery_mv = excluded.battery_mv,
-          battery_percent = excluded.battery_percent,
-          charging = excluded.charging,
-          vbus_good = excluded.vbus_good,
+          -- 避免“本次读数缺失(-1/空)”覆盖掉上一轮的有效值，导致控制台突然变成未知。
+          sta_ip = CASE WHEN excluded.sta_ip <> '' THEN excluded.sta_ip ELSE sta_ip END,
+          battery_mv = CASE WHEN excluded.battery_mv > 0 THEN excluded.battery_mv ELSE battery_mv END,
+          battery_percent = CASE WHEN excluded.battery_percent >= 0 THEN excluded.battery_percent ELSE battery_percent END,
+          charging = CASE WHEN excluded.charging IN (0, 1) THEN excluded.charging ELSE charging END,
+          vbus_good = CASE WHEN excluded.vbus_good IN (0, 1) THEN excluded.vbus_good ELSE vbus_good END,
           reported_config_json = excluded.reported_config_json,
           reported_config_epoch = excluded.reported_config_epoch,
           updated_at = excluded.updated_at
@@ -1278,15 +1279,47 @@ def device_config_get(
 
     conn.execute(
         """
-        INSERT INTO device_config_status (device_id, last_query_epoch, last_seen_version, target_version, updated_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO device_config_status (
+          device_id, last_query_epoch, last_seen_version, target_version,
+          last_apply_epoch, applied_version, apply_ok, apply_error,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(device_id) DO UPDATE SET
           last_query_epoch = excluded.last_query_epoch,
           last_seen_version = excluded.last_seen_version,
           target_version = excluded.target_version,
+          -- 设备在查询时携带 current_version，意味着它“当前运行的配置版本”已生效。
+          -- 若 applied_version 尚未更新（例如设备侧回报失败/旧固件不支持 applied 回调），这里做一次隐式对齐。
+          last_apply_epoch = CASE
+            WHEN applied_version < excluded.last_seen_version THEN excluded.last_query_epoch
+            ELSE last_apply_epoch
+          END,
+          applied_version = CASE
+            WHEN applied_version < excluded.last_seen_version THEN excluded.last_seen_version
+            ELSE applied_version
+          END,
+          apply_ok = CASE
+            WHEN applied_version < excluded.last_seen_version THEN 1
+            ELSE apply_ok
+          END,
+          apply_error = CASE
+            WHEN applied_version < excluded.last_seen_version THEN ''
+            ELSE apply_error
+          END,
           updated_at = excluded.updated_at
         """,
-        (target_device, server_now, seen_version, target_version, server_now),
+        (
+            target_device,
+            server_now,
+            seen_version,
+            target_version,
+            server_now if seen_version > 0 else 0,
+            max(0, seen_version),
+            1 if seen_version > 0 else 0,
+            "",
+            server_now,
+        ),
     )
     conn.commit()
 

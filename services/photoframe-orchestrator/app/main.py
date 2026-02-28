@@ -1543,7 +1543,11 @@ def devices() -> dict[str, Any]:
   items: list[dict[str, Any]] = []
   for row in rows:
     device_id = str(row["device_id"])
-    last_checkin = _device_epoch_for_view(int(row["last_checkin_epoch"]), now_ts)
+    # last_checkin 用服务端“最近看到设备”的时间（updated_at，可能来自 /device/next 或 /device/checkin），
+    # 避免设备未校时/时钟漂移时控制台显示 1970 或明显滞后的时间。
+    last_seen_epoch = int(row["updated_at"])
+    last_seen = _device_epoch_for_view(last_seen_epoch, now_ts)
+    last_device_checkin = _device_epoch_for_view(int(row["last_checkin_epoch"]), now_ts)
     next_wakeup = _device_epoch_for_view(int(row["next_wakeup_epoch"]), now_ts)
     eta = max(0, int(next_wakeup) - now_ts) if next_wakeup is not None else None
     status = status_map.get(device_id)
@@ -1555,7 +1559,9 @@ def devices() -> dict[str, Any]:
     items.append(
         {
             "device_id": device_id,
-            "last_checkin_epoch": last_checkin,
+            "last_checkin_epoch": last_seen,
+            "last_seen_epoch": last_seen,
+            "last_device_checkin_epoch": last_device_checkin,
             "next_wakeup_epoch": next_wakeup,
             "eta_seconds": eta,
             "sleep_seconds": int(row["sleep_seconds"]),

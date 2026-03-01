@@ -15,6 +15,7 @@
 #include "power_manager.h"
 
 #include "esp_event.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_sleep.h"
@@ -60,6 +61,14 @@ int g_last_disconnect_reason = 0;
 bool g_wifi_ready = false;
 esp_netif_t* g_sta_netif = nullptr;
 esp_netif_t* g_ap_netif = nullptr;
+
+// 深睡会导致程序从头启动，但 RTC slow memory 可保留少量数据；
+// 用它缓存上一次成功读到的电源信息，避免某轮 I2C/PMIC 抽风时“整轮不上报”。
+RTC_DATA_ATTR int g_cached_battery_mv = -1;
+RTC_DATA_ATTR int g_cached_battery_percent = -1;
+RTC_DATA_ATTR int g_cached_charging = -1;
+RTC_DATA_ATTR int g_cached_vbus_good = -1;
+RTC_DATA_ATTR int64_t g_cached_power_epoch = 0;
 
 const char* WifiReasonToString(wifi_err_reason_t reason) {
   switch (reason) {
@@ -831,6 +840,17 @@ void RefreshPowerStatus(RuntimeStatus* status) {
   }
   if (!pmic_ok) {
     ESP_LOGW(kTag, "pmic init failed, skip battery status");
+    if ((g_cached_battery_mv > 0) || (g_cached_battery_percent >= 0) ||
+        (g_cached_charging == 0 || g_cached_charging == 1) ||
+        (g_cached_vbus_good == 0 || g_cached_vbus_good == 1)) {
+      status->battery_mv = g_cached_battery_mv;
+      status->battery_percent = g_cached_battery_percent;
+      status->charging = g_cached_charging;
+      status->vbus_good = g_cached_vbus_good;
+      ESP_LOGW(kTag, "use cached power: batt=%d%%/%dmV charging=%d vbus=%d cached_epoch=%lld",
+               status->battery_percent, status->battery_mv, status->charging, status->vbus_good,
+               static_cast<long long>(g_cached_power_epoch));
+    }
     return;
   }
 
@@ -857,6 +877,17 @@ void RefreshPowerStatus(RuntimeStatus* status) {
   }
   if (!ok) {
     ESP_LOGW(kTag, "pmic read failed, skip battery status");
+    if ((g_cached_battery_mv > 0) || (g_cached_battery_percent >= 0) ||
+        (g_cached_charging == 0 || g_cached_charging == 1) ||
+        (g_cached_vbus_good == 0 || g_cached_vbus_good == 1)) {
+      status->battery_mv = g_cached_battery_mv;
+      status->battery_percent = g_cached_battery_percent;
+      status->charging = g_cached_charging;
+      status->vbus_good = g_cached_vbus_good;
+      ESP_LOGW(kTag, "use cached power: batt=%d%%/%dmV charging=%d vbus=%d cached_epoch=%lld",
+               status->battery_percent, status->battery_mv, status->charging, status->vbus_good,
+               static_cast<long long>(g_cached_power_epoch));
+    }
     return;
   }
 
@@ -864,6 +895,20 @@ void RefreshPowerStatus(RuntimeStatus* status) {
   status->battery_percent = power.battery_percent;
   status->charging = power.charging ? 1 : 0;
   status->vbus_good = power.vbus_good ? 1 : 0;
+
+  if (status->battery_mv > 0) {
+    g_cached_battery_mv = status->battery_mv;
+  }
+  if (status->battery_percent >= 0) {
+    g_cached_battery_percent = status->battery_percent;
+  }
+  if (status->charging == 0 || status->charging == 1) {
+    g_cached_charging = status->charging;
+  }
+  if (status->vbus_good == 0 || status->vbus_good == 1) {
+    g_cached_vbus_good = status->vbus_good;
+  }
+  g_cached_power_epoch = static_cast<int64_t>(time(nullptr));
 
   ESP_LOGI(kTag,
            "power: vbus=%d charging=%d batt=%dmV percent=%d state=%s",

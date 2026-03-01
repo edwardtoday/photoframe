@@ -42,6 +42,25 @@ i2c_master_bus_handle_t g_bus = nullptr;
 i2c_master_dev_handle_t g_dev = nullptr;
 bool g_ready = false;
 
+void ResetI2cBus() {
+  // 失败恢复：若 I2C/PMIC 卡死（例如上电瞬间 ACK 异常），需要彻底重建 bus/dev 句柄。
+  if (g_dev != nullptr) {
+    esp_err_t err = i2c_master_bus_rm_device(g_dev);
+    if (err != ESP_OK) {
+      ESP_LOGW(kTag, "i2c rm device failed: %s", esp_err_to_name(err));
+    }
+    g_dev = nullptr;
+  }
+  if (g_bus != nullptr) {
+    esp_err_t err = i2c_del_master_bus(g_bus);
+    if (err != ESP_OK) {
+      ESP_LOGW(kTag, "i2c del bus failed: %s", esp_err_to_name(err));
+    }
+    g_bus = nullptr;
+  }
+  g_ready = false;
+}
+
 bool ReadReg(uint8_t reg, uint8_t* value) {
   if (g_dev == nullptr || value == nullptr) {
     return false;
@@ -50,6 +69,10 @@ bool ReadReg(uint8_t reg, uint8_t* value) {
   for (int i = 0; i < 3; ++i) {
     if (i2c_master_transmit_receive(g_dev, &reg, 1, value, 1, kI2cTimeoutMs) == ESP_OK) {
       return true;
+    }
+    // 读失败时尝试 reset bus（弱上拉/瞬态干扰下可恢复），然后再重试。
+    if (g_bus != nullptr) {
+      (void)i2c_master_bus_reset(g_bus);
     }
     if (i + 1 < 3) {
       vTaskDelay(pdMS_TO_TICKS(10));
@@ -145,8 +168,14 @@ bool PowerManager::Init() {
 
     if (i2c_master_bus_add_device(g_bus, &dev_cfg, &g_dev) != ESP_OK) {
       ESP_LOGE(kTag, "pmic device add failed");
+      ResetI2cBus();
       return false;
     }
+  }
+
+  if (g_bus != nullptr) {
+    // 新建 bus 后先做一次 reset，尽量清掉上电瞬态带来的“总线占用/时序错位”。
+    (void)i2c_master_bus_reset(g_bus);
   }
 
   uint8_t chip_id = 0;
@@ -163,6 +192,7 @@ bool PowerManager::Init() {
   }
   if (!chip_ok) {
     ESP_LOGE(kTag, "read chip id failed");
+    ResetI2cBus();
     return false;
   }
   if (chip_id != kExpectedChipId) {
@@ -178,6 +208,7 @@ bool PowerManager::Init() {
 
   if (!ok) {
     ESP_LOGE(kTag, "pmic register init failed");
+    ResetI2cBus();
     return false;
   }
 

@@ -38,7 +38,7 @@ except Exception:
   DAILY_FETCH_TIMEOUT_SECONDS = 10.0
 TZ_NAME = os.getenv("TZ", "Asia/Shanghai")
 LOCAL_TZ = ZoneInfo(TZ_NAME)
-APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.7")
+APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.8")
 DEVICE_CONFIG_MAX_HISTORY = 200
 POWER_SAMPLE_DEFAULT_DAYS = 30
 POWER_SAMPLE_RETENTION_DAYS = 365
@@ -247,6 +247,51 @@ def _touch_device_seen(conn: sqlite3.Connection, device_id: str, seen_epoch: int
         """,
         (target, int(seen_epoch)),
     )
+
+    # 同步写入一条电量采样（若已有历史有效值），让控制台曲线能反映“设备仍在拉图”。
+    # 注意：这里无法获取设备侧新读数，只能使用服务端已保存的最近值。
+    stored_power = conn.execute(
+        "SELECT battery_mv, battery_percent, charging, vbus_good FROM devices WHERE device_id = ?",
+        (target,),
+    ).fetchone()
+    stored_battery_mv = -1 if stored_power is None else int(stored_power["battery_mv"])
+    stored_battery_percent = -1 if stored_power is None else int(stored_power["battery_percent"])
+    stored_charging = -1 if stored_power is None else int(stored_power["charging"])
+    stored_vbus_good = -1 if stored_power is None else int(stored_power["vbus_good"])
+
+    has_power_sample = (
+        (stored_battery_mv > 0)
+        or (stored_battery_percent >= 0)
+        or (stored_charging in (0, 1))
+        or (stored_vbus_good in (0, 1))
+    )
+    if has_power_sample:
+      conn.execute(
+          """
+          INSERT INTO device_power_samples (
+            device_id, sample_epoch, received_epoch,
+            battery_mv, battery_percent, charging, vbus_good
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(device_id, sample_epoch) DO UPDATE SET
+            received_epoch = excluded.received_epoch,
+            battery_mv = excluded.battery_mv,
+            battery_percent = excluded.battery_percent,
+            charging = excluded.charging,
+            vbus_good = excluded.vbus_good
+          """,
+          (
+              target,
+              int(seen_epoch),
+              int(seen_epoch),
+              stored_battery_mv,
+              stored_battery_percent,
+              stored_charging,
+              stored_vbus_good,
+          ),
+      )
+
+    cutoff = int(seen_epoch) - POWER_SAMPLE_RETENTION_SECONDS
+    conn.execute("DELETE FROM device_power_samples WHERE received_epoch < ?", (cutoff,))
     conn.commit()
 
 

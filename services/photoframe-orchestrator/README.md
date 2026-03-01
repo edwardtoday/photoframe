@@ -112,7 +112,7 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 - `GET /public/daily.bmp` / `GET /public/daily.jpg`
 - 鉴权：请求头 `X-Photo-Token` 或 query `?token=`
 - 可选：`device_id`（用于按设备匹配插播）
-- 额外行为：当 `device_id` 非 `*` 时，会更新该设备的 `last_seen`（控制台 `last_checkin`），用于判断设备是否仍在活跃拉图。
+- 额外行为：当 `device_id` 非 `*` 时，会更新该设备的 `last_seen`（控制台 `last_checkin`），并用服务端已保存的最近电量值写入一条采样点（若无则跳过），用于判断设备是否仍在活跃拉图。
 - 行为：
   1. 优先返回该设备当前生效的插播图（若存在）
   2. 否则回退到 `DAILY_IMAGE_URL_TEMPLATE` 的当日图（按扩展名输出 BMP/JPEG）

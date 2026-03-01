@@ -225,6 +225,31 @@ def _now_epoch() -> int:
   return int(time.time())
 
 
+def _touch_device_seen(conn: sqlite3.Connection, device_id: str, seen_epoch: int) -> None:
+  """记录“服务端最近看到设备”的时间戳。
+
+  说明：
+  - /api/v1/device/checkin 与 /api/v1/device/next 会更新 devices.updated_at
+  - 但在“仅能访问公网日图 /public/daily.*”的场景下（例如设备 token 失效或只走日图代理），
+    仍希望控制台能看到设备活跃，因此 /public/daily.* 也会触发一次轻量的 last_seen 更新。
+  """
+  target = _normalize_device_id(device_id)
+  if target == "*":
+    return
+
+  with DB_LOCK:
+    conn.execute(
+        """
+        INSERT INTO devices (device_id, updated_at)
+        VALUES (?, ?)
+        ON CONFLICT(device_id) DO UPDATE SET
+          updated_at = excluded.updated_at
+        """,
+        (target, int(seen_epoch)),
+    )
+    conn.commit()
+
+
 def _coerce_device_epoch(device_epoch: int | None, server_epoch: int) -> tuple[int, bool]:
   """将设备上报的 epoch 兜底到服务端时间，避免 1970/未来时间污染 UI 与日图选择。"""
   if device_epoch is None:
@@ -900,6 +925,7 @@ def public_daily_bmp(
   target_device = _normalize_device_id(device_id)
   conn = _ensure_db()
 
+  _touch_device_seen(conn, target_device, now_ts)
   payload, source = _resolve_current_payload_for_device(conn, now_ts, target_device)
   etag_value = hashlib.sha256(payload).hexdigest()
   etag = f"\"{etag_value}\""
@@ -943,6 +969,7 @@ def public_daily_jpg(
   target_device = _normalize_device_id(device_id)
   conn = _ensure_db()
 
+  _touch_device_seen(conn, target_device, now_ts)
   payload, source = _resolve_current_payload_for_device(conn, now_ts, target_device)
   try:
     with Image.open(io.BytesIO(payload)) as image:
@@ -1219,11 +1246,23 @@ def device_checkin(
         ),
     )
     # 记录电池采样历史，用于控制台曲线与续航估算。
+    #
+    # 注意：设备侧在 PMIC/I2C 抽风时可能上报 -1，但服务端 devices 表会“保留上一轮有效值”。
+    # 为了避免曲线断点，这里以 devices 表中的“最终有效值”为准写入 power sample。
+    stored_power = conn.execute(
+        "SELECT battery_mv, battery_percent, charging, vbus_good FROM devices WHERE device_id = ?",
+        (payload.device_id,),
+    ).fetchone()
+    stored_battery_mv = -1 if stored_power is None else int(stored_power["battery_mv"])
+    stored_battery_percent = -1 if stored_power is None else int(stored_power["battery_percent"])
+    stored_charging = -1 if stored_power is None else int(stored_power["charging"])
+    stored_vbus_good = -1 if stored_power is None else int(stored_power["vbus_good"])
+
     has_power_sample = (
-        (battery_mv > 0)
-        or (battery_percent >= 0)
-        or (charging in (0, 1))
-        or (vbus_good in (0, 1))
+        (stored_battery_mv > 0)
+        or (stored_battery_percent >= 0)
+        or (stored_charging in (0, 1))
+        or (stored_vbus_good in (0, 1))
     )
     if has_power_sample:
       conn.execute(
@@ -1243,10 +1282,10 @@ def device_checkin(
               payload.device_id,
               checkin_epoch,
               now_ts,
-              battery_mv,
-              battery_percent,
-              charging,
-              vbus_good,
+              stored_battery_mv,
+              stored_battery_percent,
+              stored_charging,
+              stored_vbus_good,
           ),
       )
 

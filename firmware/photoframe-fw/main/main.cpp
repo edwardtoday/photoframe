@@ -635,17 +635,32 @@ void HoldInsteadOfDeepSleepWhileUsbConnected(RuntimeStatus* status, uint64_t pla
   if (status == nullptr) {
     return;
   }
-  if (!IsUsbSerialConnected()) {
+
+  // 刷新一次 vbus_good：用户常用“USB 供电”作为调试环境（即便未打开串口监控，也希望设备不深睡）。
+  RefreshPowerStatus(status);
+
+  const bool usb_serial_connected = IsUsbSerialConnected();
+  const bool usb_power_present = (status->vbus_good == 1);
+  if (!usb_serial_connected && !usb_power_present) {
     return;
   }
 
   ESP_LOGW(kTag,
-           "usb serial connected, skip %s deep sleep (planned %llus); keep awake for log observation",
+           "usb present (serial=%d vbus=%d), skip %s deep sleep (planned %llus); keep awake for observation",
+           usb_serial_connected ? 1 : 0, usb_power_present ? 1 : 0,
            sleep_kind == nullptr ? "unknown" : sleep_kind,
            static_cast<unsigned long long>(planned_sleep_seconds));
 
   int64_t last_log_us = 0;
-  while (IsUsbSerialConnected()) {
+  while (true) {
+    // USB 供电或串口连接任意一个成立，就保持唤醒。
+    // vbus_good 只会在 RefreshPowerStatus() 后更新，因此这里允许最多 10 秒的滞后。
+    const bool still_serial = IsUsbSerialConnected();
+    const bool still_vbus = (status->vbus_good == 1);
+    if (!still_serial && !still_vbus) {
+      break;
+    }
+
     const int64_t now_us = esp_timer_get_time();
     constexpr int64_t kLogEveryUs = 10LL * 1000000LL;
     if (last_log_us == 0 || now_us - last_log_us >= kLogEveryUs) {
@@ -658,7 +673,7 @@ void HoldInsteadOfDeepSleepWhileUsbConnected(RuntimeStatus* status, uint64_t pla
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 
-  ESP_LOGW(kTag, "usb serial disconnected, resume deep sleep");
+  ESP_LOGW(kTag, "usb no longer present, resume deep sleep");
 }
 
 void EnterDeepSleep(uint64_t seconds) {

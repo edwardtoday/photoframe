@@ -16,7 +16,7 @@ constexpr int kI2cSclPin = 48;
 constexpr int kI2cSdaPin = 47;
 // 官方 demo 走 100k；部分板子在弱上拉/长走线场景下高频更容易读写失败，导致 PMIC 不可用并显著耗电。
 constexpr int kI2cFreqHz = 100000;
-constexpr int kI2cTimeoutMs = 200;
+constexpr int kI2cTimeoutMs = 1000;
 
 constexpr uint8_t kAxp2101Addr = 0x34;
 constexpr uint8_t kRegChipId = 0x03;
@@ -42,6 +42,82 @@ i2c_master_bus_handle_t g_bus = nullptr;
 i2c_master_dev_handle_t g_dev = nullptr;
 bool g_ready = false;
 
+void LogI2cLineLevels(const char* hint) {
+  // 读电平前先确保是 GPIO 功能，避免被外设复用导致读数不可信。
+  (void)gpio_reset_pin(static_cast<gpio_num_t>(kI2cSclPin));
+  (void)gpio_reset_pin(static_cast<gpio_num_t>(kI2cSdaPin));
+  (void)gpio_set_direction(static_cast<gpio_num_t>(kI2cSclPin), GPIO_MODE_INPUT);
+  (void)gpio_set_direction(static_cast<gpio_num_t>(kI2cSdaPin), GPIO_MODE_INPUT);
+  (void)gpio_pullup_en(static_cast<gpio_num_t>(kI2cSclPin));
+  (void)gpio_pullup_en(static_cast<gpio_num_t>(kI2cSdaPin));
+
+  const int scl = gpio_get_level(static_cast<gpio_num_t>(kI2cSclPin));
+  const int sda = gpio_get_level(static_cast<gpio_num_t>(kI2cSdaPin));
+  ESP_LOGI(kTag, "i2c lines(%s): scl=%d sda=%d", hint == nullptr ? "-" : hint, scl, sda);
+}
+
+bool RecoverI2cBusByBitBang() {
+  // I2C 总线恢复：当某个从设备在传输中途掉电/复位，可能一直拉低 SDA，导致后续事务全部失败。
+  // 通过手工脉冲 SCL 释放从设备状态机，然后发一个 STOP。
+  gpio_config_t cfg = {};
+  cfg.intr_type = GPIO_INTR_DISABLE;
+  cfg.mode = GPIO_MODE_INPUT_OUTPUT_OD;
+  cfg.pin_bit_mask =
+      (1ULL << static_cast<uint64_t>(kI2cSclPin)) | (1ULL << static_cast<uint64_t>(kI2cSdaPin));
+  cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  cfg.pull_up_en = GPIO_PULLUP_ENABLE;
+
+  (void)gpio_reset_pin(static_cast<gpio_num_t>(kI2cSclPin));
+  (void)gpio_reset_pin(static_cast<gpio_num_t>(kI2cSdaPin));
+  if (gpio_config(&cfg) != ESP_OK) {
+    return false;
+  }
+
+  // 释放总线（开漏输出写 1=释放）。
+  gpio_set_level(static_cast<gpio_num_t>(kI2cSdaPin), 1);
+  gpio_set_level(static_cast<gpio_num_t>(kI2cSclPin), 1);
+  vTaskDelay(pdMS_TO_TICKS(2));
+
+  int scl = gpio_get_level(static_cast<gpio_num_t>(kI2cSclPin));
+  int sda = gpio_get_level(static_cast<gpio_num_t>(kI2cSdaPin));
+  ESP_LOGI(kTag, "i2c recover start: scl=%d sda=%d", scl, sda);
+
+  if (scl == 0) {
+    // SCL 被拉低（可能是外设或硬件问题），无法恢复。
+    ESP_LOGW(kTag, "i2c recover abort: scl stuck low");
+    return false;
+  }
+
+  // 若 SDA 低，尝试打 9 个时钟把从设备移出“等待 ACK/数据”状态。
+  for (int i = 0; i < 9 && sda == 0; ++i) {
+    gpio_set_level(static_cast<gpio_num_t>(kI2cSclPin), 0);
+    vTaskDelay(pdMS_TO_TICKS(1));
+    gpio_set_level(static_cast<gpio_num_t>(kI2cSclPin), 1);
+    vTaskDelay(pdMS_TO_TICKS(1));
+    sda = gpio_get_level(static_cast<gpio_num_t>(kI2cSdaPin));
+  }
+
+  // 发 STOP：SCL 高时 SDA 从低到高。
+  gpio_set_level(static_cast<gpio_num_t>(kI2cSdaPin), 0);
+  vTaskDelay(pdMS_TO_TICKS(1));
+  gpio_set_level(static_cast<gpio_num_t>(kI2cSclPin), 1);
+  vTaskDelay(pdMS_TO_TICKS(1));
+  gpio_set_level(static_cast<gpio_num_t>(kI2cSdaPin), 1);
+  vTaskDelay(pdMS_TO_TICKS(2));
+
+  scl = gpio_get_level(static_cast<gpio_num_t>(kI2cSclPin));
+  sda = gpio_get_level(static_cast<gpio_num_t>(kI2cSdaPin));
+  ESP_LOGI(kTag, "i2c recover done: scl=%d sda=%d", scl, sda);
+  return (scl == 1 && sda == 1);
+}
+
+esp_err_t WaitBusIdle() {
+  if (g_bus == nullptr) {
+    return ESP_OK;
+  }
+  return i2c_master_bus_wait_all_done(g_bus, pdMS_TO_TICKS(1000));
+}
+
 void ResetI2cBus() {
   // 失败恢复：若 I2C/PMIC 卡死（例如上电瞬间 ACK 异常），需要彻底重建 bus/dev 句柄。
   if (g_dev != nullptr) {
@@ -66,8 +142,12 @@ bool ReadReg(uint8_t reg, uint8_t* value) {
     return false;
   }
 
+  (void)WaitBusIdle();
+
+  esp_err_t last_err = ESP_OK;
   for (int i = 0; i < 3; ++i) {
-    if (i2c_master_transmit_receive(g_dev, &reg, 1, value, 1, kI2cTimeoutMs) == ESP_OK) {
+    last_err = i2c_master_transmit_receive(g_dev, &reg, 1, value, 1, kI2cTimeoutMs);
+    if (last_err == ESP_OK) {
       return true;
     }
     // 读失败时尝试 reset bus（弱上拉/瞬态干扰下可恢复），然后再重试。
@@ -75,9 +155,10 @@ bool ReadReg(uint8_t reg, uint8_t* value) {
       (void)i2c_master_bus_reset(g_bus);
     }
     if (i + 1 < 3) {
-      vTaskDelay(pdMS_TO_TICKS(10));
+      vTaskDelay(pdMS_TO_TICKS(20));
     }
   }
+  ESP_LOGW(kTag, "i2c read reg 0x%02x failed: %s", reg, esp_err_to_name(last_err));
   return false;
 }
 
@@ -86,15 +167,23 @@ bool WriteReg(uint8_t reg, uint8_t value) {
     return false;
   }
 
+  (void)WaitBusIdle();
+
   uint8_t payload[2] = {reg, value};
+  esp_err_t last_err = ESP_OK;
   for (int i = 0; i < 3; ++i) {
-    if (i2c_master_transmit(g_dev, payload, sizeof(payload), kI2cTimeoutMs) == ESP_OK) {
+    last_err = i2c_master_transmit(g_dev, payload, sizeof(payload), kI2cTimeoutMs);
+    if (last_err == ESP_OK) {
       return true;
     }
+    if (g_bus != nullptr) {
+      (void)i2c_master_bus_reset(g_bus);
+    }
     if (i + 1 < 3) {
-      vTaskDelay(pdMS_TO_TICKS(10));
+      vTaskDelay(pdMS_TO_TICKS(20));
     }
   }
+  ESP_LOGW(kTag, "i2c write reg 0x%02x failed: %s", reg, esp_err_to_name(last_err));
   return false;
 }
 
@@ -146,6 +235,8 @@ bool PowerManager::Init() {
   }
 
   if (g_bus == nullptr) {
+    LogI2cLineLevels("before init");
+    (void)RecoverI2cBusByBitBang();
     i2c_master_bus_config_t bus_cfg = {};
     bus_cfg.i2c_port = kI2cPort;
     bus_cfg.scl_io_num = static_cast<gpio_num_t>(kI2cSclPin);
@@ -192,6 +283,7 @@ bool PowerManager::Init() {
   }
   if (!chip_ok) {
     ESP_LOGE(kTag, "read chip id failed");
+    LogI2cLineLevels("chip id failed");
     ResetI2cBus();
     return false;
   }
@@ -249,6 +341,9 @@ bool PowerManager::ReadStatus(PowerStatus* status) {
   uint8_t status1 = 0;
   uint8_t status2 = 0;
   if (!ReadReg(kRegStatus1, &status1) || !ReadReg(kRegStatus2, &status2)) {
+    ESP_LOGW(kTag, "read status regs failed, reset i2c bus");
+    LogI2cLineLevels("status regs failed");
+    ResetI2cBus();
     return false;
   }
 

@@ -25,6 +25,7 @@
 #include "esp_wifi.h"
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
+#include "driver/usb_serial_jtag.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
@@ -69,6 +70,8 @@ RTC_DATA_ATTR int g_cached_battery_percent = -1;
 RTC_DATA_ATTR int g_cached_charging = -1;
 RTC_DATA_ATTR int g_cached_vbus_good = -1;
 RTC_DATA_ATTR int64_t g_cached_power_epoch = 0;
+
+void RefreshPowerStatus(RuntimeStatus* status);
 
 const char* WifiReasonToString(wifi_err_reason_t reason) {
   switch (reason) {
@@ -579,6 +582,14 @@ bool IsBootButtonPressed() {
   return gpio_get_level(kBootButton) == 0;
 }
 
+bool IsUsbSerialConnected() {
+#if CONFIG_USJ_ENABLE_USB_SERIAL_JTAG
+  return usb_serial_jtag_is_connected();
+#else
+  return false;
+#endif
+}
+
 enum class LongPressAction {
   kNone,
   // 非破坏性：仅打开 STA 配置窗口（不清 Wi-Fi）。
@@ -619,6 +630,37 @@ uint64_t SecondsToMicroseconds(uint64_t seconds) {
   return seconds * 1000000ULL;
 }
 
+void HoldInsteadOfDeepSleepWhileUsbConnected(RuntimeStatus* status, uint64_t planned_sleep_seconds,
+                                             const char* sleep_kind) {
+  if (status == nullptr) {
+    return;
+  }
+  if (!IsUsbSerialConnected()) {
+    return;
+  }
+
+  ESP_LOGW(kTag,
+           "usb serial connected, skip %s deep sleep (planned %llus); keep awake for log observation",
+           sleep_kind == nullptr ? "unknown" : sleep_kind,
+           static_cast<unsigned long long>(planned_sleep_seconds));
+
+  int64_t last_log_us = 0;
+  while (IsUsbSerialConnected()) {
+    const int64_t now_us = esp_timer_get_time();
+    constexpr int64_t kLogEveryUs = 10LL * 1000000LL;
+    if (last_log_us == 0 || now_us - last_log_us >= kLogEveryUs) {
+      RefreshPowerStatus(status);
+      ESP_LOGI(kTag, "usb hold: batt=%d%%/%dmV charging=%d vbus=%d next_sleep=%llus",
+               status->battery_percent, status->battery_mv, status->charging, status->vbus_good,
+               static_cast<unsigned long long>(planned_sleep_seconds));
+      last_log_us = now_us;
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+
+  ESP_LOGW(kTag, "usb serial disconnected, resume deep sleep");
+}
+
 void EnterDeepSleep(uint64_t seconds) {
   ESP_LOGI(kTag, "enter deep sleep for %llu seconds", static_cast<unsigned long long>(seconds));
   PowerManager::PrepareForDeepSleep();
@@ -656,6 +698,15 @@ void EnterDeepSleepTimerOnly(uint64_t seconds) {
   ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(SecondsToMicroseconds(seconds)));
   vTaskDelay(pdMS_TO_TICKS(150));
   esp_deep_sleep_start();
+}
+
+void SleepNow(RuntimeStatus* status, uint64_t seconds, bool timer_only) {
+  HoldInsteadOfDeepSleepWhileUsbConnected(status, seconds, timer_only ? "timer-only" : "normal");
+  if (timer_only) {
+    EnterDeepSleepTimerOnly(seconds);
+  } else {
+    EnterDeepSleep(seconds);
+  }
 }
 
 enum class WakeSource {
@@ -1047,7 +1098,7 @@ extern "C" void app_main(void) {
         static_cast<uint64_t>(std::max(1, config.interval_minutes)) * 60ULL;
     const uint64_t sleep_seconds =
         std::max<uint64_t>(60ULL, std::min<uint64_t>(normal_sleep_seconds, kSpuriousExt1TimerOnlyMaxSec));
-    EnterDeepSleepTimerOnly(sleep_seconds);
+    SleepNow(&status, sleep_seconds, true);
     return;
   }
 
@@ -1092,7 +1143,7 @@ extern "C" void app_main(void) {
     config.failure_count += 1;
     store.Save(config);
     // 连接失败走指数退避，减少离线状态下的无效唤醒耗电。
-    EnterDeepSleep(CalcBackoffSeconds(&config));
+    SleepNow(&status, CalcBackoffSeconds(&config), false);
     return;
   }
 
@@ -1315,9 +1366,7 @@ extern "C" void app_main(void) {
     strftime(now_local_buf, sizeof(now_local_buf), "%Y-%m-%d %H:%M:%S %Z", &now_local_tm);
 
     if (config.orchestrator_enabled != 0) {
-      if (status.battery_mv <= 0 && status.battery_percent < 0) {
-        RefreshPowerStatus(&status);
-      }
+      RefreshPowerStatus(&status);
       DeviceCheckinPayload payload;
       payload.fetch_ok = true;
       payload.image_changed = fetch.image_changed;
@@ -1349,7 +1398,7 @@ extern "C" void app_main(void) {
     ImageClient::FreeResultBuffer(&fetch);
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_stop());
     // 正常路径按服务下发或本地默认间隔休眠。
-    EnterDeepSleep(success_sleep_seconds);
+    SleepNow(&status, success_sleep_seconds, false);
     return;
   }
 
@@ -1369,9 +1418,7 @@ extern "C" void app_main(void) {
   status.next_wakeup_epoch = now_epoch + static_cast<int64_t>(backoff_sleep_seconds);
 
   if (config.orchestrator_enabled != 0) {
-    if (status.battery_mv <= 0 && status.battery_percent < 0) {
-      RefreshPowerStatus(&status);
-    }
+    RefreshPowerStatus(&status);
     DeviceCheckinPayload payload;
     payload.fetch_ok = false;
     payload.image_changed = fetch.image_changed;
@@ -1401,5 +1448,5 @@ extern "C" void app_main(void) {
 
   ImageClient::FreeResultBuffer(&fetch);
   ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_stop());
-  EnterDeepSleep(backoff_sleep_seconds);
+  SleepNow(&status, backoff_sleep_seconds, false);
 }

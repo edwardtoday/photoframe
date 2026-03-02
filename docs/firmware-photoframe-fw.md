@@ -212,6 +212,7 @@ MONITOR_AUTO_RECONNECT_ON_CLEAN_EXIT=1 scripts/monitor-host.sh /dev/cu.usbmodemX
 ## USB / 供电说明
 
 - 连接 USB 后，设备会被主机枚举为串口（可用于烧录与日志）。
+- 为便于持续观察串口日志：当固件检测到 **USB Serial/JTAG 已连接** 时，会在“本应进入深睡”的位置 **跳过深睡**，保持唤醒并每 10 秒打印一次 `usb hold:` 电源状态；当 USB 断开后再恢复深睡。
 - 连接 USB 时，`vbus_good=1` 表示检测到外部供电；通常会进入充电路径（`charging=1` 时为充电中）。
 - 目前已验证并上报的指标：
   - `battery_mv`：电池电压（mV）

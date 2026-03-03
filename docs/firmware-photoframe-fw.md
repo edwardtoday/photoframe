@@ -41,6 +41,7 @@
    - 失败后按 `retry_base_minutes * 2^(failure_count-1)` 退避。
    - 退避上限 `retry_max_minutes`。
    - 连续失败计数持久化到 NVS。
+   - 例外：若是“拉图成功但渲染前 PMIC 初始化失败”，按**软失败**处理：不增加 `failure_count`，按常规 `interval_minutes` 休眠，避免偶发 PMIC/I2C 抖动导致长时间不上报。
 
 4. **按键语义（KEY/BOOT 区分）**
    - `KEY`：手动触发一次同步与上报（并按正常逻辑拉图；可命中 `304` 省流省电）。
@@ -83,7 +84,8 @@
 11. **电源状态采集与上报（每轮唤醒）**
    - 固件会读取 AXP2101 的电源状态：`battery_mv`、`battery_percent`、`charging`、`vbus_good`。
    - 串口每轮会打印 `power:` 与 `cycle ok/fail:` 日志，便于确认电池/充电状态。
-   - 刷屏前会先重试初始化 PMIC（最多 3 次）；若 PMIC 仍不可用，会直接跳过 EPD 刷新并进入失败退避，避免在 `epd init` 的 BUSY 超时上长时间空耗。
+   - 刷屏前会先重试初始化 PMIC（最多 3 次）；若 PMIC 仍不可用，会直接跳过 EPD 刷新并按常规间隔休眠（不走指数退避），避免在 `epd init` 的 BUSY 超时上长时间空耗，同时避免“几小时不来一次上报”。
+   - 当设备处于电池供电（`vbus_good=0 && charging=0`）且 `battery_percent` 缺失，或出现“100% 但电压已不满电（<=4185mV）”时，会用电压曲线估算百分比做兜底，避免后台长期显示 100%。
    - 若启用 orchestrator，以上状态会随 `checkin` 一起上报，控制台可看到设备电量与供电状态。
 
 ## 配置项（NVS 持久化）
@@ -155,7 +157,7 @@ JSON
 - 为降低唤醒时长与耗电：当本地 RTC 时间可信时，固件默认 **每天最多校时一次**（其余轮次跳过 SNTP）。
 - Portal 保存时若 Wi-Fi 密码留空，不会覆盖现有密码；且当已有 SSID 时，空 SSID 提交会被忽略，避免误清空网络配置。
 - 浏览器访问设备 STA IP 显示 `ERR_CONNECTION_REFUSED`：正常情况。仅在“长按 KEY 打开的 120 秒窗口”或 AP 配网模式下开放 Web 配置页。
-- 若看到 `pmic unavailable before render` 或 `epd init failed`：当前版本会快速失败并退避休眠，不再重复多轮 45 秒 BUSY 超时；请优先检查供电链路/排线接触。
+- 若看到 `pmic unavailable before render` 或 `epd init failed`：当前版本会快速失败并按常规间隔休眠（不指数退避），不再重复多轮 45 秒 BUSY 超时；请优先检查供电链路/排线接触。
 
 ## 失败重试行为
 

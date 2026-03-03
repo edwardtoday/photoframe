@@ -862,6 +862,40 @@ uint64_t CalcBackoffSeconds(AppConfig* cfg) {
   return static_cast<uint64_t>(std::max(1, minutes)) * 60ULL;
 }
 
+int EstimateBatteryPercentFromMv(int battery_mv) {
+  // 单节锂电常见静置电压曲线（简化），用于 PMIC 百分比异常时的兜底展示。
+  struct CurvePoint {
+    int mv;
+    int percent;
+  };
+  static constexpr CurvePoint kCurve[] = {
+      {4200, 100}, {4160, 95}, {4120, 88}, {4080, 80}, {4040, 72}, {4000, 64},
+      {3960, 56},  {3920, 48}, {3880, 40}, {3840, 32}, {3800, 24}, {3760, 16},
+      {3720, 10},  {3680, 6},  {3600, 3},  {3500, 1},  {3300, 0},
+  };
+
+  if (battery_mv <= kCurve[sizeof(kCurve) / sizeof(kCurve[0]) - 1].mv) {
+    return 0;
+  }
+  if (battery_mv >= kCurve[0].mv) {
+    return 100;
+  }
+
+  for (size_t i = 0; i + 1 < sizeof(kCurve) / sizeof(kCurve[0]); ++i) {
+    const CurvePoint high = kCurve[i];
+    const CurvePoint low = kCurve[i + 1];
+    if (battery_mv <= high.mv && battery_mv >= low.mv) {
+      const int span_mv = std::max(1, high.mv - low.mv);
+      const int offset_mv = battery_mv - low.mv;
+      const int span_percent = high.percent - low.percent;
+      const int percent = low.percent + (offset_mv * span_percent) / span_mv;
+      return std::clamp(percent, 0, 100);
+    }
+  }
+
+  return -1;
+}
+
 void ConfigureButtonGpio() {
   gpio_config_t cfg = {};
   cfg.pin_bit_mask =
@@ -961,6 +995,19 @@ void RefreshPowerStatus(RuntimeStatus* status) {
   status->battery_percent = power.battery_percent;
   status->charging = power.charging ? 1 : 0;
   status->vbus_good = power.vbus_good ? 1 : 0;
+
+  // AXP 百分比寄存器在部分板子上会长期卡 100（尤其是电池供电且非充电状态）。
+  // 遇到“百分比异常偏满”时，用电压估算做展示兜底，避免后台长期误判电量健康。
+  const int estimated_percent = EstimateBatteryPercentFromMv(status->battery_mv);
+  const bool on_battery = (status->vbus_good == 0 && status->charging == 0);
+  const bool suspect_percent_stuck_full = (status->battery_percent >= 100 && status->battery_mv > 0 &&
+                                           status->battery_mv <= 4185);
+  const bool missing_percent = (status->battery_percent < 0);
+  if (on_battery && estimated_percent >= 0 && (suspect_percent_stuck_full || missing_percent)) {
+    ESP_LOGW(kTag, "battery percent corrected by mv: raw=%d est=%d mv=%d",
+             status->battery_percent, estimated_percent, status->battery_mv);
+    status->battery_percent = estimated_percent;
+  }
 
   if (status->battery_mv > 0) {
     g_cached_battery_mv = status->battery_mv;
@@ -1261,6 +1308,7 @@ extern "C" void app_main(void) {
 
   const bool should_refresh_epd = status.force_refresh || fetch.image_changed;
   bool render_ok = true;
+  bool render_blocked_by_pmic = false;
 
   JpegDecodedImage jpeg_img;
   if (fetch.ok && fetch.data != nullptr && should_refresh_epd &&
@@ -1276,6 +1324,7 @@ extern "C" void app_main(void) {
   if (fetch.ok && fetch.data != nullptr && should_refresh_epd && render_ok) {
     if (!EnsurePmicReadyForRender()) {
       render_ok = false;
+      render_blocked_by_pmic = true;
       status.last_error = "pmic init failed";
       ESP_LOGE(kTag, "%s", status.last_error.c_str());
     } else {
@@ -1425,10 +1474,20 @@ extern "C" void app_main(void) {
     ESP_LOGW(kTag, "render failed without detail, treat as fetch failure");
   }
 
-  config.failure_count += 1;
+  const bool soft_pmic_failure = fetch.ok && should_refresh_epd && render_blocked_by_pmic;
+  uint64_t backoff_sleep_seconds = 0;
+  if (soft_pmic_failure) {
+    // PMIC 通信偶发失败时不走指数退避，避免出现“几小时没上报”。
+    config.failure_count = 0;
+    backoff_sleep_seconds = static_cast<uint64_t>(std::max(1, config.interval_minutes)) * 60ULL;
+    ESP_LOGW(kTag, "soft failure(pmic): keep regular sleep=%llus",
+             static_cast<unsigned long long>(backoff_sleep_seconds));
+  } else {
+    config.failure_count += 1;
+    backoff_sleep_seconds = CalcBackoffSeconds(&config);
+  }
   store.Save(config);
 
-  const uint64_t backoff_sleep_seconds = CalcBackoffSeconds(&config);
   const int64_t now_epoch = static_cast<int64_t>(time(nullptr));
   status.next_wakeup_epoch = now_epoch + static_cast<int64_t>(backoff_sleep_seconds);
 

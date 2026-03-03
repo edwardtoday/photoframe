@@ -488,7 +488,7 @@ function drawPowerChart(canvas, items, opts) {
   function drawSeriesDots(getValue, isValueValid, toY, fillStyle, strokeStyle) {
     // “只有一个点”时折线几乎不可见，用散点让“是否上报”一目了然。
     // 性能：默认最多 2 万点；用 fillRect 比 arc 更省。
-    const dot = 3;
+    const dot = 5;
     const dotHalf = dot / 2;
 
     ctx.fillStyle = fillStyle;
@@ -502,7 +502,7 @@ function drawPowerChart(canvas, items, opts) {
     }
 
     // 高亮最后一个有效点，便于快速确认“最近一次上报”。
-    const hi = 7;
+    const hi = 11;
     const hiHalf = hi / 2;
     for (let i = items.length - 1; i >= 0; --i) {
       const it = items[i];
@@ -591,7 +591,7 @@ function drawPowerChart(canvas, items, opts) {
   }
 
   // 线条：battery_percent
-  ctx.strokeStyle = 'rgba(53, 88, 229, 0.95)';
+  ctx.strokeStyle = 'rgba(53, 88, 229, 0.38)';
   ctx.lineWidth = 2;
   ctx.beginPath();
   let moved = false;
@@ -617,13 +617,13 @@ function drawPowerChart(canvas, items, opts) {
     (it) => Number(it?.battery_percent),
     (p) => p >= 0,
     (p) => yPercent(Math.max(0, Math.min(100, p))),
-    'rgba(53, 88, 229, 0.70)',
-    'rgba(15, 23, 42, 0.18)'
+    'rgba(53, 88, 229, 0.90)',
+    'rgba(15, 23, 42, 0.30)'
   );
 
   // 线条：battery_mv
   if (mvMin != null && mvMax != null) {
-    ctx.strokeStyle = 'rgba(212, 133, 28, 0.95)';
+    ctx.strokeStyle = 'rgba(212, 133, 28, 0.38)';
     ctx.lineWidth = 2;
     ctx.beginPath();
     moved = false;
@@ -649,8 +649,8 @@ function drawPowerChart(canvas, items, opts) {
       (it) => Number(it?.battery_mv),
       (mv) => mv > 0,
       (mv) => yMv(mv),
-      'rgba(212, 133, 28, 0.62)',
-      'rgba(15, 23, 42, 0.18)'
+      'rgba(212, 133, 28, 0.85)',
+      'rgba(15, 23, 42, 0.30)'
     );
   }
 }

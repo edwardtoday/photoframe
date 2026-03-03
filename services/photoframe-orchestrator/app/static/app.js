@@ -485,6 +485,42 @@ function drawPowerChart(canvas, items, opts) {
   const yPercent = (p) => y1 - (p / 100) * (y1 - y0);
   const yMv = (mv) => y1 - ((mv - mvMin) / (mvMax - mvMin)) * (y1 - y0);
 
+  function drawSeriesDots(getValue, isValueValid, toY, fillStyle, strokeStyle) {
+    // “只有一个点”时折线几乎不可见，用散点让“是否上报”一目了然。
+    // 性能：默认最多 2 万点；用 fillRect 比 arc 更省。
+    const dot = 3;
+    const dotHalf = dot / 2;
+
+    ctx.fillStyle = fillStyle;
+    for (const it of items) {
+      const ts = Number(it?.sample_epoch);
+      const v = Number(getValue(it));
+      if (!Number.isFinite(ts) || !Number.isFinite(v) || !isValueValid(v)) continue;
+      const x = xScale(ts);
+      const y = toY(v);
+      ctx.fillRect(x - dotHalf, y - dotHalf, dot, dot);
+    }
+
+    // 高亮最后一个有效点，便于快速确认“最近一次上报”。
+    const hi = 7;
+    const hiHalf = hi / 2;
+    for (let i = items.length - 1; i >= 0; --i) {
+      const it = items[i];
+      const ts = Number(it?.sample_epoch);
+      const v = Number(getValue(it));
+      if (!Number.isFinite(ts) || !Number.isFinite(v) || !isValueValid(v)) continue;
+      const x = xScale(ts);
+      const y = toY(v);
+      ctx.fillRect(x - hiHalf, y - hiHalf, hi, hi);
+      if (strokeStyle) {
+        ctx.strokeStyle = strokeStyle;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x - hiHalf, y - hiHalf, hi, hi);
+      }
+      break;
+    }
+  }
+
   // 背景：USB / 电池 供电区间（按 vbus_good 分段）。
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
@@ -577,6 +613,14 @@ function drawPowerChart(canvas, items, opts) {
   }
   ctx.stroke();
 
+  drawSeriesDots(
+    (it) => Number(it?.battery_percent),
+    (p) => p >= 0,
+    (p) => yPercent(Math.max(0, Math.min(100, p))),
+    'rgba(53, 88, 229, 0.70)',
+    'rgba(15, 23, 42, 0.18)'
+  );
+
   // 线条：battery_mv
   if (mvMin != null && mvMax != null) {
     ctx.strokeStyle = 'rgba(212, 133, 28, 0.95)';
@@ -600,6 +644,14 @@ function drawPowerChart(canvas, items, opts) {
       }
     }
     ctx.stroke();
+
+    drawSeriesDots(
+      (it) => Number(it?.battery_mv),
+      (mv) => mv > 0,
+      (mv) => yMv(mv),
+      'rgba(212, 133, 28, 0.62)',
+      'rgba(15, 23, 42, 0.18)'
+    );
   }
 }
 

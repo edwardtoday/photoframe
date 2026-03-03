@@ -502,8 +502,9 @@ function drawPowerChart(canvas, items, opts) {
     }
 
     // 高亮最后一个有效点，便于快速确认“最近一次上报”。
-    const hi = 11;
-    const hiHalf = hi / 2;
+    // 用户反馈：不需要把最后一个点画得更大，因此这里采用“同尺寸 + 描边”。
+    const hi = dot;
+    const hiHalf = dotHalf;
     for (let i = items.length - 1; i >= 0; --i) {
       const it = items[i];
       const ts = Number(it?.sample_epoch);
@@ -514,7 +515,7 @@ function drawPowerChart(canvas, items, opts) {
       ctx.fillRect(x - hiHalf, y - hiHalf, hi, hi);
       if (strokeStyle) {
         ctx.strokeStyle = strokeStyle;
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 2;
         ctx.strokeRect(x - hiHalf, y - hiHalf, hi, hi);
       }
       break;

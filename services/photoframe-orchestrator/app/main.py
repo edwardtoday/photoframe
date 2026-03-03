@@ -1141,7 +1141,15 @@ def device_next(
 
   source = "daily"
   valid_until = now_ts + poll_sec
-  image_url = _daily_image_url(now_ts)
+  # 省电优先：若启用了公网日图（PUBLIC_DAILY_BMP_TOKEN），daily 默认让设备走 /public/daily.*，
+  # 以获得 ETag/304 语义，避免下游日图服务不支持缓存导致设备每轮都全量下载大图（显著耗电/耗流量）。
+  if (PUBLIC_DAILY_BMP_TOKEN or "").strip():
+    if prefer_jpeg:
+      image_url = f"{_public_base(request)}/public/daily.jpg?device_id={device_id}"
+    else:
+      image_url = f"{_public_base(request)}/public/daily.bmp?device_id={device_id}"
+  else:
+    image_url = _daily_image_url(now_ts)
   active_override_id = None
 
   if active is not None:

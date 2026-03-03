@@ -52,7 +52,9 @@
 - `source=daily`：无插播，回退到每日图
 - `poll_after_seconds`：服务建议下次唤醒间隔（用于平衡省电和插播时效）
 - 服务会在每次 `device/next` 响应后记录一条图片下发历史
-- `image_url` 可能是 `.../api/v1/assets/<sha>.bmp` 或 `.../api/v1/assets/<sha>.jpg`（取决于 `accept_formats` 与资源是否存在）。
+- `image_url` 可能是：
+  - `.../api/v1/assets/<sha>.bmp` 或 `.../api/v1/assets/<sha>.jpg`（插播资源；取决于 `accept_formats` 与派生文件是否存在）
+  - `.../public/daily.bmp?device_id=...` / `.../public/daily.jpg?device_id=...`（日图；提供 `ETag/304`，避免设备每轮全量下载大图造成耗电）
 
 ## 2) 设备上报心跳
 

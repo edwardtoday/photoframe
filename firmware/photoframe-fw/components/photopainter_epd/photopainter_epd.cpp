@@ -145,7 +145,8 @@ bool PhotoPainterEpd::InitBus() {
 
   spi_device_interface_config_t dev_cfg = {};
   dev_cfg.spics_io_num = -1;
-  dev_cfg.clock_speed_hz = 40 * 1000 * 1000;
+  // 官方样例使用 10MHz；实测高频在部分板子会引发刷新阶段异常复位，优先稳定性。
+  dev_cfg.clock_speed_hz = 10 * 1000 * 1000;
   dev_cfg.mode = 0;
   dev_cfg.queue_size = 7;
   dev_cfg.flags = SPI_DEVICE_HALFDUPLEX;
@@ -232,10 +233,17 @@ bool PhotoPainterEpd::WaitBusy(const char* stage, int timeout_ms) {
 }
 
 void PhotoPainterEpd::WriteByte(uint8_t value) {
+  if (spi_handle_ == nullptr) {
+    ESP_LOGE(kTag, "spi handle is null when write byte");
+    return;
+  }
   spi_transaction_t t = {};
   t.length = 8;
   t.tx_buffer = &value;
-  ESP_ERROR_CHECK(spi_device_polling_transmit(spi_handle_, &t));
+  const esp_err_t err = spi_device_polling_transmit(spi_handle_, &t);
+  if (err != ESP_OK) {
+    ESP_LOGE(kTag, "spi tx byte failed: %s", esp_err_to_name(err));
+  }
 }
 
 void PhotoPainterEpd::WriteCommand(uint8_t cmd) {
@@ -253,6 +261,10 @@ void PhotoPainterEpd::WriteData(uint8_t data) {
 }
 
 void PhotoPainterEpd::WriteBuffer(const uint8_t* data, size_t len) {
+  if (spi_handle_ == nullptr) {
+    ESP_LOGE(kTag, "spi handle is null when write buffer");
+    return;
+  }
   gpio_set_level(static_cast<gpio_num_t>(pin_dc_), 1);
   gpio_set_level(static_cast<gpio_num_t>(pin_cs_), 0);
 
@@ -263,7 +275,12 @@ void PhotoPainterEpd::WriteBuffer(const uint8_t* data, size_t len) {
     const size_t chunk = std::min(kChunk, len - offset);
     t.length = static_cast<uint32_t>(chunk * 8);
     t.tx_buffer = data + offset;
-    ESP_ERROR_CHECK(spi_device_polling_transmit(spi_handle_, &t));
+    const esp_err_t err = spi_device_polling_transmit(spi_handle_, &t);
+    if (err != ESP_OK) {
+      ESP_LOGE(kTag, "spi tx buffer failed at offset=%u: %s",
+               static_cast<unsigned>(offset), esp_err_to_name(err));
+      break;
+    }
     offset += chunk;
   }
 

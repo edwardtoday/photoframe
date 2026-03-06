@@ -574,6 +574,60 @@ std::vector<std::string> BuildFetchUrlCandidates(const std::string& primary_url,
   return candidates;
 }
 
+bool ExtractUrlOrigin(const std::string& url, std::string* origin) {
+  if (origin == nullptr || url.empty()) {
+    return false;
+  }
+  return SplitUrlOriginAndRest(url, origin, nullptr);
+}
+
+std::vector<std::string> BuildCheckinBaseUrlCandidates(const AppConfig& cfg,
+                                                       const std::string& fetch_url_used,
+                                                       const std::string& fallback_url) {
+  std::vector<std::string> candidates;
+  AddUniqueUrl(NormalizeOrigin(cfg.orchestrator_base_url), &candidates);
+
+  std::string origin;
+  if (ExtractUrlOrigin(fetch_url_used, &origin)) {
+    AddUniqueUrl(origin, &candidates);
+  }
+  if (ExtractUrlOrigin(cfg.preferred_image_origin, &origin)) {
+    AddUniqueUrl(origin, &candidates);
+  }
+  if (ExtractUrlOrigin(fallback_url, &origin)) {
+    AddUniqueUrl(origin, &candidates);
+  }
+  if (ExtractUrlOrigin(cfg.image_url_template, &origin)) {
+    AddUniqueUrl(origin, &candidates);
+  }
+  return candidates;
+}
+
+bool ReportCheckinWithFallback(const AppConfig& cfg, const DeviceCheckinPayload& payload,
+                               const std::string& fetch_url_used,
+                               const std::string& fallback_url) {
+  if (cfg.orchestrator_enabled == 0 || cfg.orchestrator_base_url.empty() || cfg.device_id.empty()) {
+    return false;
+  }
+
+  const std::vector<std::string> candidates =
+      BuildCheckinBaseUrlCandidates(cfg, fetch_url_used, fallback_url);
+  for (size_t i = 0; i < candidates.size(); ++i) {
+    AppConfig attempt_cfg = cfg;
+    attempt_cfg.orchestrator_base_url = candidates[i];
+    if (OrchestratorClient::ReportCheckin(attempt_cfg, payload)) {
+      if (i > 0) {
+        ESP_LOGW(kTag, "checkin switched base url to %s", candidates[i].c_str());
+      }
+      return true;
+    }
+    ESP_LOGW(kTag, "checkin failed via base url candidate %u/%u: %s",
+             static_cast<unsigned>(i + 1), static_cast<unsigned>(candidates.size()),
+             candidates[i].c_str());
+  }
+  return false;
+}
+
 bool IsKeyButtonPressed() {
   return gpio_get_level(kKeyButton) == 0;
 }
@@ -1447,7 +1501,7 @@ extern "C" void app_main(void) {
       payload.image_source = status.image_source;
       payload.last_error = status.last_error;
       payload.sta_ip = StaIpString();
-      const bool checkin_ok = OrchestratorClient::ReportCheckin(config, payload);
+      const bool checkin_ok = ReportCheckinWithFallback(config, payload, fetch_url_used, fallback_url);
       ESP_LOGI(kTag, "orchestrator checkin (ok cycle): url=%s result=%s",
                config.orchestrator_base_url.c_str(), checkin_ok ? "ok" : "fail");
     }
@@ -1509,7 +1563,7 @@ extern "C" void app_main(void) {
     payload.image_source = status.image_source;
     payload.last_error = status.last_error;
     payload.sta_ip = StaIpString();
-    const bool checkin_ok = OrchestratorClient::ReportCheckin(config, payload);
+    const bool checkin_ok = ReportCheckinWithFallback(config, payload, fetch_url_used, fallback_url);
     ESP_LOGI(kTag, "orchestrator checkin (fail cycle): url=%s result=%s",
              config.orchestrator_base_url.c_str(), checkin_ok ? "ok" : "fail");
   }

@@ -639,36 +639,45 @@ bool OrchestratorClient::ReportCheckin(const AppConfig& cfg, const DeviceCheckin
   }
 
   const std::string url = TrimTrailingSlash(cfg.orchestrator_base_url) + "/api/v1/device/checkin";
+  constexpr int kCheckinMaxAttempts = 3;
+  bool ok = false;
 
-  esp_http_client_config_t http_cfg = {};
-  http_cfg.url = url.c_str();
-  http_cfg.timeout_ms = kHttpTimeoutMs;
-  http_cfg.method = HTTP_METHOD_POST;
-  http_cfg.disable_auto_redirect = false;
-  ConfigureTlsForHttps(url, &http_cfg);
+  for (int attempt = 1; attempt <= kCheckinMaxAttempts; ++attempt) {
+    esp_http_client_config_t http_cfg = {};
+    http_cfg.url = url.c_str();
+    http_cfg.timeout_ms = kHttpTimeoutMs;
+    http_cfg.method = HTTP_METHOD_POST;
+    http_cfg.disable_auto_redirect = false;
+    ConfigureTlsForHttps(url, &http_cfg);
 
-  esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
-  if (client == nullptr) {
-    cJSON_free(json);
-    return false;
+    esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
+    if (client == nullptr) {
+      ESP_LOGW(kTag, "check-in client init failed attempt=%d/%d", attempt, kCheckinMaxAttempts);
+      continue;
+    }
+
+    SetCommonHeaders(client, cfg);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, json, static_cast<int>(strlen(json)));
+
+    const esp_err_t err = esp_http_client_perform(client);
+    const int status_code = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err == ESP_OK && status_code >= 200 && status_code < 300) {
+      ok = true;
+      break;
+    }
+
+    if (err != ESP_OK) {
+      ESP_LOGW(kTag, "check-in failed attempt=%d/%d: %s", attempt, kCheckinMaxAttempts,
+               esp_err_to_name(err));
+    } else {
+      ESP_LOGW(kTag, "check-in non-2xx status=%d attempt=%d/%d",
+               status_code, attempt, kCheckinMaxAttempts);
+    }
   }
 
-  SetCommonHeaders(client, cfg);
-  esp_http_client_set_header(client, "Content-Type", "application/json");
-  esp_http_client_set_post_field(client, json, static_cast<int>(strlen(json)));
-
-  const esp_err_t err = esp_http_client_perform(client);
-  const int status_code = esp_http_client_get_status_code(client);
-  esp_http_client_cleanup(client);
   cJSON_free(json);
-
-  if (err != ESP_OK) {
-    ESP_LOGW(kTag, "check-in failed: %s", esp_err_to_name(err));
-    return false;
-  }
-  if (status_code < 200 || status_code >= 300) {
-    ESP_LOGW(kTag, "check-in non-2xx status=%d", status_code);
-    return false;
-  }
-  return true;
+  return ok;
 }

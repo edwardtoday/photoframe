@@ -7,7 +7,6 @@
 - 设备拉取：`GET /api/v1/device/next`
 - 设备心跳：`POST /api/v1/device/checkin`
 - 电池采样历史：`GET /api/v1/power-samples`（用于控制台曲线/续航估算）
-  - 采样补点策略：`/api/v1/device/next` 与 `/api/v1/device/checkin` 都会尝试写入采样（基于服务端已保存的最新电源值），减少“设备中途重启导致整轮无点”的断档。
 - 设备配置同步：
   - 管理端发布：`POST /api/v1/device-config`
   - 设备查询：`GET /api/v1/device/config`

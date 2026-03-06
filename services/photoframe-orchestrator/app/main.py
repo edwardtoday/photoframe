@@ -1125,10 +1125,6 @@ def device_next(
         """,
         (device_id, server_now, max(0, failure_count)),
     )
-    # /device/next 发生在每轮拉图前：即使后续渲染中途重启，也先落一笔“到访采样”，
-    # 避免控制台电池曲线长时间断点。
-    _upsert_device_power_sample_from_devices(conn, device_id, now_ts, server_now)
-
     active = conn.execute(
         """
         SELECT * FROM overrides
@@ -1153,8 +1149,6 @@ def device_next(
         """,
         (now_ts, device_id),
     ).fetchone()
-    cutoff = server_now - POWER_SAMPLE_RETENTION_SECONDS
-    conn.execute("DELETE FROM device_power_samples WHERE received_epoch < ?", (cutoff,))
     conn.commit()
 
   source = "daily"

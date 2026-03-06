@@ -14,6 +14,7 @@ constexpr const char* kTag = "power_manager";
 constexpr i2c_port_num_t kI2cPort = I2C_NUM_0;
 constexpr int kI2cSclPin = 48;
 constexpr int kI2cSdaPin = 47;
+constexpr gpio_num_t kAxpIrqPin = GPIO_NUM_21;
 // 官方 demo 走 100k；部分板子在弱上拉/长走线场景下高频更容易读写失败，导致 PMIC 不可用并显著耗电。
 constexpr int kI2cFreqHz = 100000;
 constexpr int kI2cTimeoutMs = 1000;
@@ -42,7 +43,10 @@ i2c_master_bus_handle_t g_bus = nullptr;
 i2c_master_dev_handle_t g_dev = nullptr;
 bool g_ready = false;
 
-void LogI2cLineLevels(const char* hint) {
+bool SampleI2cLineLevels(int* scl, int* sda) {
+  if (scl == nullptr || sda == nullptr) {
+    return false;
+  }
   // 读电平前先确保是 GPIO 功能，避免被外设复用导致读数不可信。
   (void)gpio_reset_pin(static_cast<gpio_num_t>(kI2cSclPin));
   (void)gpio_reset_pin(static_cast<gpio_num_t>(kI2cSdaPin));
@@ -50,10 +54,34 @@ void LogI2cLineLevels(const char* hint) {
   (void)gpio_set_direction(static_cast<gpio_num_t>(kI2cSdaPin), GPIO_MODE_INPUT);
   (void)gpio_pullup_en(static_cast<gpio_num_t>(kI2cSclPin));
   (void)gpio_pullup_en(static_cast<gpio_num_t>(kI2cSdaPin));
+  *scl = gpio_get_level(static_cast<gpio_num_t>(kI2cSclPin));
+  *sda = gpio_get_level(static_cast<gpio_num_t>(kI2cSdaPin));
+  return true;
+}
 
-  const int scl = gpio_get_level(static_cast<gpio_num_t>(kI2cSclPin));
-  const int sda = gpio_get_level(static_cast<gpio_num_t>(kI2cSdaPin));
+void LogI2cLineLevels(const char* hint) {
+  int scl = -1;
+  int sda = -1;
+  (void)SampleI2cLineLevels(&scl, &sda);
   ESP_LOGI(kTag, "i2c lines(%s): scl=%d sda=%d", hint == nullptr ? "-" : hint, scl, sda);
+}
+
+void PulseAxpIrqPin() {
+  // 参考官方 demo：上电时拉低再拉高 IRQ/WAKE 脚，帮助 PMIC 从异常状态恢复。
+  gpio_config_t gpio_conf = {};
+  gpio_conf.intr_type = GPIO_INTR_DISABLE;
+  gpio_conf.mode = GPIO_MODE_OUTPUT;
+  gpio_conf.pin_bit_mask = (1ULL << static_cast<uint64_t>(kAxpIrqPin));
+  gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+  if (gpio_config(&gpio_conf) != ESP_OK) {
+    ESP_LOGW(kTag, "axp irq pin config failed");
+    return;
+  }
+  gpio_set_level(kAxpIrqPin, 0);
+  vTaskDelay(pdMS_TO_TICKS(100));
+  gpio_set_level(kAxpIrqPin, 1);
+  vTaskDelay(pdMS_TO_TICKS(200));
 }
 
 bool RecoverI2cBusByBitBang() {
@@ -83,9 +111,20 @@ bool RecoverI2cBusByBitBang() {
   ESP_LOGI(kTag, "i2c recover start: scl=%d sda=%d", scl, sda);
 
   if (scl == 0) {
-    // SCL 被拉低（可能是外设或硬件问题），无法恢复。
-    ESP_LOGW(kTag, "i2c recover abort: scl stuck low");
-    return false;
+    // 参考官方上电序列先拉 IRQ，再尝试一次总线恢复。
+    ESP_LOGW(kTag, "i2c recover detected scl low, pulse axp irq");
+    PulseAxpIrqPin();
+    gpio_set_level(static_cast<gpio_num_t>(kI2cSdaPin), 1);
+    gpio_set_level(static_cast<gpio_num_t>(kI2cSclPin), 1);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    scl = gpio_get_level(static_cast<gpio_num_t>(kI2cSclPin));
+    sda = gpio_get_level(static_cast<gpio_num_t>(kI2cSdaPin));
+    ESP_LOGI(kTag, "i2c recover after axp pulse: scl=%d sda=%d", scl, sda);
+    if (scl == 0) {
+      // SCL 仍被拉低（硬件层异常），本轮直接失败，避免空耗 10+ 秒重试。
+      ESP_LOGW(kTag, "i2c recover abort: scl still stuck low");
+      return false;
+    }
   }
 
   // 若 SDA 低，尝试打 9 个时钟把从设备移出“等待 ACK/数据”状态。
@@ -236,7 +275,15 @@ bool PowerManager::Init() {
 
   if (g_bus == nullptr) {
     LogI2cLineLevels("before init");
-    (void)RecoverI2cBusByBitBang();
+    const bool bus_recovered = RecoverI2cBusByBitBang();
+    if (!bus_recovered) {
+      int scl = -1;
+      int sda = -1;
+      if (SampleI2cLineLevels(&scl, &sda) && scl == 0) {
+        ESP_LOGW(kTag, "i2c scl still low after recover, skip pmic init this round");
+        return false;
+      }
+    }
     i2c_master_bus_config_t bus_cfg = {};
     bus_cfg.i2c_port = kI2cPort;
     bus_cfg.scl_io_num = static_cast<gpio_num_t>(kI2cSclPin);
@@ -314,15 +361,15 @@ void PowerManager::PrepareForDeepSleep() {
     return;
   }
 
-  // 经验策略：让外围 IC 先断电/停采样，再进入 ESP 深睡，可显著降低待机漏电。
-  // ALDO3/ALDO4 主要用于外围供电；ESP 本体供电来自其他 rail，这里不动。
+  // 仅关闭采样通道，不再关闭 ALDO3/ALDO4。
+  // 实测关闭 ALDO 会导致下次唤醒后 I2C 总线被外设拉低（SCL/SDA=0），
+  // 进而 PMIC 不可读、画面不刷新、电量不上报。
   bool ok = true;
-  ok = DisableRegBits(kRegLdoOnOffCtrl0, static_cast<uint8_t>((1U << 2) | (1U << 3))) && ok;
   ok = DisableRegBits(kRegAdcChannelCtrl, 0x01) && ok;  // 关闭电池电压测量通道
   ok = DisableRegBits(kRegBattDetCtrl, 0x01) && ok;     // 关闭电池检测
 
   if (ok) {
-    ESP_LOGI(kTag, "pmic prepared for deep sleep (ALDO3/ALDO4 off)");
+    ESP_LOGI(kTag, "pmic prepared for deep sleep (adc/battdet off)");
   } else {
     ESP_LOGW(kTag, "pmic deep sleep prep partially failed");
   }

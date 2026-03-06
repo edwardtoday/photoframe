@@ -16,7 +16,7 @@ class PowerManager {
  public:
   static bool Init();
   static bool ReadStatus(PowerStatus* status);
-  // 深睡前的省电准备：关闭不需要的外围供电/采样通道（不会影响 ESP 本体供电）。
+  // 深睡前的省电准备：关闭不需要的采样通道（保留外围供电，避免唤醒后 I2C 被拉低）。
   static void PrepareForDeepSleep();
   static const char* ChargerStateName(int state);
 };

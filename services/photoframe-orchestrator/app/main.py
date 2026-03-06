@@ -250,6 +250,64 @@ def _touch_device_seen(conn: sqlite3.Connection, device_id: str, seen_epoch: int
     conn.commit()
 
 
+def _upsert_device_power_sample_from_devices(
+    conn: sqlite3.Connection,
+    device_id: str,
+    sample_epoch: int,
+    received_epoch: int,
+) -> bool:
+  """从 devices 表读取当前有效电源状态并写入 power samples。"""
+  target = _normalize_device_id(device_id)
+  if target == "*":
+    return False
+
+  stored_power = conn.execute(
+      "SELECT battery_mv, battery_percent, charging, vbus_good FROM devices WHERE device_id = ?",
+      (target,),
+  ).fetchone()
+  if stored_power is None:
+    return False
+
+  stored_battery_mv = int(stored_power["battery_mv"])
+  stored_battery_percent = int(stored_power["battery_percent"])
+  stored_charging = int(stored_power["charging"])
+  stored_vbus_good = int(stored_power["vbus_good"])
+
+  has_power_sample = (
+      (stored_battery_mv > 0)
+      or (stored_battery_percent >= 0)
+      or (stored_charging in (0, 1))
+      or (stored_vbus_good in (0, 1))
+  )
+  if not has_power_sample:
+    return False
+
+  conn.execute(
+      """
+      INSERT INTO device_power_samples (
+        device_id, sample_epoch, received_epoch,
+        battery_mv, battery_percent, charging, vbus_good
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(device_id, sample_epoch) DO UPDATE SET
+        received_epoch = excluded.received_epoch,
+        battery_mv = excluded.battery_mv,
+        battery_percent = excluded.battery_percent,
+        charging = excluded.charging,
+        vbus_good = excluded.vbus_good
+      """,
+      (
+          target,
+          int(sample_epoch),
+          int(received_epoch),
+          stored_battery_mv,
+          stored_battery_percent,
+          stored_charging,
+          stored_vbus_good,
+      ),
+  )
+  return True
+
+
 def _coerce_device_epoch(device_epoch: int | None, server_epoch: int) -> tuple[int, bool]:
   """将设备上报的 epoch 兜底到服务端时间，避免 1970/未来时间污染 UI 与日图选择。"""
   if device_epoch is None:
@@ -1067,6 +1125,9 @@ def device_next(
         """,
         (device_id, server_now, max(0, failure_count)),
     )
+    # /device/next 发生在每轮拉图前：即使后续渲染中途重启，也先落一笔“到访采样”，
+    # 避免控制台电池曲线长时间断点。
+    _upsert_device_power_sample_from_devices(conn, device_id, now_ts, server_now)
 
     active = conn.execute(
         """
@@ -1092,6 +1153,8 @@ def device_next(
         """,
         (now_ts, device_id),
     ).fetchone()
+    cutoff = server_now - POWER_SAMPLE_RETENTION_SECONDS
+    conn.execute("DELETE FROM device_power_samples WHERE received_epoch < ?", (cutoff,))
     conn.commit()
 
   source = "daily"
@@ -1256,46 +1319,8 @@ def device_checkin(
     # 记录电池采样历史，用于控制台曲线与续航估算。
     #
     # 注意：设备侧在 PMIC/I2C 抽风时可能上报 -1，但服务端 devices 表会“保留上一轮有效值”。
-    # 为了避免曲线断点，这里以 devices 表中的“最终有效值”为准写入 power sample。
-    stored_power = conn.execute(
-        "SELECT battery_mv, battery_percent, charging, vbus_good FROM devices WHERE device_id = ?",
-        (payload.device_id,),
-    ).fetchone()
-    stored_battery_mv = -1 if stored_power is None else int(stored_power["battery_mv"])
-    stored_battery_percent = -1 if stored_power is None else int(stored_power["battery_percent"])
-    stored_charging = -1 if stored_power is None else int(stored_power["charging"])
-    stored_vbus_good = -1 if stored_power is None else int(stored_power["vbus_good"])
-
-    has_power_sample = (
-        (stored_battery_mv > 0)
-        or (stored_battery_percent >= 0)
-        or (stored_charging in (0, 1))
-        or (stored_vbus_good in (0, 1))
-    )
-    if has_power_sample:
-      conn.execute(
-          """
-          INSERT INTO device_power_samples (
-            device_id, sample_epoch, received_epoch,
-            battery_mv, battery_percent, charging, vbus_good
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(device_id, sample_epoch) DO UPDATE SET
-            received_epoch = excluded.received_epoch,
-            battery_mv = excluded.battery_mv,
-            battery_percent = excluded.battery_percent,
-            charging = excluded.charging,
-            vbus_good = excluded.vbus_good
-          """,
-          (
-              payload.device_id,
-              checkin_epoch,
-              now_ts,
-              stored_battery_mv,
-              stored_battery_percent,
-              stored_charging,
-              stored_vbus_good,
-          ),
-      )
+    # 因此这里统一从 devices 表读取“最终有效值”再写入采样，避免曲线断点。
+    _upsert_device_power_sample_from_devices(conn, payload.device_id, checkin_epoch, now_ts)
 
     cutoff = now_ts - POWER_SAMPLE_RETENTION_SECONDS
     conn.execute("DELETE FROM device_power_samples WHERE received_epoch < ?", (cutoff,))

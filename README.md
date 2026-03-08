@@ -8,12 +8,13 @@
 - 每小时（可配置）拉取并显示 `800x480/480x800` 图片（BMP/JPEG）
 - 支持局域网“插播”任务（指定时长，过期自动回到日常图）
 - 支持设备远端配置下发（轮询参数、URL、token 等）
-- 按键唤醒后可开启 120 秒本地配置窗口，其余时间深度睡眠省电
+- 按键语义：`KEY` 短按手动同步，长按 `KEY` 开 120 秒本地配置窗口，长按 `BOOT` 清 Wi-Fi 进入配网，其余时间深度睡眠省电
 
 ## 仓库结构
 
 - `upstream/ESP32-S3-PhotoPainter/`：Waveshare 开源固件（Git submodule）
 - `firmware/photoframe-fw/`：你的私有固件实现（不改 upstream）
+- `firmware/photoframe-rs/`：Rust 重写中的新固件工程（分阶段迁移）
 - `services/photoframe-orchestrator/`：NAS 侧编排服务（Docker + Web）
 - `references/waveshare/wiki/`：Wiki 页面快照/链接索引
 - `references/waveshare/downloads/`：从 Wiki 相关链接下载的资料（默认不入 git，可脚本重拉）
@@ -55,6 +56,18 @@ cat docs/workflow-esp-idf-docker.md
 - F：设备远端配置同步（下发/查询/应用回报）✅
 - G：按键唤醒 120 秒局域网配置窗口 ✅
 - H：电池/充电状态采集与 orchestrator 上报 ✅
+
+## Rust 重写计划（进行中）
+
+- 当前量产路径仍为 `firmware/photoframe-fw/`（C++ / ESP-IDF）
+- 新路径 `firmware/photoframe-rs/` 已能通过 **Docker 工具链** 编译并导出可刷机镜像：
+  - 构建：`scripts/build-photoframe-rs.sh`
+  - 产物：`firmware/photoframe-rs/dist/photoframe-rs-app.bin`、`firmware/photoframe-rs/dist/photoframe-rs.bin`
+- Rust 固件当前已接通：NVS 配置、设备身份生成、多 Wi‑Fi 轮询连接、SNTP 校时、orchestrator 配置同步 / 指令拉取、图片下载、BMP/JPEG 渲染、checkin 上报、按键唤醒判定、AP/STA Portal、深睡进入；自研固件代码已改为 Rust 实现
+- 当前阶段目标已从“只能编译骨架”推进到“自研固件全 Rust 化、可编译、可出包、主闭环打通”；下一阶段的主要工作是 **真机刷写与行为验证**（按键/Portal/EPD/PMIC/功耗）
+- 重写基线文档：`docs/plans/2026-03-07-rust-firmware-rewrite-design.md`
+- 实施计划：`docs/plans/2026-03-07-rust-firmware-rewrite.md`
+- 本次重写第一优先级仍是：稳定性、可测试性、省电行为不回退
 
 ## 启动 NAS 编排服务（镜像拉取模式）
 

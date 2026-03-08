@@ -1,0 +1,12 @@
+[package]
+name = "photoframe-app"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+chrono = "0.4"
+photoframe-contracts = { path = "../contracts" }
+photoframe-domain = { path = "../domain" }

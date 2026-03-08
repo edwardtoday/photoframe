@@ -1,0 +1,22 @@
+[package]
+name = "photoframe-firmware-device"
+version = "0.1.0"
+edition = "2024"
+resolver = "2"
+
+[[bin]]
+name = "photoframe-firmware-device"
+harness = false
+
+[dependencies]
+photoframe-app = { path = "../app" }
+photoframe-platform-espidf = { path = "../platform-espidf" }
+photoframe-domain = { path = "../domain" }
+serde_json = "1"
+
+[target.'cfg(target_os = "espidf")'.dependencies]
+esp-idf-sys = "0.36"
+
+[build-dependencies]
+embuild = { version = "0.33", features = ["espidf"] }
+cc = "1"

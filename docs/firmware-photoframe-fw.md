@@ -6,6 +6,18 @@
 - 目标芯片：`ESP32-S3`
 - 面板：Waveshare 7.3" 彩色墨水屏（引脚沿用上游）
 
+## 重写状态
+
+- 当前量产/可烧录路径仍是 `firmware/photoframe-fw/`（C++ / ESP-IDF）
+- Rust 重写中的新工程位于 `firmware/photoframe-rs/`，按“先状态机与协议、后平台适配与驱动”的顺序分阶段迁移
+- Rust 路径当前已经打通 Docker 构建与出包：
+  - `scripts/rust-idf-docker.sh 'cargo build --release'`
+  - `scripts/build-photoframe-rs.sh`
+  - 输出：`firmware/photoframe-rs/dist/photoframe-rs-app.bin`、`firmware/photoframe-rs/dist/photoframe-rs.bin`
+- Rust 固件当前已接通的主链：按键唤醒判定、Wi‑Fi 多 profile 连接、SNTP 校时、远端配置同步、`device/next` 拉图、BMP/JPEG 渲染、checkin、AP/STA Portal、深睡准备与进入；自研固件代码已改为 Rust 实现
+- 现阶段仍缺少真实硬件刷写验证；后续重点是确认 Portal、PMIC、墨水屏刷新、功耗/唤醒行为在真机上的一致性。外部依赖中仍会链接 Espressif 的 `esp_new_jpeg` vendor 库，但仓库内自研固件逻辑已迁为 Rust。
+- Rust 重写设计与实施计划见：`docs/plans/2026-03-07-rust-firmware-rewrite-design.md`、`docs/plans/2026-03-07-rust-firmware-rewrite.md`
+
 ## 已实现能力（阶段 C + D + 编排接入）
 
 1. **配网（Captive Portal）**

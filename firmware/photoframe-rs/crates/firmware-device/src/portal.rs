@@ -78,7 +78,7 @@ static PORTAL_HTML: &str = r#"<!doctype html>
       <option value="1">编排服务：启用（推荐）</option>
       <option value="0">编排服务：关闭</option>
     </select>
-    <input id="orchBaseUrl" placeholder="编排服务地址，例如 http://192.168.58.113:18081" />
+    <input id="orchBaseUrl" placeholder="编排服务地址，例如 http://192.168.233.11:8081" />
     <input id="deviceId" placeholder="设备 ID（留空则自动生成）" />
     <input id="orchToken" placeholder="编排服务 Token（可选）" />
     <input id="photoToken" placeholder="图片 Token（可选）" />

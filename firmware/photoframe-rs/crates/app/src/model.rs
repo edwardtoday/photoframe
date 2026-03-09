@@ -167,6 +167,9 @@ pub struct DeviceRuntimeConfig {
     pub remote_config_version: i32,
 }
 
+const DEFAULT_IMAGE_URL_TEMPLATE: &str = "https://picsum.photos/480/800?date=%DATE%";
+const DEFAULT_ORCHESTRATOR_BASE_URL: &str = "http://192.168.233.11:8081";
+
 impl Default for DeviceRuntimeConfig {
     fn default() -> Self {
         Self {
@@ -174,10 +177,10 @@ impl Default for DeviceRuntimeConfig {
             primary_wifi_password: String::new(),
             wifi_profiles: Vec::new(),
             last_connected_wifi_index: None,
-            image_url_template: "http://192.168.58.113:8000/image/480x800?date=%DATE%".into(),
+            image_url_template: DEFAULT_IMAGE_URL_TEMPLATE.into(),
             photo_token: String::new(),
             orchestrator_enabled: true,
-            orchestrator_base_url: "http://192.168.58.113:18081".into(),
+            orchestrator_base_url: DEFAULT_ORCHESTRATOR_BASE_URL.into(),
             device_id: String::new(),
             orchestrator_token: String::new(),
             timezone: "UTC".into(),
@@ -202,7 +205,7 @@ impl Default for DeviceRuntimeConfig {
 }
 
 impl DeviceRuntimeConfig {
-    pub const MAX_WIFI_PROFILES: usize = 3;
+    pub const MAX_WIFI_PROFILES: usize = 8;
 
     pub fn has_wifi_credentials(&self) -> bool {
         !self.primary_wifi_ssid.is_empty()

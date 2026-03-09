@@ -37,6 +37,10 @@ const BUILTIN_WIFI_PROFILES: [(&str, &str); 3] = [
     ("Qing-IoT", "jiajuzhuanyong"),
     ("Qing-AP", "64139772"),
 ];
+#[cfg(target_os = "espidf")]
+const LEGACY_IMAGE_URL_TEMPLATE: &str = "http://192.168.58.113:8000/image/480x800?date=%DATE%";
+#[cfg(target_os = "espidf")]
+const LEGACY_ORCHESTRATOR_BASE_URL: &str = "http://192.168.58.113:18081";
 
 #[cfg(target_os = "espidf")]
 fn configure_button_gpio() {
@@ -104,31 +108,101 @@ fn wake_source_from_ext1_state(
 }
 
 #[cfg(target_os = "espidf")]
-fn seed_builtin_wifi_profiles_if_needed(
+fn migrate_legacy_network_defaults(config: &mut DeviceRuntimeConfig) -> bool {
+    if config.remote_config_version > 0 {
+        return false;
+    }
+
+    let defaults = DeviceRuntimeConfig::default();
+    let mut changed = false;
+
+    if config.orchestrator_base_url == LEGACY_ORCHESTRATOR_BASE_URL {
+        config.orchestrator_base_url = defaults.orchestrator_base_url;
+        changed = true;
+    }
+    if config.image_url_template == LEGACY_IMAGE_URL_TEMPLATE {
+        config.image_url_template = defaults.image_url_template;
+        changed = true;
+    }
+
+    changed
+}
+
+#[cfg(target_os = "espidf")]
+fn merge_builtin_wifi_profiles(
     config: &mut DeviceRuntimeConfig,
     long_press_action: LongPressAction,
 ) -> bool {
     if matches!(long_press_action, LongPressAction::ClearWifiAndEnterPortal) {
         return false;
     }
-    if config.has_wifi_credentials() {
-        return false;
-    }
 
-    config.wifi_profiles.clear();
+    let previous_last_connected_ssid = config
+        .last_connected_wifi_index
+        .and_then(|index| config.wifi_profiles.get(index))
+        .map(|item| item.ssid.clone());
+
+    let mut next_profiles = Vec::new();
     for (ssid, password) in BUILTIN_WIFI_PROFILES.iter() {
-        config.wifi_profiles.push(photoframe_app::WifiCredential {
+        let existing_password = config
+            .wifi_profiles
+            .iter()
+            .find(|item| item.ssid == *ssid)
+            .map(|item| item.password.clone())
+            .unwrap_or_default();
+        next_profiles.push(photoframe_app::WifiCredential {
             ssid: (*ssid).to_string(),
-            password: (*password).to_string(),
+            password: if existing_password.is_empty() {
+                (*password).to_string()
+            } else {
+                existing_password
+            },
         });
     }
-    config.last_connected_wifi_index = None;
 
-    if let Some(first) = config.wifi_profiles.first() {
-        config.primary_wifi_ssid = first.ssid.clone();
-        config.primary_wifi_password = first.password.clone();
+    for profile in config.wifi_profiles.iter() {
+        let ssid = profile.ssid.trim();
+        if ssid.is_empty() || next_profiles.iter().any(|item| item.ssid == ssid) {
+            continue;
+        }
+        if next_profiles.len() >= DeviceRuntimeConfig::MAX_WIFI_PROFILES {
+            break;
+        }
+        next_profiles.push(photoframe_app::WifiCredential {
+            ssid: ssid.to_string(),
+            password: profile.password.clone(),
+        });
     }
-    true
+
+    let mut changed = config.wifi_profiles != next_profiles;
+    config.wifi_profiles = next_profiles;
+
+    config.last_connected_wifi_index = previous_last_connected_ssid.and_then(|ssid| {
+        config
+            .wifi_profiles
+            .iter()
+            .position(|profile| profile.ssid == ssid)
+    });
+
+    if let Some(current) = config
+        .wifi_profiles
+        .iter()
+        .find(|profile| profile.ssid == config.primary_wifi_ssid)
+    {
+        if config.primary_wifi_password != current.password {
+            changed = true;
+            config.primary_wifi_password = current.password.clone();
+        }
+    } else if let Some(first) = config.wifi_profiles.first() {
+        if config.primary_wifi_ssid != first.ssid || config.primary_wifi_password != first.password
+        {
+            changed = true;
+            config.primary_wifi_ssid = first.ssid.clone();
+            config.primary_wifi_password = first.password.clone();
+        }
+    }
+
+    changed
 }
 
 #[cfg(target_os = "espidf")]
@@ -245,18 +319,25 @@ fn main() {
         }
     }
 
-    println!("photoframe-rs: device_id={}", config.device_id);
-
-    if seed_builtin_wifi_profiles_if_needed(&mut config, long_press_action) {
+    let previous_config = config.clone();
+    if migrate_legacy_network_defaults(&mut config) {
         println!(
-            "photoframe-rs: seeded built-in wifi profiles count={}",
+            "photoframe-rs: migrated legacy network defaults orchestrator_base_url={} image_url_template={}",
+            config.orchestrator_base_url, config.image_url_template
+        );
+    }
+    if merge_builtin_wifi_profiles(&mut config, long_press_action) {
+        println!(
+            "photoframe-rs: ensured built-in wifi profiles count={}",
             config.wifi_profiles.len()
         );
     }
 
     config.ensure_primary_wifi_in_profiles();
-    if let Err(err) = storage.save_config(&config) {
-        println!("photoframe-rs: save wifi merge failed: {err}");
+    println!("photoframe-rs: device_id={}", config.device_id);
+
+    if config != previous_config && let Err(err) = storage.save_config(&config) {
+        println!("photoframe-rs: save bootstrap config failed: {err}");
     }
 
     if !config.has_wifi_credentials() {

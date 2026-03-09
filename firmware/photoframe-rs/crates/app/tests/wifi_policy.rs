@@ -17,36 +17,30 @@ fn ensure_primary_wifi_adds_primary_profile_when_missing() {
 
 #[test]
 fn ensure_primary_wifi_rotates_oldest_when_full() {
+    let mut profiles = Vec::new();
+    for idx in 0..DeviceRuntimeConfig::MAX_WIFI_PROFILES {
+        let ssid = format!("AP-{idx}");
+        profiles.push(WifiCredential {
+            ssid: ssid.clone(),
+            password: ssid,
+        });
+    }
+
     let mut config = DeviceRuntimeConfig {
         primary_wifi_ssid: "Newest".into(),
         primary_wifi_password: "new-pass".into(),
-        wifi_profiles: vec![
-            WifiCredential {
-                ssid: "A".into(),
-                password: "a".into(),
-            },
-            WifiCredential {
-                ssid: "B".into(),
-                password: "b".into(),
-            },
-            WifiCredential {
-                ssid: "C".into(),
-                password: "c".into(),
-            },
-        ],
+        wifi_profiles: profiles,
         last_connected_wifi_index: Some(2),
         ..DeviceRuntimeConfig::default()
     };
 
     config.ensure_primary_wifi_in_profiles();
 
+    assert_eq!(config.wifi_profiles.len(), DeviceRuntimeConfig::MAX_WIFI_PROFILES);
+    assert_eq!(config.wifi_profiles.first().map(|item| item.ssid.as_str()), Some("AP-1"));
     assert_eq!(
-        config
-            .wifi_profiles
-            .iter()
-            .map(|item| item.ssid.as_str())
-            .collect::<Vec<_>>(),
-        vec!["B", "C", "Newest"]
+        config.wifi_profiles.last().map(|item| item.ssid.as_str()),
+        Some("Newest")
     );
     assert_eq!(config.last_connected_wifi_index, Some(1));
 }

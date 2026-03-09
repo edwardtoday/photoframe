@@ -250,6 +250,32 @@ def _touch_device_seen(conn: sqlite3.Connection, device_id: str, seen_epoch: int
     conn.commit()
 
 
+def _record_public_daily_activity(conn: sqlite3.Connection, device_id: str, seen_epoch: int) -> None:
+  """记录公网日图访问，并补写一条最近有效电量采样。
+
+  设备若长期只走 `/public/daily.*`，控制台仍应能看到连续的活跃轨迹与电量历史。
+  这里复用 `devices` 表中最近一次有效电量值，按本次访问时间写入采样点。
+  """
+  target = _normalize_device_id(device_id)
+  if target == "*":
+    return
+
+  with DB_LOCK:
+    conn.execute(
+        """
+        INSERT INTO devices (device_id, updated_at)
+        VALUES (?, ?)
+        ON CONFLICT(device_id) DO UPDATE SET
+          updated_at = excluded.updated_at
+        """,
+        (target, int(seen_epoch)),
+    )
+    _upsert_device_power_sample_from_devices(conn, target, int(seen_epoch), int(seen_epoch))
+    cutoff = int(seen_epoch) - POWER_SAMPLE_RETENTION_SECONDS
+    conn.execute("DELETE FROM device_power_samples WHERE received_epoch < ?", (cutoff,))
+    conn.commit()
+
+
 def _upsert_device_power_sample_from_devices(
     conn: sqlite3.Connection,
     device_id: str,
@@ -983,7 +1009,7 @@ def public_daily_bmp(
   target_device = _normalize_device_id(device_id)
   conn = _ensure_db()
 
-  _touch_device_seen(conn, target_device, now_ts)
+  _record_public_daily_activity(conn, target_device, now_ts)
   payload, source = _resolve_current_payload_for_device(conn, now_ts, target_device)
   etag_value = hashlib.sha256(payload).hexdigest()
   etag = f"\"{etag_value}\""
@@ -1027,7 +1053,7 @@ def public_daily_jpg(
   target_device = _normalize_device_id(device_id)
   conn = _ensure_db()
 
-  _touch_device_seen(conn, target_device, now_ts)
+  _record_public_daily_activity(conn, target_device, now_ts)
   payload, source = _resolve_current_payload_for_device(conn, now_ts, target_device)
   try:
     with Image.open(io.BytesIO(payload)) as image:

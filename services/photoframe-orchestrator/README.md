@@ -119,6 +119,14 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 
 更多字段与示例见 `docs/orchestrator-api.md`。
 
+## Wi-Fi 列表管理（设备配置）
+
+- 控制台“设备配置下发”中的 Wi-Fi 区域支持对设备已知 Wi-Fi 做增删改查。
+- 语义为“完整替换设备端列表”（最多 3 条）：
+  - 勾选“替换设备 Wi-Fi 列表”后，下发内容会覆盖设备当前列表。
+  - 提交空列表会清空设备 Wi-Fi 列表。
+  - 某条仅填 SSID、不填密码时：设备端会保留该 SSID 现有密码（若该 SSID 已存在）。
+- 设备每轮 `checkin` 上报 `reported_config.wifi_profiles`（密码不会明文回显），控制台可查看当前已记住 SSID。
 
 ## 设备离家场景建议
 

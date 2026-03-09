@@ -13,6 +13,8 @@ Rust 重写中的新固件工程。
 - 2026-03-09 已完成联网闭环真机验收：STA 连接获取 IP、`device/config` / `device/next` / `device/checkin` 联调通过（200）、主周期可完成后进入休眠决策
 - 已固化构建配置：`ESP_IDF_SDKCONFIG_DEFAULTS` 生效、主任务栈提升到 `16384`、分区表路径对齐 Docker 工作目录
 - USB hold 模式已改为低频电源采样（3 秒一次），降低 PMIC I2C 报错噪音并避免高频采样抖动
+- 在“设备无 Wi‑Fi 凭据”场景下，固件会自动写入 3 条内置 Wi‑Fi 配置（`OpenWrt`、`Qing-IoT`、`Qing-AP`），确保在目标环境可联网
+- 远端 `wifi_profiles` 配置语义已改为“完整替换设备列表”，支持通过 orchestrator 做增删改（提交空数组可清空）
 - 当前量产路径仍是 `../photoframe-fw/`；Rust 路径现已进入真机联调阶段，后续重点转为按键 / EPD / PMIC / 深睡 / 联网闭环验收
 
 ## 目录

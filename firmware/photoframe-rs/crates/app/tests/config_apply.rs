@@ -25,12 +25,18 @@ fn remote_patch_clamps_display_values_and_marks_refresh() {
 }
 
 #[test]
-fn remote_patch_limits_wifi_profiles_and_preserves_existing_password_when_missing() {
+fn remote_patch_replaces_wifi_profiles_and_preserves_existing_password_when_missing() {
     let mut config = DeviceRuntimeConfig {
+        primary_wifi_ssid: "Home".into(),
+        primary_wifi_password: "secret".into(),
         wifi_profiles: vec![WifiCredential {
             ssid: "Home".into(),
             password: "secret".into(),
+        }, WifiCredential {
+            ssid: "Office".into(),
+            password: "office-secret".into(),
         }],
+        last_connected_wifi_index: Some(1),
         ..DeviceRuntimeConfig::default()
     };
 
@@ -41,24 +47,41 @@ fn remote_patch_limits_wifi_profiles_and_preserves_existing_password_when_missin
                 password: None,
             },
             RemoteWifiProfile {
-                ssid: "Office".into(),
-                password: Some("one".into()),
-            },
-            RemoteWifiProfile {
                 ssid: "Guest".into(),
-                password: Some("two".into()),
-            },
-            RemoteWifiProfile {
-                ssid: "Cafe".into(),
-                password: Some("three".into()),
+                password: Some("one".into()),
             },
         ]),
         ..RemoteConfigPatch::default()
     });
 
-    assert_eq!(config.wifi_profiles.len(), 3);
+    assert_eq!(config.wifi_profiles.len(), 2);
     assert_eq!(config.wifi_profiles[0].ssid, "Home");
     assert_eq!(config.wifi_profiles[0].password, "secret");
-    assert_eq!(config.wifi_profiles[1].ssid, "Office");
-    assert_eq!(config.wifi_profiles[2].ssid, "Guest");
+    assert_eq!(config.wifi_profiles[1].ssid, "Guest");
+    assert_eq!(config.wifi_profiles[1].password, "one");
+    assert_eq!(config.last_connected_wifi_index, None);
+}
+
+#[test]
+fn remote_patch_empty_wifi_profiles_clears_wifi_credentials() {
+    let mut config = DeviceRuntimeConfig {
+        primary_wifi_ssid: "Home".into(),
+        primary_wifi_password: "secret".into(),
+        wifi_profiles: vec![WifiCredential {
+            ssid: "Home".into(),
+            password: "secret".into(),
+        }],
+        last_connected_wifi_index: Some(0),
+        ..DeviceRuntimeConfig::default()
+    };
+
+    config.apply_remote_config_patch(&RemoteConfigPatch {
+        wifi_profiles: Some(vec![]),
+        ..RemoteConfigPatch::default()
+    });
+
+    assert!(config.wifi_profiles.is_empty());
+    assert!(config.primary_wifi_ssid.is_empty());
+    assert!(config.primary_wifi_password.is_empty());
+    assert_eq!(config.last_connected_wifi_index, None);
 }

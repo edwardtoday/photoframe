@@ -807,6 +807,55 @@ function normalizeReported(device) {
   return device.reported_config;
 }
 
+function getReportedWifiProfiles(device) {
+  const reported = normalizeReported(device);
+  if (!Array.isArray(reported.wifi_profiles)) {
+    return [];
+  }
+  return reported.wifi_profiles
+    .map((item) => {
+      if (typeof item === 'string') {
+        const ssid = item.trim();
+        return ssid ? { ssid, password_set: null } : null;
+      }
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+      const ssid = typeof item.ssid === 'string' ? item.ssid.trim() : '';
+      if (!ssid) {
+        return null;
+      }
+      return {
+        ssid,
+        password_set: typeof item.password_set === 'boolean' ? item.password_set : null,
+      };
+    })
+    .filter((item) => item);
+}
+
+function fillWifiEditorFromDevice(device) {
+  const profiles = getReportedWifiProfiles(device).slice(0, 3);
+  for (let i = 1; i <= 3; i++) {
+    const profile = profiles[i - 1] || null;
+    const ssidInput = document.getElementById(`cfgWifiSsid${i}`);
+    const pwdInput = document.getElementById(`cfgWifiPwd${i}`);
+    if (!ssidInput || !pwdInput) continue;
+    ssidInput.value = profile ? profile.ssid : '';
+    pwdInput.value = '';
+    if (!profile) {
+      pwdInput.placeholder = '留空则保持该 SSID 现有密码';
+    } else if (profile.password_set === false) {
+      pwdInput.placeholder = '当前为开放网络，可填入新密码';
+    } else {
+      pwdInput.placeholder = '留空则保持该 SSID 现有密码';
+    }
+  }
+  const replaceCheckbox = document.getElementById('cfgWifiReplace');
+  if (replaceCheckbox) {
+    replaceCheckbox.checked = false;
+  }
+}
+
 function updateConfigHints() {
   const selectedDevice = document.getElementById('configDeviceId').value || '*';
   const device = deviceMap.get(selectedDevice);
@@ -889,6 +938,11 @@ function clearConfigPatchInputs() {
     if (input) input.value = '';
   }
 
+  const wifiReplace = document.getElementById('cfgWifiReplace');
+  if (wifiReplace) {
+    wifiReplace.checked = false;
+  }
+
   const selectIds = [
     'cfgOrchEnabled',
     'cfgDisplayRotation',
@@ -942,17 +996,18 @@ function collectDeviceConfigPatch() {
   const wifiProfiles = [];
   for (let i = 1; i <= 3; i++) {
     const ssid = (document.getElementById(`cfgWifiSsid${i}`)?.value || '').trim();
-    const password = document.getElementById(`cfgWifiPwd${i}`)?.value || '';
+    const password = document.getElementById(`cfgWifiPwd${i}`)?.value ?? '';
     if (!ssid && !password) continue;
     if (!ssid) {
       throw new Error(`Wi-Fi SSID ${i} 不能为空`);
     }
-    if (!password) {
-      throw new Error(`Wi-Fi 密码 ${i} 不能为空（SSID=${ssid}）`);
+    const item = { ssid };
+    if (password !== '') {
+      item.password = password;
     }
-    wifiProfiles.push({ ssid, password });
+    wifiProfiles.push(item);
   }
-  if (wifiProfiles.length > 0) {
+  if (document.getElementById('cfgWifiReplace')?.checked) {
     patch.wifi_profiles = wifiProfiles;
   }
 
@@ -1457,12 +1512,30 @@ document.getElementById('deviceId').addEventListener('change', async () => {
 document.getElementById('configDeviceId').addEventListener('change', async () => {
   try {
     clearConfigPatchInputs();
+    fillWifiEditorFromDevice(deviceMap.get(document.getElementById('configDeviceId').value || '*'));
     updateConfigHints();
     await loadDeviceConfigs();
   } catch (err) {
     document.getElementById('configHistoryHint').textContent = `加载配置历史失败: ${err.message}`;
   }
 });
+
+for (let i = 1; i <= 3; i++) {
+  const ssidInput = document.getElementById(`cfgWifiSsid${i}`);
+  const pwdInput = document.getElementById(`cfgWifiPwd${i}`);
+  const onWifiEdit = () => {
+    const replaceCheckbox = document.getElementById('cfgWifiReplace');
+    if (replaceCheckbox) {
+      replaceCheckbox.checked = true;
+    }
+  };
+  if (ssidInput) {
+    ssidInput.addEventListener('input', onWifiEdit);
+  }
+  if (pwdInput) {
+    pwdInput.addEventListener('input', onWifiEdit);
+  }
+}
 
 document.getElementById('fillCurrentDailyBtn').addEventListener('click', () => {
   const url = `${window.location.origin}/public/daily.bmp`;

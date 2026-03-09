@@ -15,7 +15,9 @@ use std::{
 };
 
 #[cfg(target_os = "espidf")]
-use photoframe_app::{BootContext, CycleExit, CycleRunner, Display, PowerSample, Storage};
+use photoframe_app::{
+    BootContext, CycleExit, CycleRunner, DeviceRuntimeConfig, Display, PowerSample, Storage,
+};
 use photoframe_domain::WakeSource;
 
 #[cfg(target_os = "espidf")]
@@ -29,6 +31,12 @@ const KEY_BUTTON: i32 = esp_idf_sys::gpio_num_t_GPIO_NUM_4;
 const BOOT_BUTTON: i32 = esp_idf_sys::gpio_num_t_GPIO_NUM_0;
 #[cfg(target_os = "espidf")]
 const EXT1_SAMPLE_ROUNDS: usize = 8;
+#[cfg(target_os = "espidf")]
+const BUILTIN_WIFI_PROFILES: [(&str, &str); 3] = [
+    ("OpenWrt", "sansiAX3"),
+    ("Qing-IoT", "jiajuzhuanyong"),
+    ("Qing-AP", "64139772"),
+];
 
 #[cfg(target_os = "espidf")]
 fn configure_button_gpio() {
@@ -93,6 +101,34 @@ fn wake_source_from_ext1_state(
         return WakeSource::SpuriousExt1;
     }
     WakeSource::Other
+}
+
+#[cfg(target_os = "espidf")]
+fn seed_builtin_wifi_profiles_if_needed(
+    config: &mut DeviceRuntimeConfig,
+    long_press_action: LongPressAction,
+) -> bool {
+    if matches!(long_press_action, LongPressAction::ClearWifiAndEnterPortal) {
+        return false;
+    }
+    if config.has_wifi_credentials() {
+        return false;
+    }
+
+    config.wifi_profiles.clear();
+    for (ssid, password) in BUILTIN_WIFI_PROFILES.iter() {
+        config.wifi_profiles.push(photoframe_app::WifiCredential {
+            ssid: (*ssid).to_string(),
+            password: (*password).to_string(),
+        });
+    }
+    config.last_connected_wifi_index = None;
+
+    if let Some(first) = config.wifi_profiles.first() {
+        config.primary_wifi_ssid = first.ssid.clone();
+        config.primary_wifi_password = first.password.clone();
+    }
+    true
 }
 
 #[cfg(target_os = "espidf")]
@@ -210,6 +246,13 @@ fn main() {
     }
 
     println!("photoframe-rs: device_id={}", config.device_id);
+
+    if seed_builtin_wifi_profiles_if_needed(&mut config, long_press_action) {
+        println!(
+            "photoframe-rs: seeded built-in wifi profiles count={}",
+            config.wifi_profiles.len()
+        );
+    }
 
     config.ensure_primary_wifi_in_profiles();
     if let Err(err) = storage.save_config(&config) {

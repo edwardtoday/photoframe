@@ -310,21 +310,53 @@ impl DeviceRuntimeConfig {
         }
 
         if let Some(wifi_profiles) = &patch.wifi_profiles {
+            let previous_last_connected_ssid = self
+                .last_connected_wifi_index
+                .and_then(|index| self.wifi_profiles.get(index))
+                .map(|item| item.ssid.clone());
+
+            let mut next_profiles = Vec::new();
             for item in wifi_profiles.iter().take(Self::MAX_WIFI_PROFILES) {
-                if item.ssid.is_empty() {
+                let ssid = item.ssid.trim();
+                if ssid.is_empty() {
                     continue;
                 }
-                append_or_update_wifi_profile(
-                    &mut self.wifi_profiles,
-                    &item.ssid,
-                    item.password.as_deref(),
-                );
+                if next_profiles.iter().any(|profile: &WifiCredential| profile.ssid == ssid) {
+                    continue;
+                }
+                let password = item.password.as_deref().map(str::to_string).unwrap_or_else(|| {
+                    self.wifi_profiles
+                        .iter()
+                        .find(|profile| profile.ssid == ssid)
+                        .map(|profile| profile.password.clone())
+                        .unwrap_or_default()
+                });
+                next_profiles.push(WifiCredential {
+                    ssid: ssid.to_string(),
+                    password,
+                });
             }
-            if self
-                .last_connected_wifi_index
-                .is_some_and(|index| index >= self.wifi_profiles.len())
-            {
+
+            self.wifi_profiles = next_profiles;
+            self.last_connected_wifi_index = previous_last_connected_ssid.and_then(|ssid| {
+                self.wifi_profiles
+                    .iter()
+                    .position(|profile| profile.ssid == ssid)
+            });
+
+            if self.wifi_profiles.is_empty() {
+                self.primary_wifi_ssid.clear();
+                self.primary_wifi_password.clear();
                 self.last_connected_wifi_index = None;
+            } else if let Some(profile) = self
+                .wifi_profiles
+                .iter()
+                .find(|profile| profile.ssid == self.primary_wifi_ssid)
+            {
+                self.primary_wifi_password = profile.password.clone();
+            } else if let Some(first) = self.wifi_profiles.first() {
+                self.primary_wifi_ssid = first.ssid.clone();
+                self.primary_wifi_password = first.password.clone();
             }
         }
 
@@ -591,26 +623,4 @@ fn estimate_battery_percent_from_mv(battery_mv: i32) -> i32 {
     }
 
     -1
-}
-
-fn append_or_update_wifi_profile(
-    profiles: &mut Vec<WifiCredential>,
-    ssid: &str,
-    password: Option<&str>,
-) {
-    if let Some(existing) = profiles.iter_mut().find(|item| item.ssid == ssid) {
-        if let Some(password) = password {
-            existing.password = password.to_string();
-        }
-        return;
-    }
-
-    if profiles.len() >= DeviceRuntimeConfig::MAX_WIFI_PROFILES {
-        return;
-    }
-
-    profiles.push(WifiCredential {
-        ssid: ssid.to_string(),
-        password: password.unwrap_or_default().to_string(),
-    });
 }

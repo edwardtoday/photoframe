@@ -790,6 +790,26 @@ function renderConfigApplyStatus(device) {
   return `<span class="tag expired">fail v${appliedVersion}</span>${err}`;
 }
 
+function renderFetchStatus(device) {
+  const status = Number(device?.last_http_status || 0);
+  const ok = device?.fetch_ok === true || Number(device?.fetch_ok) === 1;
+
+  if (ok) {
+    const label = status > 0 ? `ok / ${status}` : 'ok';
+    return `<span class="tag active">${escapeHtml(label)}</span>`;
+  }
+
+  if (status > 0) {
+    return `<span class="tag expired">fail / ${escapeHtml(String(status))}</span>`;
+  }
+
+  if (device?.last_error) {
+    return '<span class="tag expired">fail</span>';
+  }
+
+  return '<span class="tag">-</span>';
+}
+
 function appendDeviceOption(select, value) {
   const op = document.createElement('option');
   op.value = value;
@@ -1077,6 +1097,7 @@ async function loadDevices() {
       <td>${fmtDuration(d.poll_interval_seconds)}</td>
       <td>${escapeHtml(d.failure_count)}</td>
       <td>${escapeHtml(d.image_source || 'daily')}</td>
+      <td>${renderFetchStatus(d)}</td>
       <td>${escapeHtml(batteryStatusText(d))}</td>
       <td>${escapeHtml(powerSourceText(d))}</td>
       <td>${escapeHtml(d.sta_ip || '-')}</td>

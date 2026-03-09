@@ -10,6 +10,32 @@
 - 支持设备远端配置下发（轮询参数、URL、token 等）
 - 按键语义：`KEY` 短按手动同步，长按 `KEY` 开 120 秒本地配置窗口，长按 `BOOT` 清 Wi-Fi 进入配网，其余时间深度睡眠省电
 
+## 功能清单（当前实现）
+
+### 设备固件（Rust）
+
+- [x] 设备身份生成与本地 NVS 配置持久化
+- [x] 多 Wi‑Fi 轮询连接（内置 `OpenWrt` / `Qing-IoT` / `Qing-AP`）
+- [x] 支持通过 orchestrator 下发 `wifi_profiles`（设备侧完整替换）
+- [x] SNTP 校时与设备时钟兜底协同（`now_epoch` 上报）
+- [x] 拉图与渲染：`BMP/JPEG`（`800x480` / `480x800`）
+- [x] 图片请求支持 token / 条件请求（`ETag` / `If-None-Match`）
+- [x] 远端配置下发与应用回报（`device/config`）
+- [x] 任务拉取与状态上报（`device/next` / `device/checkin`）
+- [x] 显示参数可配置（如 `display_rotation=0/2`、色彩处理、抖动）
+- [x] 省电策略：失败退避、深睡、误唤醒兜底（`SPURIOUS_EXT1`）
+- [x] 按键行为：短按手动同步、长按进入配置/清网
+- [x] AP/STA Portal 本地配置页面
+
+### 编排服务（Orchestrator）
+
+- [x] 设备注册、令牌审批与鉴权（设备 token）
+- [x] 设备配置增删改查与版本化下发
+- [x] 设备在线状态、最近 checkin、下次唤醒、错误状态可视化
+- [x] 日常图片下发与局域网插播任务调度
+- [x] `daily.bmp` / `daily.jpg` 与内部 `preview` 端点下发
+- [x] 图片端点支持条件请求（`ETag` / `304`）以省流省电
+
 ## 仓库结构
 
 - `upstream/ESP32-S3-PhotoPainter/`：Waveshare 开源固件（Git submodule）

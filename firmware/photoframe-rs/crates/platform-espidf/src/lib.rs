@@ -519,6 +519,38 @@ impl Display for EspIdfDisplay {
 const PHOTOFRAME_TOKEN_HEADER: &str = "X-PhotoFrame-Token";
 #[cfg(target_os = "espidf")]
 const PHOTO_TOKEN_HEADER: &str = "X-Photo-Token";
+#[cfg(target_os = "espidf")]
+const MAX_HTTP_REDIRECTS: usize = 5;
+
+#[cfg(test)]
+fn resolve_redirect_url(current_url: &str, location: &str) -> Option<String> {
+    if location.starts_with("http://") || location.starts_with("https://") {
+        return Some(location.to_string());
+    }
+
+    let (origin, rest) = photoframe_app::split_url_origin_and_rest(current_url)?;
+    if location.starts_with("//") {
+        let scheme_end = origin.find("://")?;
+        let scheme = &origin[..scheme_end];
+        return Some(format!("{scheme}:{location}"));
+    }
+    if location.starts_with('/') {
+        return Some(format!("{origin}{location}"));
+    }
+
+    let path_end = rest.find('?').unwrap_or(rest.len());
+    let path = &rest[..path_end];
+    let base_dir = path
+        .rfind('/')
+        .map(|index| &path[..=index])
+        .unwrap_or("/");
+    Some(format!("{origin}{base_dir}{location}"))
+}
+
+#[cfg(target_os = "espidf")]
+fn is_redirect_status(status: i32) -> bool {
+    matches!(status, 301 | 302 | 303 | 307 | 308)
+}
 
 #[cfg(target_os = "espidf")]
 fn payload_to_patch(payload: DeviceConfigPayload) -> RemoteConfigPatch {
@@ -548,7 +580,7 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
         let mut config: sys::esp_http_client_config_t = std::mem::zeroed();
         config.url = url.as_ptr();
         config.timeout_ms = 20_000;
-        config.disable_auto_redirect = false;
+        config.disable_auto_redirect = true;
         if is_https_url(&plan.url) {
             config.crt_bundle_attach = Some(sys::esp_crt_bundle_attach);
         }
@@ -559,83 +591,124 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
         }
 
         if !plan.photo_token.is_empty() {
-            set_header(client, PHOTO_TOKEN_HEADER, &plan.photo_token)?;
-        }
-        if let Some(value) = &plan.previous_etag {
-            if !value.is_empty() {
-                set_header(client, "If-None-Match", value)?;
+            if let Err(err) = set_header(client, PHOTO_TOKEN_HEADER, &plan.photo_token) {
+                sys::esp_http_client_cleanup(client);
+                return Err(err);
             }
         }
-        if let Some(value) = &plan.previous_last_modified {
-            if !value.is_empty() {
-                set_header(client, "If-Modified-Since", value)?;
-            }
+        if let Some(value) = &plan.previous_etag && !value.is_empty()
+            && let Err(err) = set_header(client, "If-None-Match", value)
+        {
+            sys::esp_http_client_cleanup(client);
+            return Err(err);
+        }
+        if let Some(value) = &plan.previous_last_modified && !value.is_empty()
+            && let Err(err) = set_header(client, "If-Modified-Since", value)
+        {
+            sys::esp_http_client_cleanup(client);
+            return Err(err);
         }
 
-        check_esp(sys::esp_http_client_open(client, 0), "esp_http_client_open")?;
-        let _ = sys::esp_http_client_fetch_headers(client);
-        let status_code = sys::esp_http_client_get_status_code(client);
-        let content_len = sys::esp_http_client_get_content_length(client);
-        let content_type = get_header_value(client, "Content-Type")?;
-        let etag = get_header_value(client, "ETag")?;
-        let last_modified = get_header_value(client, "Last-Modified")?;
+        let mut redirect_count = 0usize;
+        loop {
+            if let Err(err) = check_esp(sys::esp_http_client_open(client, 0), "esp_http_client_open")
+            {
+                sys::esp_http_client_cleanup(client);
+                return Err(err);
+            }
+            let _ = sys::esp_http_client_fetch_headers(client);
+            let status_code = sys::esp_http_client_get_status_code(client);
 
-        if status_code == 304 {
+            if is_redirect_status(status_code) {
+                if redirect_count >= MAX_HTTP_REDIRECTS {
+                    sys::esp_http_client_close(client);
+                    sys::esp_http_client_cleanup(client);
+                    return Err(format!("too many redirects: {status_code}"));
+                }
+                if let Err(err) = check_esp(
+                    sys::esp_http_client_set_redirection(client),
+                    "esp_http_client_set_redirection",
+                ) {
+                    sys::esp_http_client_close(client);
+                    sys::esp_http_client_cleanup(client);
+                    return Err(err);
+                }
+                let mut flushed = 0;
+                let _ = sys::esp_http_client_flush_response(client, &mut flushed);
+                sys::esp_http_client_close(client);
+                redirect_count += 1;
+                continue;
+            }
+
+            let content_len = sys::esp_http_client_get_content_length(client);
+            let content_type = get_header_value(client, "Content-Type")?;
+            let etag = get_header_value(client, "ETag")?;
+            let last_modified = get_header_value(client, "Last-Modified")?;
+
+            if status_code == 304 {
+                sys::esp_http_client_close(client);
+                sys::esp_http_client_cleanup(client);
+                return Ok(ImageFetchOutcome {
+                    ok: true,
+                    status_code,
+                    error: String::new(),
+                    image_changed: false,
+                    sha256: plan.previous_sha256.clone(),
+                    etag,
+                    last_modified,
+                    artifact: None,
+                });
+            }
+
+            if status_code != 200 {
+                sys::esp_http_client_close(client);
+                sys::esp_http_client_cleanup(client);
+                let extra = if status_code == 401 || status_code == 403 {
+                    ", check X-Photo-Token"
+                } else {
+                    ""
+                };
+                return Err(format!("unexpected status: {status_code}{extra} url={}", plan.url));
+            }
+
+            if content_len <= 0 || content_len > 4 * 1024 * 1024 {
+                sys::esp_http_client_close(client);
+                sys::esp_http_client_cleanup(client);
+                return Err(format!("invalid content length: {content_len}"));
+            }
+
+            let data = match read_body_exact(client, content_len as usize) {
+                Ok(data) => data,
+                Err(err) => {
+                    sys::esp_http_client_close(client);
+                    sys::esp_http_client_cleanup(client);
+                    return Err(err);
+                }
+            };
             sys::esp_http_client_close(client);
             sys::esp_http_client_cleanup(client);
+
+            let sha256 = sha256_hex(&data);
+            let image_changed = sha256 != plan.previous_sha256;
+            let format = detect_format(content_type.as_deref(), &data);
+            let artifact = Some(ImageArtifact {
+                format,
+                width: 0,
+                height: 0,
+                bytes: data,
+            });
+
             return Ok(ImageFetchOutcome {
                 ok: true,
                 status_code,
                 error: String::new(),
-                image_changed: false,
-                sha256: plan.previous_sha256.clone(),
+                image_changed,
+                sha256,
                 etag,
                 last_modified,
-                artifact: None,
+                artifact,
             });
         }
-
-        if status_code != 200 {
-            sys::esp_http_client_close(client);
-            sys::esp_http_client_cleanup(client);
-            let extra = if status_code == 401 || status_code == 403 {
-                ", check X-Photo-Token"
-            } else {
-                ""
-            };
-            return Err(format!("unexpected status: {status_code}{extra}"));
-        }
-
-        if content_len <= 0 || content_len > 4 * 1024 * 1024 {
-            sys::esp_http_client_close(client);
-            sys::esp_http_client_cleanup(client);
-            return Err(format!("invalid content length: {content_len}"));
-        }
-
-        let data = read_body_exact(client, content_len as usize)?;
-        sys::esp_http_client_close(client);
-        sys::esp_http_client_cleanup(client);
-
-        let sha256 = sha256_hex(&data);
-        let image_changed = sha256 != plan.previous_sha256;
-        let format = detect_format(content_type.as_deref(), &data);
-        let artifact = Some(ImageArtifact {
-            format,
-            width: 0,
-            height: 0,
-            bytes: data,
-        });
-
-        Ok(ImageFetchOutcome {
-            ok: true,
-            status_code,
-            error: String::new(),
-            image_changed,
-            sha256,
-            etag,
-            last_modified,
-            artifact,
-        })
     }
 }
 
@@ -655,7 +728,7 @@ fn http_get_bytes(url: &str, token_header: Option<(&str, &str)>) -> Result<Vec<u
         let mut config: sys::esp_http_client_config_t = std::mem::zeroed();
         config.url = url.as_ptr();
         config.timeout_ms = 20_000;
-        config.disable_auto_redirect = false;
+        config.disable_auto_redirect = true;
         if is_https_url(url.to_str().unwrap_or_default()) {
             config.crt_bundle_attach = Some(sys::esp_crt_bundle_attach);
         }
@@ -663,19 +736,59 @@ fn http_get_bytes(url: &str, token_header: Option<(&str, &str)>) -> Result<Vec<u
         if client.is_null() {
             return Err("esp_http_client_init failed".into());
         }
-        if let Some((header, token)) = token_header && !token.is_empty() {
-            set_header(client, header, token)?;
+        if let Some((header, token)) = token_header && !token.is_empty()
+            && let Err(err) = set_header(client, header, token)
+        {
+            sys::esp_http_client_cleanup(client);
+            return Err(err);
         }
-        check_esp(sys::esp_http_client_open(client, 0), "esp_http_client_open")?;
-        let _ = sys::esp_http_client_fetch_headers(client);
-        let status = sys::esp_http_client_get_status_code(client);
-        let body = read_body_stream(client)?;
-        sys::esp_http_client_close(client);
-        sys::esp_http_client_cleanup(client);
-        if status != 200 {
-            return Err(format!("unexpected status: {status}"));
+
+        let mut redirect_count = 0usize;
+        loop {
+            if let Err(err) = check_esp(sys::esp_http_client_open(client, 0), "esp_http_client_open")
+            {
+                sys::esp_http_client_cleanup(client);
+                return Err(err);
+            }
+            let _ = sys::esp_http_client_fetch_headers(client);
+            let status = sys::esp_http_client_get_status_code(client);
+
+            if is_redirect_status(status) {
+                if redirect_count >= MAX_HTTP_REDIRECTS {
+                    sys::esp_http_client_close(client);
+                    sys::esp_http_client_cleanup(client);
+                    return Err(format!("too many redirects: {status}"));
+                }
+                if let Err(err) = check_esp(
+                    sys::esp_http_client_set_redirection(client),
+                    "esp_http_client_set_redirection",
+                ) {
+                    sys::esp_http_client_close(client);
+                    sys::esp_http_client_cleanup(client);
+                    return Err(err);
+                }
+                let mut flushed = 0;
+                let _ = sys::esp_http_client_flush_response(client, &mut flushed);
+                sys::esp_http_client_close(client);
+                redirect_count += 1;
+                continue;
+            }
+
+            let body = match read_body_stream(client) {
+                Ok(body) => body,
+                Err(err) => {
+                    sys::esp_http_client_close(client);
+                    sys::esp_http_client_cleanup(client);
+                    return Err(err);
+                }
+            };
+            sys::esp_http_client_close(client);
+            sys::esp_http_client_cleanup(client);
+            if status != 200 {
+                return Err(format!("unexpected status: {status}"));
+            }
+            return Ok(body);
         }
-        Ok(body)
     }
 }
 
@@ -854,3 +967,43 @@ fn clamp_i32(value: i32, min_value: i32, max_value: i32) -> i32 {
     value.clamp(min_value, max_value)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::resolve_redirect_url;
+
+    #[test]
+    fn resolve_redirect_url_supports_absolute_and_root_relative() {
+        assert_eq!(
+            resolve_redirect_url(
+                "https://picsum.photos/480/800?date=2026-03-09",
+                "https://fastly.picsum.photos/id/58/480/800.jpg"
+            ),
+            Some("https://fastly.picsum.photos/id/58/480/800.jpg".to_string())
+        );
+        assert_eq!(
+            resolve_redirect_url(
+                "https://picsum.photos/480/800?date=2026-03-09",
+                "/id/58/480/800.jpg"
+            ),
+            Some("https://picsum.photos/id/58/480/800.jpg".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_redirect_url_supports_scheme_relative_and_relative_path() {
+        assert_eq!(
+            resolve_redirect_url(
+                "https://picsum.photos/480/800?date=2026-03-09",
+                "//fastly.picsum.photos/id/58/480/800.jpg"
+            ),
+            Some("https://fastly.picsum.photos/id/58/480/800.jpg".to_string())
+        );
+        assert_eq!(
+            resolve_redirect_url(
+                "https://picsum.photos/images/list",
+                "next?page=2"
+            ),
+            Some("https://picsum.photos/images/next?page=2".to_string())
+        );
+    }
+}

@@ -116,13 +116,17 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 - 行为：
   1. 优先返回该设备当前生效的插播图（若存在）
   2. 否则回退到 `DAILY_IMAGE_URL_TEMPLATE` 的当日图（按扩展名输出 BMP/JPEG）
+- 设备下发策略补充：
+  - 当 `PUBLIC_DAILY_BMP_TOKEN` 已配置时，`/api/v1/device/next` 的 daily 会下发 `/public/daily.*`（支持 `ETag/304`）。
+  - 当 `PUBLIC_DAILY_BMP_TOKEN` 未配置时，daily 会按 `accept_formats` 下发 `/api/v1/preview/current.jpg` 或 `/api/v1/preview/current.bmp`（设备需携带 `X-PhotoFrame-Token`）。
+  - 仅当设备不支持 BMP 时，daily 才回退到 `DAILY_IMAGE_URL_TEMPLATE` 的上游 URL。
 
 更多字段与示例见 `docs/orchestrator-api.md`。
 
 ## Wi-Fi 列表管理（设备配置）
 
 - 控制台“设备配置下发”中的 Wi-Fi 区域支持对设备已知 Wi-Fi 做增删改查。
-- 语义为“完整替换设备端列表”（最多 3 条）：
+- 语义为“完整替换设备端列表”（最多 8 条）：
   - 勾选“替换设备 Wi-Fi 列表”后，下发内容会覆盖设备当前列表。
   - 提交空列表会清空设备 Wi-Fi 列表。
   - 某条仅填 SSID、不填密码时：设备端会保留该 SSID 现有密码（若该 SSID 已存在）。

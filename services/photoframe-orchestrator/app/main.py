@@ -1073,15 +1073,47 @@ def preview_current_bmp(
     now_epoch: int | None = Query(default=None),
     x_photoframe_token: str | None = Header(default=None),
 ) -> Response:
-  _require_token(x_photoframe_token)
   now_ts = _now_epoch() if now_epoch is None else now_epoch
   target_device = _normalize_device_id(device_id)
+  _require_device_token(target_device, x_photoframe_token)
   conn = _ensure_db()
 
   payload, source = _resolve_current_payload_for_device(conn, now_ts, target_device)
   return Response(
       content=payload,
       media_type="image/bmp",
+      headers={
+          "Cache-Control": "no-store",
+          "X-PhotoFrame-Source": source,
+          "X-PhotoFrame-Device": target_device,
+      },
+  )
+
+
+@app.get("/api/v1/preview/current.jpg")
+def preview_current_jpg(
+    device_id: str = Query(default="*", min_length=1, max_length=64),
+    now_epoch: int | None = Query(default=None),
+    x_photoframe_token: str | None = Header(default=None),
+) -> Response:
+  now_ts = _now_epoch() if now_epoch is None else now_epoch
+  target_device = _normalize_device_id(device_id)
+  _require_device_token(target_device, x_photoframe_token)
+  conn = _ensure_db()
+
+  payload, source = _resolve_current_payload_for_device(conn, now_ts, target_device)
+  try:
+    with Image.open(io.BytesIO(payload)) as image:
+      rgb = image.convert("RGB")
+      out = io.BytesIO()
+      rgb.save(out, format="JPEG", quality=55, optimize=True, progressive=False)
+      jpg_bytes = out.getvalue()
+  except Exception as exc:
+    raise HTTPException(status_code=502, detail="cannot encode preview jpg") from exc
+
+  return Response(
+      content=jpg_bytes,
+      media_type="image/jpeg",
       headers={
           "Cache-Control": "no-store",
           "X-PhotoFrame-Source": source,
@@ -1112,6 +1144,7 @@ def device_next(
       if item.strip() != ""
   }
   prefer_jpeg = ("jpeg" in accept) or ("jpg" in accept)
+  prefer_bmp = ("bmp" in accept) or (len(accept) == 0)
   conn = _ensure_db()
 
   with DB_LOCK:
@@ -1153,13 +1186,19 @@ def device_next(
 
   source = "daily"
   valid_until = now_ts + poll_sec
-  # 省电优先：若启用了公网日图（PUBLIC_DAILY_BMP_TOKEN），daily 默认让设备走 /public/daily.*，
-  # 以获得 ETag/304 语义，避免下游日图服务不支持缓存导致设备每轮都全量下载大图（显著耗电/耗流量）。
+  # 省电优先：优先下发服务端可控的 daily 代理 URL，避免设备直连上游日图导致格式不兼容与不可控缓存。
+  # - 已配置 PUBLIC_DAILY_BMP_TOKEN：下发 /public/daily.*（支持 ETag/304）。
+  # - 未配置 PUBLIC_DAILY_BMP_TOKEN：优先按设备能力下发 /api/v1/preview/current.jpg|bmp（设备 token 鉴权）。
+  # - 仅支持 JPEG 的老设备：回退到上游 DAILY_IMAGE_URL_TEMPLATE。
   if (PUBLIC_DAILY_BMP_TOKEN or "").strip():
     if prefer_jpeg:
       image_url = f"{_public_base(request)}/public/daily.jpg?device_id={device_id}"
     else:
       image_url = f"{_public_base(request)}/public/daily.bmp?device_id={device_id}"
+  elif prefer_jpeg:
+    image_url = f"{_public_base(request)}/api/v1/preview/current.jpg?device_id={device_id}&now_epoch={now_ts}"
+  elif prefer_bmp:
+    image_url = f"{_public_base(request)}/api/v1/preview/current.bmp?device_id={device_id}&now_epoch={now_ts}"
   else:
     image_url = _daily_image_url(now_ts)
   active_override_id = None

@@ -26,6 +26,7 @@ pub struct ImageFetchPlan {
     pub url: String,
     pub previous_sha256: String,
     pub photo_token: String,
+    pub orchestrator_token: String,
     pub previous_etag: Option<String>,
     pub previous_last_modified: Option<String>,
 }

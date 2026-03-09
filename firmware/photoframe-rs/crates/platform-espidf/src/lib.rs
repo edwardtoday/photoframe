@@ -596,6 +596,13 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
                 return Err(err);
             }
         }
+        if !plan.orchestrator_token.is_empty() {
+            if let Err(err) = set_header(client, PHOTOFRAME_TOKEN_HEADER, &plan.orchestrator_token)
+            {
+                sys::esp_http_client_cleanup(client);
+                return Err(err);
+            }
+        }
         if let Some(value) = &plan.previous_etag && !value.is_empty()
             && let Err(err) = set_header(client, "If-None-Match", value)
         {

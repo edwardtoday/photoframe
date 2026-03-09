@@ -6,7 +6,7 @@ use photoframe_domain::{
 use crate::{
     DeviceRuntimeConfig, ImageArtifact, ImageFetchOutcome, ImageFetchPlan,
     build_checkin_base_url_candidates, build_dated_url, build_fetch_url_candidates,
-    model::PowerSample,
+    model::PowerSample, split_url_origin_and_rest,
 };
 
 pub trait Clock {
@@ -217,15 +217,33 @@ where
             Some(config.last_image_last_modified.clone())
         };
 
-        let fetch_urls = build_fetch_url_candidates(&url, &config.preferred_image_origin);
+        let mut fetch_urls = Vec::new();
+        if used_orchestrator_directive
+            && image_source == "daily"
+            && let Some((origin, _)) = split_url_origin_and_rest(&config.orchestrator_base_url)
+        {
+            append_unique_urls(
+                &mut fetch_urls,
+                build_fetch_url_candidates(&url, &origin).into_iter(),
+            );
+        }
+        append_unique_urls(
+            &mut fetch_urls,
+            build_fetch_url_candidates(&url, &config.preferred_image_origin).into_iter(),
+        );
         let mut fetch = ImageFetchOutcome::failed(0, "fetch not started");
         let mut fetch_url_used = None;
+        let orchestrator_origin = split_url_origin_and_rest(&config.orchestrator_base_url)
+            .map(|(origin, _)| origin);
 
         for candidate in fetch_urls {
+            let orchestrator_token =
+                orchestrator_token_for_url(orchestrator_origin.as_deref(), &candidate, &config);
             let result = self.image_fetcher.fetch(&ImageFetchPlan {
                 url: candidate.clone(),
                 previous_sha256: config.last_image_sha256.clone(),
                 photo_token: config.photo_token.clone(),
+                orchestrator_token,
                 previous_etag: previous_etag.clone(),
                 previous_last_modified: previous_last_modified.clone(),
             });
@@ -242,10 +260,13 @@ where
             && image_source == "daily"
             && fallback_url != url
         {
+            let orchestrator_token =
+                orchestrator_token_for_url(orchestrator_origin.as_deref(), &fallback_url, &config);
             let result = self.image_fetcher.fetch(&ImageFetchPlan {
                 url: fallback_url.clone(),
                 previous_sha256: config.last_image_sha256.clone(),
                 photo_token: config.photo_token.clone(),
+                orchestrator_token,
                 previous_etag,
                 previous_last_modified,
             });
@@ -413,5 +434,36 @@ where
         };
         self.orchestrator.report_checkin(&base_urls, &payload)?;
         Ok(true)
+    }
+}
+
+fn orchestrator_token_for_url(
+    orchestrator_origin: Option<&str>,
+    url: &str,
+    config: &DeviceRuntimeConfig,
+) -> String {
+    if config.orchestrator_token.is_empty() {
+        return String::new();
+    }
+    let Some(expected_origin) = orchestrator_origin else {
+        return String::new();
+    };
+    let Some((origin, _)) = split_url_origin_and_rest(url) else {
+        return String::new();
+    };
+    if origin == expected_origin {
+        return config.orchestrator_token.clone();
+    }
+    String::new()
+}
+
+fn append_unique_urls(
+    out: &mut Vec<String>,
+    candidates: impl Iterator<Item = String>,
+) {
+    for candidate in candidates {
+        if !out.iter().any(|item| item == &candidate) {
+            out.push(candidate);
+        }
     }
 }

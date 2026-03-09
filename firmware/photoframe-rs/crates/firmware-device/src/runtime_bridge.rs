@@ -36,10 +36,16 @@ impl EspRuntimeBridge {
         };
         let packed = match artifact.format {
             ImageFormat::Bmp => crate::render_core::render_bmp24_to_packed(&artifact.bytes, options)
-                .map_err(|_| FailureKind::GeneralFailure)?,
+                .map_err(|err| {
+                    println!("photoframe-rs/render: bmp render failed: {err}");
+                    FailureKind::GeneralFailure
+                })?,
             ImageFormat::Jpeg => {
                 let decoded = crate::jpeg::decode_rgb888(&artifact.bytes)
-                    .map_err(|_| FailureKind::GeneralFailure)?;
+                    .map_err(|err| {
+                        println!("photoframe-rs/render: jpeg decode failed: {err}");
+                        FailureKind::GeneralFailure
+                    })?;
                 let rgb = unsafe { std::slice::from_raw_parts(decoded.rgb, decoded.rgb_len) };
                 crate::render_core::render_rgb888_to_packed(
                     rgb,
@@ -47,10 +53,16 @@ impl EspRuntimeBridge {
                     decoded.height as usize,
                     options,
                 )
-                .map_err(|_| FailureKind::GeneralFailure)?
+                .map_err(|err| {
+                    println!("photoframe-rs/render: rgb->packed failed: {err}");
+                    FailureKind::GeneralFailure
+                })?
             }
         };
-        crate::panel::flush_packed_image(&packed.bytes).map_err(|_| FailureKind::GeneralFailure)
+        crate::panel::flush_packed_image(&packed.bytes).map_err(|err| {
+            println!("photoframe-rs/render: panel flush failed: {err}");
+            FailureKind::GeneralFailure
+        })
     }
 
     #[cfg(not(target_os = "espidf"))]

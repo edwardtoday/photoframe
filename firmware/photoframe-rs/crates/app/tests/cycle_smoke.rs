@@ -73,12 +73,12 @@ impl OrchestratorApi for FakeOrchestrator {
 
 #[derive(Default)]
 struct FakeImageFetcher {
-    fetch_calls: Vec<String>,
+    fetch_calls: Vec<ImageFetchPlan>,
     queued_results: Vec<ImageFetchOutcome>,
 }
 impl ImageFetcher for FakeImageFetcher {
     fn fetch(&mut self, plan: &ImageFetchPlan) -> ImageFetchOutcome {
-        self.fetch_calls.push(plan.url.clone());
+        self.fetch_calls.push(plan.clone());
         if self.queued_results.is_empty() {
             panic!("missing fetch result");
         }
@@ -202,6 +202,7 @@ fn daily_directive_failure_falls_back_to_template_url() {
         FakeImageFetcher {
             queued_results: vec![
                 ImageFetchOutcome::failed(404, "not found"),
+                ImageFetchOutcome::failed(404, "not found"),
                 ImageFetchOutcome {
                     ok: true,
                     status_code: 200,
@@ -226,8 +227,8 @@ fn daily_directive_failure_falls_back_to_template_url() {
     });
 
     assert!(report.is_ok());
-    assert_eq!(runner.image_fetcher().fetch_calls.len(), 2);
-    assert!(runner.image_fetcher().fetch_calls[1].contains("date=2026-03-07"));
+    assert_eq!(runner.image_fetcher().fetch_calls.len(), 3);
+    assert!(runner.image_fetcher().fetch_calls[2].url.contains("date=2026-03-07"));
 }
 
 #[test]
@@ -349,4 +350,186 @@ fn successful_cycle_uses_directive_and_reports_checkin() {
     assert!(report.portal_window_opened);
     assert_eq!(runner.orchestrator().checkin_calls, 1);
     assert_eq!(runner.display().render_calls, 1);
+}
+
+#[test]
+fn same_origin_image_fetch_uses_orchestrator_token_header() {
+    let mut runner = CycleRunner::new(
+        FakeClock,
+        FakeStorage {
+            config: DeviceRuntimeConfig {
+                wifi_profiles: vec![WifiCredential {
+                    ssid: "HomeWiFi".into(),
+                    password: "secret".into(),
+                }],
+                device_id: "pf-a1b2c3d4".into(),
+                orchestrator_base_url: "http://192.168.1.10:18081".into(),
+                orchestrator_token: "orch-token".into(),
+                ..DeviceRuntimeConfig::default()
+            },
+            save_count: 0,
+        },
+        FakeOrchestrator {
+            directive: Some(DeviceNextResponse {
+                image_url: "http://192.168.1.10:18081/api/v1/preview/current.bmp".into(),
+                source: Some("daily".into()),
+                poll_after_seconds: Some(1800),
+                valid_until_epoch: None,
+                server_epoch: None,
+                device_epoch: None,
+                device_clock_ok: None,
+                effective_epoch: None,
+            }),
+            ..FakeOrchestrator::default()
+        },
+        FakeImageFetcher {
+            queued_results: vec![ImageFetchOutcome {
+                ok: true,
+                status_code: 200,
+                error: String::new(),
+                image_changed: false,
+                sha256: "same".into(),
+                etag: None,
+                last_modified: None,
+                artifact: None,
+            }],
+            ..FakeImageFetcher::default()
+        },
+        FakeDisplay::default(),
+    );
+
+    let report = runner.run(BootContext {
+        wake_source: WakeSource::Timer,
+        long_press_action: LongPressAction::None,
+        sta_ip: None,
+        power_sample: PowerSample::default(),
+    });
+
+    assert!(report.is_ok());
+    assert_eq!(runner.image_fetcher().fetch_calls.len(), 1);
+    assert_eq!(
+        runner.image_fetcher().fetch_calls[0].orchestrator_token,
+        "orch-token"
+    );
+}
+
+#[test]
+fn cross_origin_image_fetch_does_not_use_orchestrator_token_header() {
+    let mut runner = CycleRunner::new(
+        FakeClock,
+        FakeStorage {
+            config: DeviceRuntimeConfig {
+                wifi_profiles: vec![WifiCredential {
+                    ssid: "HomeWiFi".into(),
+                    password: "secret".into(),
+                }],
+                device_id: "pf-a1b2c3d4".into(),
+                orchestrator_base_url: "http://192.168.1.10:18081".into(),
+                orchestrator_token: "orch-token".into(),
+                ..DeviceRuntimeConfig::default()
+            },
+            save_count: 0,
+        },
+        FakeOrchestrator {
+            directive: Some(DeviceNextResponse {
+                image_url: "https://cdn.example.com/override.jpg".into(),
+                source: Some("override".into()),
+                poll_after_seconds: Some(1800),
+                valid_until_epoch: None,
+                server_epoch: None,
+                device_epoch: None,
+                device_clock_ok: None,
+                effective_epoch: None,
+            }),
+            ..FakeOrchestrator::default()
+        },
+        FakeImageFetcher {
+            queued_results: vec![ImageFetchOutcome {
+                ok: true,
+                status_code: 200,
+                error: String::new(),
+                image_changed: false,
+                sha256: "same".into(),
+                etag: None,
+                last_modified: None,
+                artifact: None,
+            }],
+            ..FakeImageFetcher::default()
+        },
+        FakeDisplay::default(),
+    );
+
+    let report = runner.run(BootContext {
+        wake_source: WakeSource::Timer,
+        long_press_action: LongPressAction::None,
+        sta_ip: None,
+        power_sample: PowerSample::default(),
+    });
+
+    assert!(report.is_ok());
+    assert_eq!(runner.image_fetcher().fetch_calls.len(), 1);
+    assert_eq!(
+        runner.image_fetcher().fetch_calls[0].orchestrator_token,
+        ""
+    );
+}
+
+#[test]
+fn directive_url_prefers_orchestrator_origin_before_public_base_origin() {
+    let mut runner = CycleRunner::new(
+        FakeClock,
+        FakeStorage {
+            config: DeviceRuntimeConfig {
+                wifi_profiles: vec![WifiCredential {
+                    ssid: "HomeWiFi".into(),
+                    password: "secret".into(),
+                }],
+                device_id: "pf-a1b2c3d4".into(),
+                orchestrator_base_url: "http://192.168.233.11:8081".into(),
+                orchestrator_token: "orch-token".into(),
+                ..DeviceRuntimeConfig::default()
+            },
+            save_count: 0,
+        },
+        FakeOrchestrator {
+            directive: Some(DeviceNextResponse {
+                image_url: "http://192.168.58.113:8081/api/v1/preview/current.bmp?device_id=pf-a1b2c3d4".into(),
+                source: Some("daily".into()),
+                poll_after_seconds: Some(1800),
+                valid_until_epoch: None,
+                server_epoch: None,
+                device_epoch: None,
+                device_clock_ok: None,
+                effective_epoch: None,
+            }),
+            ..FakeOrchestrator::default()
+        },
+        FakeImageFetcher {
+            queued_results: vec![ImageFetchOutcome {
+                ok: true,
+                status_code: 200,
+                error: String::new(),
+                image_changed: false,
+                sha256: "same".into(),
+                etag: None,
+                last_modified: None,
+                artifact: None,
+            }],
+            ..FakeImageFetcher::default()
+        },
+        FakeDisplay::default(),
+    );
+
+    let report = runner.run(BootContext {
+        wake_source: WakeSource::Timer,
+        long_press_action: LongPressAction::None,
+        sta_ip: None,
+        power_sample: PowerSample::default(),
+    });
+
+    assert!(report.is_ok());
+    assert_eq!(runner.image_fetcher().fetch_calls.len(), 1);
+    assert!(runner.image_fetcher().fetch_calls[0]
+        .url
+        .starts_with("http://192.168.233.11:8081/api/v1/preview/current.bmp"));
 }

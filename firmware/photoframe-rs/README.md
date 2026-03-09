@@ -11,6 +11,7 @@ Rust 重写中的新固件工程。
 - 已能通过 Docker 工具链导出可刷机镜像；当前自研固件代码已完成 Rust 收口
 - 2026-03-09 已完成首轮真机 smoke：刷机启动、空 Wi‑Fi 场景进入 AP Portal、`GET /`、`GET /api/config`、`GET /api/wifi/scan`、`POST /api/config` 均已打通
 - 2026-03-09 已完成联网闭环真机验收：STA 连接获取 IP、`device/config` / `device/next` / `device/checkin` 联调通过（200）、主周期可完成后进入休眠决策
+- 2026-03-09 已修复 daily 图片兼容链路：同源图片请求会自动携带 `X-PhotoFrame-Token`，并与 orchestrator 的 BMP 代理下发策略配合，避免上游 progressive JPEG 导致 `render failed`
 - 已固化构建配置：`ESP_IDF_SDKCONFIG_DEFAULTS` 生效、主任务栈提升到 `16384`、分区表路径对齐 Docker 工作目录
 - USB hold 模式已改为低频电源采样（3 秒一次），降低 PMIC I2C 报错噪音并避免高频采样抖动
 - 固件启动时会自动补齐 3 条内置 Wi‑Fi 配置（`OpenWrt`、`Qing-IoT`、`Qing-AP`），并将 Wi‑Fi 列表容量扩展到 8 条，确保在目标环境可联网且可继续扩展

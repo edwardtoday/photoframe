@@ -64,7 +64,8 @@ cat docs/workflow-esp-idf-docker.md
   - 构建：`scripts/build-photoframe-rs.sh`
   - 产物：`firmware/photoframe-rs/dist/photoframe-rs-app.bin`、`firmware/photoframe-rs/dist/photoframe-rs.bin`
 - Rust 固件当前已接通：NVS 配置、设备身份生成、多 Wi‑Fi 轮询连接、SNTP 校时、orchestrator 配置同步 / 指令拉取、图片下载、BMP/JPEG 渲染、checkin 上报、按键唤醒判定、AP/STA Portal、深睡进入；自研固件代码已改为 Rust 实现
-- 当前阶段目标已从“只能编译骨架”推进到“自研固件全 Rust 化、可编译、可出包、主闭环打通”；2026-03-09 已完成首轮真机 smoke（刷机启动、空 Wi‑Fi 进入 AP Portal、Portal 基本 HTTP 接口）
+- 当前阶段目标已从“只能编译骨架”推进到“自研固件全 Rust 化、可编译、可出包、主闭环打通”；2026-03-09 已完成真机 AP Portal smoke + 联网闭环验收（`device/config` / `device/next` / `device/checkin`）
+- Rust 固件构建配置已收敛：`sdkconfig.defaults` 通过 `.cargo/config.toml` 注入、主任务栈提升到 `16384`、分区表路径对齐 Docker 工作目录
 - 下一阶段的主要工作是 **真机联调与行为验收**（按键/Portal 提交链路/EPD/PMIC/功耗/联网闭环）
 - 重写基线文档：`docs/plans/2026-03-07-rust-firmware-rewrite-design.md`
 - 实施计划：`docs/plans/2026-03-07-rust-firmware-rewrite.md`

@@ -289,7 +289,6 @@ fn main() {
             println!("photoframe-rs: save time sync epoch failed: {err}");
         }
     }
-
     let portal_power_sample = runtime_bridge::EspRuntimeBridge::read_power_sample()
         .unwrap_or_else(|| PowerSample::default());
     if matches!(long_press_action, LongPressAction::OpenStaPortalWindow) {
@@ -416,7 +415,13 @@ fn is_usb_serial_connected() -> bool {
 
 #[cfg(target_os = "espidf")]
 fn hold_awake_while_usb_present(planned_sleep_seconds: u64, timer_only: bool) {
+    const HOLD_LOOP_SLEEP_MS: u64 = 100;
+    const POWER_SAMPLE_PERIOD: Duration = Duration::from_secs(3);
+    const HOLD_LOG_PERIOD: Duration = Duration::from_secs(10);
+    const MAX_POWER_SAMPLE_FAILURES: usize = 3;
+
     let mut power_sample = runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
+    let mut power_sample_failures = 0usize;
     let mut usb_serial_connected = is_usb_serial_connected();
     let mut usb_power_present = power_sample.vbus_good == 1;
     if !usb_serial_connected && !usb_power_present {
@@ -431,16 +436,30 @@ fn hold_awake_while_usb_present(planned_sleep_seconds: u64, timer_only: bool) {
         planned_sleep_seconds,
     );
 
-    let mut last_log = Instant::now() - Duration::from_secs(10);
+    let mut last_power_sample_at = Instant::now() - POWER_SAMPLE_PERIOD;
+    let mut last_log = Instant::now() - HOLD_LOG_PERIOD;
     loop {
         usb_serial_connected = is_usb_serial_connected();
-        power_sample = runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or(power_sample);
+        if last_power_sample_at.elapsed() >= POWER_SAMPLE_PERIOD {
+            match runtime_bridge::EspRuntimeBridge::read_power_sample() {
+                Some(sample) => {
+                    power_sample = sample;
+                    power_sample_failures = 0;
+                }
+                None => {
+                    power_sample_failures = power_sample_failures.saturating_add(1);
+                }
+            }
+            last_power_sample_at = Instant::now();
+        }
         usb_power_present = power_sample.vbus_good == 1;
-        if !usb_serial_connected && !usb_power_present {
+        if !usb_serial_connected
+            && (!usb_power_present || power_sample_failures >= MAX_POWER_SAMPLE_FAILURES)
+        {
             break;
         }
 
-        if last_log.elapsed() >= Duration::from_secs(10) {
+        if last_log.elapsed() >= HOLD_LOG_PERIOD {
             println!(
                 "photoframe-rs: usb hold batt={}%%/{}mV charging={} vbus={} next_sleep={}s",
                 power_sample.battery_percent,
@@ -451,7 +470,7 @@ fn hold_awake_while_usb_present(planned_sleep_seconds: u64, timer_only: bool) {
             );
             last_log = Instant::now();
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(HOLD_LOOP_SLEEP_MS));
     }
 
     println!("photoframe-rs: usb no longer present, resume deep sleep");

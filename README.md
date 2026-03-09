@@ -70,6 +70,7 @@ cat docs/workflow-esp-idf-docker.md
 - 下一阶段的主要工作是 **真机联调与行为验收**（按键/Portal 提交链路/EPD/PMIC/功耗/联网闭环）
 - 重写基线文档：`docs/plans/2026-03-07-rust-firmware-rewrite-design.md`
 - 实施计划：`docs/plans/2026-03-07-rust-firmware-rewrite.md`
+- 里程碑发布说明：`docs/releases/v0.1.0-rust-fw.md`（tag：`v0.1.0-rust-fw`）
 - 本次重写第一优先级仍是：稳定性、可测试性、省电行为不回退
 
 ## 启动 NAS 编排服务（镜像拉取模式）

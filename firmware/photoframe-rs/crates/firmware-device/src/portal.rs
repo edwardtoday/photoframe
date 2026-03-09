@@ -28,6 +28,9 @@ const AP_PASSWORD: &str = "12345678";
 const AP_IP: [u8; 4] = [192, 168, 73, 1];
 #[cfg(target_os = "espidf")]
 const PORTAL_LOOP_STEP_MS: u64 = 200;
+#[cfg(target_os = "espidf")]
+const HTTPD_TASK_NO_AFFINITY: i32 = 0x7fff_ffff;
+
 
 #[cfg(target_os = "espidf")]
 static ROOT_URI: &[u8] = b"/\0";
@@ -220,7 +223,8 @@ fn httpd_default_config() -> sys::httpd_config_t {
     sys::httpd_config_t {
         task_priority: 5,
         stack_size: 4096,
-        core_id: -1,
+        // ESP-IDF 5.5 下 tskNO_AFFINITY 仍是 0x7fffffff，不能写 -1。
+        core_id: HTTPD_TASK_NO_AFFINITY,
         task_caps: sys::MALLOC_CAP_INTERNAL | sys::MALLOC_CAP_8BIT,
         max_req_hdr_len: sys::CONFIG_HTTPD_MAX_REQ_HDR_LEN as usize,
         max_uri_len: sys::CONFIG_HTTPD_MAX_URI_LEN as usize,

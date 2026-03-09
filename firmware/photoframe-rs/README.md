@@ -8,8 +8,9 @@ Rust 重写中的新固件工程。
 - 已有宿主机可验证策略：唤醒动作、长按语义、失败退避、URL 候选、配置应用、电源纠偏
 - 已接入真实设备主链：NVS 配置、设备身份、多 Wi‑Fi 轮询连接、SNTP 校时、orchestrator `device/config` / `device/next` / `device/checkin`、图片下载、BMP/JPEG 渲染、深睡
 - 当前仓库内自研固件逻辑已迁为 Rust；仅保留 Espressif `esp_new_jpeg` 作为外部 vendor 库链接
-- 已能通过 Docker 工具链导出可刷机镜像；当前自研固件代码已完成 Rust 收口，下一阶段主要缺口转为真机刷写与行为验证
-- 当前量产路径仍是 `../photoframe-fw/`；Rust 路径现已进入真机验证前的收口阶段
+- 已能通过 Docker 工具链导出可刷机镜像；当前自研固件代码已完成 Rust 收口
+- 2026-03-09 已完成首轮真机 smoke：刷机启动、空 Wi‑Fi 场景进入 AP Portal、`GET /`、`GET /api/config`、`GET /api/wifi/scan`、`POST /api/config` 均已打通
+- 当前量产路径仍是 `../photoframe-fw/`；Rust 路径现已进入真机联调阶段，后续重点转为按键 / EPD / PMIC / 深睡 / 联网闭环验收
 
 ## 目录
 
@@ -32,3 +33,11 @@ scripts/build-photoframe-rs.sh
 
 - 应用镜像：`firmware/photoframe-rs/dist/photoframe-rs-app.bin`
 - 合并镜像：`firmware/photoframe-rs/dist/photoframe-rs.bin`
+
+## 真机刷写与串口
+
+- 构建继续使用 Docker：`scripts/build-photoframe-rs.sh`
+- 在 macOS 上，Docker Desktop 不能直接透传 USB 串口，因此真机刷写使用主机上**已存在**的 ESP Python 环境：`~/.espressif/python_env/.../bin/esptool.py`
+- 本轮验证使用端口：`/dev/cu.usbmodem111201`
+- 刷写示例：`~/.espressif/python_env/idf5.0_py3.13_env/bin/esptool.py --chip esp32s3 --port /dev/cu.usbmodem111201 --baud 460800 write_flash -z 0x0 firmware/photoframe-rs/dist/photoframe-rs.bin`
+- 串口抓日志可复用同一 Python 环境中的 `pyserial`，避免额外安装宿主机工具链

@@ -41,6 +41,8 @@ struct FakeOrchestrator {
     sync_calls: usize,
     directive_calls: usize,
     checkin_calls: usize,
+    checkin_error: Option<String>,
+    debug_stages: Vec<String>,
 }
 impl OrchestratorApi for FakeOrchestrator {
     fn sync_config(
@@ -67,6 +69,18 @@ impl OrchestratorApi for FakeOrchestrator {
         _payload: &DeviceCheckinRequest,
     ) -> Result<(), String> {
         self.checkin_calls += 1;
+        if let Some(error) = &self.checkin_error {
+            return Err(error.clone());
+        }
+        Ok(())
+    }
+
+    fn report_debug_stage(
+        &mut self,
+        _config: &DeviceRuntimeConfig,
+        stage: &str,
+    ) -> Result<(), String> {
+        self.debug_stages.push(stage.to_string());
         Ok(())
     }
 }
@@ -350,6 +364,143 @@ fn successful_cycle_uses_directive_and_reports_checkin() {
     assert!(report.portal_window_opened);
     assert_eq!(runner.orchestrator().checkin_calls, 1);
     assert_eq!(runner.display().render_calls, 1);
+}
+
+#[test]
+fn successful_cycle_keeps_sleep_plan_when_checkin_fails() {
+    let mut runner = CycleRunner::new(
+        FakeClock,
+        FakeStorage {
+            config: seeded_config(),
+            save_count: 0,
+        },
+        FakeOrchestrator {
+            directive: Some(DeviceNextResponse {
+                image_url: "https://cdn.example.com/override.jpg".into(),
+                source: Some("override".into()),
+                poll_after_seconds: Some(900),
+                valid_until_epoch: None,
+                server_epoch: None,
+                device_epoch: None,
+                device_clock_ok: None,
+                effective_epoch: None,
+            }),
+            checkin_error: Some("post failed".into()),
+            ..FakeOrchestrator::default()
+        },
+        FakeImageFetcher {
+            queued_results: vec![ImageFetchOutcome {
+                ok: true,
+                status_code: 200,
+                error: String::new(),
+                image_changed: true,
+                sha256: "new-sha".into(),
+                etag: None,
+                last_modified: None,
+                artifact: Some(ImageArtifact {
+                    format: ImageFormat::Jpeg,
+                    width: 800,
+                    height: 480,
+                    bytes: vec![1, 2, 3],
+                }),
+            }],
+            ..FakeImageFetcher::default()
+        },
+        FakeDisplay::default(),
+    );
+
+    let report = runner
+        .run(BootContext {
+            wake_source: WakeSource::Timer,
+            long_press_action: LongPressAction::None,
+            sta_ip: Some("192.168.1.50".into()),
+            power_sample: PowerSample {
+                battery_mv: 4050,
+                battery_percent: 71,
+                charging: 0,
+                vbus_good: 0,
+            },
+        })
+        .unwrap();
+
+    assert_eq!(
+        report.exit,
+        CycleExit::Sleep {
+            seconds: 900,
+            timer_only: false,
+        }
+    );
+    assert!(!report.checkin_reported);
+    assert_eq!(runner.orchestrator().checkin_calls, 1);
+    assert_eq!(runner.display().render_calls, 1);
+}
+
+#[test]
+fn successful_cycle_reports_debug_stages_in_order() {
+    let mut runner = CycleRunner::new(
+        FakeClock,
+        FakeStorage {
+            config: seeded_config(),
+            save_count: 0,
+        },
+        FakeOrchestrator {
+            directive: Some(DeviceNextResponse {
+                image_url: "https://901.qingpei.me:40009/public/daily.jpg?device_id=pf-a1b2c3d4"
+                    .into(),
+                source: Some("daily".into()),
+                poll_after_seconds: Some(900),
+                valid_until_epoch: None,
+                server_epoch: None,
+                device_epoch: None,
+                device_clock_ok: None,
+                effective_epoch: None,
+            }),
+            ..FakeOrchestrator::default()
+        },
+        FakeImageFetcher {
+            queued_results: vec![ImageFetchOutcome {
+                ok: true,
+                status_code: 200,
+                error: String::new(),
+                image_changed: true,
+                sha256: "new-sha".into(),
+                etag: None,
+                last_modified: None,
+                artifact: Some(ImageArtifact {
+                    format: ImageFormat::Jpeg,
+                    width: 800,
+                    height: 480,
+                    bytes: vec![1, 2, 3],
+                }),
+            }],
+            ..FakeImageFetcher::default()
+        },
+        FakeDisplay::default(),
+    );
+
+    let _ = runner
+        .run(BootContext {
+            wake_source: WakeSource::Timer,
+            long_press_action: LongPressAction::None,
+            sta_ip: Some("192.168.1.50".into()),
+            power_sample: PowerSample {
+                battery_mv: 4050,
+                battery_percent: 71,
+                charging: 0,
+                vbus_good: 0,
+            },
+        })
+        .unwrap();
+
+    assert_eq!(
+        runner.orchestrator().debug_stages,
+        vec![
+            "after_fetch_ok".to_string(),
+            "after_render_ok".to_string(),
+            "after_save_ok".to_string(),
+            "before_checkin_ok".to_string(),
+        ]
+    );
 }
 
 #[test]

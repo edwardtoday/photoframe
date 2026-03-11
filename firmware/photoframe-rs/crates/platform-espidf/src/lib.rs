@@ -469,18 +469,71 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
         {
             let body = serde_json::to_vec(payload).map_err(|err| err.to_string())?;
             let mut last_error = String::from("no base url");
-            for base in base_urls {
+            for (base_index, base) in base_urls.iter().enumerate() {
                 let url = format!("{}/api/v1/device/checkin", trim_trailing_slash(base));
-                for _ in 0..3 {
-                    match http_post_json_status(&url, Some((&PHOTOFRAME_TOKEN_HEADER, &payload.reported_config.orchestrator_token)), &body) {
-                        Ok(status) if (200..300).contains(&status) => return Ok(()),
-                        Ok(status) => last_error = format!("non-2xx status={status}"),
-                        Err(err) => last_error = err,
+                for attempt in 0..3 {
+                    match http_post_json_status(
+                        &url,
+                        Some((&PHOTOFRAME_TOKEN_HEADER, &payload.reported_config.orchestrator_token)),
+                        &body,
+                    ) {
+                        Ok(status) if (200..300).contains(&status) => {
+                            println!(
+                                "photoframe-rs/checkin: ok device_id={} base={}/{} attempt={}/3 status={} url={}",
+                                payload.device_id,
+                                base_index + 1,
+                                base_urls.len(),
+                                attempt + 1,
+                                status,
+                                url
+                            );
+                            return Ok(());
+                        }
+                        Ok(status) => {
+                            last_error = format!("non-2xx status={status}");
+                            println!(
+                                "photoframe-rs/checkin: non-2xx device_id={} base={}/{} attempt={}/3 status={} url={}",
+                                payload.device_id,
+                                base_index + 1,
+                                base_urls.len(),
+                                attempt + 1,
+                                status,
+                                url
+                            );
+                        }
+                        Err(err) => {
+                            last_error = err.clone();
+                            println!(
+                                "photoframe-rs/checkin: error device_id={} base={}/{} attempt={}/3 err={} url={}",
+                                payload.device_id,
+                                base_index + 1,
+                                base_urls.len(),
+                                attempt + 1,
+                                err,
+                                url
+                            );
+                        }
                     }
                 }
+                println!(
+                    "photoframe-rs/checkin: base failed device_id={} base={}/{} last_error={} url={}",
+                    payload.device_id,
+                    base_index + 1,
+                    base_urls.len(),
+                    last_error,
+                    url
+                );
             }
             Err(last_error)
         }
+    }
+
+    fn report_debug_stage(
+        &mut self,
+        config: &DeviceRuntimeConfig,
+        stage: &str,
+    ) -> Result<(), String> {
+        send_debug_stage_beacon(config, stage)
     }
 }
 
@@ -498,6 +551,45 @@ impl ImageFetcher for EspIdfImageFetcher {
             match fetch_image_inner(plan) {
                 Ok(result) => result,
                 Err(error) => ImageFetchOutcome::failed(0, error),
+            }
+        }
+    }
+}
+
+pub fn send_debug_stage_beacon(
+    config: &DeviceRuntimeConfig,
+    stage: &str,
+) -> Result<(), String> {
+    #[cfg(not(target_os = "espidf"))]
+    {
+        let _ = (config, stage);
+        Ok(())
+    }
+
+    #[cfg(target_os = "espidf")]
+    {
+        if option_env!("PHOTOFRAME_DEBUG_STAGE_BEACON").is_none()
+            || !config.orchestrator_enabled
+            || config.orchestrator_base_url.is_empty()
+            || config.device_id.is_empty()
+        {
+            return Ok(());
+        }
+
+        let url = format!(
+            "{}/api/v1/device/debug-stage?device_id={}&stage={}",
+            trim_trailing_slash(&config.orchestrator_base_url),
+            url_encode_component(&config.device_id),
+            url_encode_component(stage),
+        );
+        match http_get_bytes(&url, Some((&PHOTOFRAME_TOKEN_HEADER, &config.orchestrator_token))) {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                println!(
+                    "photoframe-rs/debug-stage: failed device_id={} stage={} err={}",
+                    config.device_id, stage, err
+                );
+                Err(err)
             }
         }
     }
@@ -789,10 +881,37 @@ fn http_get_bytes(url: &str, token_header: Option<(&str, &str)>) -> Result<Vec<u
                     return Err(err);
                 }
             };
+            let server_header = get_header_value(client, "Server").ok().flatten();
+            let via_header = get_header_value(client, "Via").ok().flatten();
+            let content_type = get_header_value(client, "Content-Type").ok().flatten();
+            let www_authenticate = get_header_value(client, "WWW-Authenticate").ok().flatten();
             sys::esp_http_client_close(client);
             sys::esp_http_client_cleanup(client);
             if status != 200 {
-                return Err(format!("unexpected status: {status}"));
+                let body_preview = String::from_utf8_lossy(&body);
+                let body_preview = body_preview.trim();
+                let body_preview = if body_preview.is_empty() {
+                    String::new()
+                } else {
+                    body_preview.chars().take(160).collect::<String>()
+                };
+                let mut details = format!("unexpected status: {status} url={}", url.to_str().unwrap_or_default());
+                if let Some(value) = server_header.as_deref() {
+                    details.push_str(&format!(" server={value}"));
+                }
+                if let Some(value) = via_header.as_deref() {
+                    details.push_str(&format!(" via={value}"));
+                }
+                if let Some(value) = content_type.as_deref() {
+                    details.push_str(&format!(" content_type={value}"));
+                }
+                if let Some(value) = www_authenticate.as_deref() {
+                    details.push_str(&format!(" www_authenticate={value}"));
+                }
+                if !body_preview.is_empty() {
+                    details.push_str(&format!(" body={body_preview}"));
+                }
+                return Err(details);
             }
             return Ok(body);
         }
@@ -820,18 +939,31 @@ fn http_post_json_status(
             return Err("esp_http_client_init failed".into());
         }
         if let Some((header, token)) = token_header && !token.is_empty() {
-            set_header(client, header, token)?;
+            if let Err(err) = set_header(client, header, token) {
+                sys::esp_http_client_cleanup(client);
+                return Err(format!("set_header {header} failed: {err}"));
+            }
         }
-        set_header(client, "Content-Type", "application/json")?;
-        check_esp(
+        if let Err(err) = set_header(client, "Content-Type", "application/json") {
+            sys::esp_http_client_cleanup(client);
+            return Err(format!("set_header Content-Type failed: {err}"));
+        }
+        if let Err(err) = check_esp(
             sys::esp_http_client_set_post_field(
                 client,
                 body.as_ptr() as *const c_char,
                 body.len() as i32,
             ),
             "esp_http_client_set_post_field",
-        )?;
-        check_esp(sys::esp_http_client_perform(client), "esp_http_client_perform")?;
+        ) {
+            sys::esp_http_client_cleanup(client);
+            return Err(err);
+        }
+        if let Err(err) = check_esp(sys::esp_http_client_perform(client), "esp_http_client_perform")
+        {
+            sys::esp_http_client_cleanup(client);
+            return Err(err);
+        }
         let status = sys::esp_http_client_get_status_code(client);
         sys::esp_http_client_cleanup(client);
         Ok(status)

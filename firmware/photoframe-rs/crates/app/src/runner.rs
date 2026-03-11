@@ -37,6 +37,14 @@ pub trait OrchestratorApi {
         base_urls: &[String],
         payload: &DeviceCheckinRequest,
     ) -> Result<(), String>;
+
+    fn report_debug_stage(
+        &mut self,
+        _config: &DeviceRuntimeConfig,
+        _stage: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 pub trait ImageFetcher {
@@ -276,6 +284,10 @@ where
             fetch = result;
         }
 
+        if fetch.ok {
+            let _ = self.orchestrator.report_debug_stage(&config, "after_fetch_ok");
+        }
+
         let should_refresh = force_refresh || fetch.image_changed;
         let mut render_failure = None;
         let mut last_error = String::new();
@@ -299,6 +311,7 @@ where
         let now_epoch = self.clock.now_epoch();
 
         if cycle_ok {
+            let _ = self.orchestrator.report_debug_stage(&config, "after_render_ok");
             config.failure_count = 0;
             if fetch.image_changed {
                 config.last_image_sha256 = fetch.sha256.clone();
@@ -316,22 +329,28 @@ where
             }
             config.last_success_epoch = now_epoch;
             self.storage.save_config(&config)?;
+            let _ = self.orchestrator.report_debug_stage(&config, "after_save_ok");
 
             let next_wakeup_epoch = now_epoch + success_sleep_seconds as i64;
-            let checkin_reported = self.report_checkin(
-                &config,
-                fetch.status_code,
-                true,
-                fetch.image_changed,
-                &image_source,
-                "",
-                boot.sta_ip.clone(),
-                boot.power_sample,
-                next_wakeup_epoch,
-                success_sleep_seconds,
-                fetch_url_used.as_deref().unwrap_or_default(),
-                &fallback_url,
-            )?;
+            let _ = self
+                .orchestrator
+                .report_debug_stage(&config, "before_checkin_ok");
+            let checkin_reported = self
+                .report_checkin(
+                    &config,
+                    fetch.status_code,
+                    true,
+                    fetch.image_changed,
+                    &image_source,
+                    "",
+                    boot.sta_ip.clone(),
+                    boot.power_sample,
+                    next_wakeup_epoch,
+                    success_sleep_seconds,
+                    fetch_url_used.as_deref().unwrap_or_default(),
+                    &fallback_url,
+                )
+                .unwrap_or(false);
 
             return Ok(CycleReport {
                 exit: CycleExit::Sleep {
@@ -349,27 +368,41 @@ where
         let failure_kind = render_failure.unwrap_or(FailureKind::GeneralFailure);
         let decision =
             apply_cycle_outcome(&config.retry_policy(), config.failure_count, failure_kind);
+        let _ = self.orchestrator.report_debug_stage(
+            &config,
+            if fetch.ok {
+                "after_fetch_fail"
+            } else {
+                "after_fetch_http_fail"
+            },
+        );
         config.failure_count = decision.next_failure_count;
         self.storage.save_config(&config)?;
+        let _ = self.orchestrator.report_debug_stage(&config, "after_save_fail");
 
-        let checkin_reported = self.report_checkin(
-            &config,
-            fetch.status_code,
-            false,
-            fetch.image_changed,
-            &image_source,
-            if last_error.is_empty() {
-                &fetch.error
-            } else {
-                &last_error
-            },
-            boot.sta_ip,
-            boot.power_sample,
-            now_epoch + decision.sleep_seconds as i64,
-            decision.sleep_seconds,
-            fetch_url_used.as_deref().unwrap_or_default(),
-            &fallback_url,
-        )?;
+        let _ = self
+            .orchestrator
+            .report_debug_stage(&config, "before_checkin_fail");
+        let checkin_reported = self
+            .report_checkin(
+                &config,
+                fetch.status_code,
+                false,
+                fetch.image_changed,
+                &image_source,
+                if last_error.is_empty() {
+                    &fetch.error
+                } else {
+                    &last_error
+                },
+                boot.sta_ip,
+                boot.power_sample,
+                now_epoch + decision.sleep_seconds as i64,
+                decision.sleep_seconds,
+                fetch_url_used.as_deref().unwrap_or_default(),
+                &fallback_url,
+            )
+            .unwrap_or(false);
 
         Ok(CycleReport {
             exit: CycleExit::Sleep {

@@ -1,4 +1,6 @@
-use photoframe_contracts::{RemoteConfigPatch, ReportedConfig, ReportedWifiProfile};
+use photoframe_contracts::{
+    DeviceConfigPayload, RemoteConfigPatch, ReportedConfig, ReportedWifiProfile,
+};
 use photoframe_domain::RetryPolicy;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +209,42 @@ impl Default for DeviceRuntimeConfig {
 
 impl DeviceRuntimeConfig {
     pub const MAX_WIFI_PROFILES: usize = 8;
+
+    pub fn should_apply_bootstrap_recovery(&self) -> bool {
+        if self.remote_config_version > 0 {
+            return false;
+        }
+
+        self.orchestrator_base_url.is_empty()
+            || self.orchestrator_base_url == DEFAULT_ORCHESTRATOR_BASE_URL
+            || self.image_url_template.is_empty()
+            || self.image_url_template == DEFAULT_IMAGE_URL_TEMPLATE
+            || self.orchestrator_token.is_empty()
+            || self.photo_token.is_empty()
+    }
+
+    pub fn apply_bootstrap_payload(
+        &mut self,
+        payload: &DeviceConfigPayload,
+    ) -> ApplyRemoteConfigOutcome {
+        self.apply_remote_config_patch(&RemoteConfigPatch {
+            orchestrator_enabled: payload.orchestrator_enabled,
+            orchestrator_base_url: payload.orchestrator_base_url.clone(),
+            orchestrator_token: payload.orchestrator_token.clone(),
+            image_url_template: payload.image_url_template.clone(),
+            photo_token: payload.photo_token.clone(),
+            wifi_profiles: payload.wifi_profiles.clone(),
+            interval_minutes: payload.interval_minutes,
+            retry_base_minutes: payload.retry_base_minutes,
+            retry_max_minutes: payload.retry_max_minutes,
+            max_failure_before_long_sleep: payload.max_failure_before_long_sleep,
+            display_rotation: payload.display_rotation,
+            color_process_mode: payload.color_process_mode,
+            dither_mode: payload.dither_mode,
+            six_color_tolerance: payload.six_color_tolerance,
+            timezone: payload.timezone.clone(),
+        })
+    }
 
     pub fn has_wifi_credentials(&self) -> bool {
         !self.primary_wifi_ssid.is_empty()

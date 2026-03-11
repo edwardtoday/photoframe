@@ -18,6 +18,8 @@ use std::{
 use photoframe_app::{
     BootContext, CycleExit, CycleRunner, DeviceRuntimeConfig, Display, PowerSample, Storage,
 };
+#[cfg(target_os = "espidf")]
+use photoframe_contracts::DeviceConfigPayload;
 use photoframe_domain::WakeSource;
 
 #[cfg(target_os = "espidf")]
@@ -206,6 +208,23 @@ fn merge_builtin_wifi_profiles(
 }
 
 #[cfg(target_os = "espidf")]
+fn bootstrap_config_from_env() -> Option<DeviceConfigPayload> {
+    let raw = option_env!("PHOTOFRAME_BOOTSTRAP_CONFIG_JSON")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    match serde_json::from_str::<DeviceConfigPayload>(trimmed) {
+        Ok(payload) => Some(payload),
+        Err(err) => {
+            println!("photoframe-rs: invalid bootstrap config json: {err}");
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "espidf")]
 fn current_wake_source() -> WakeSource {
     match unsafe { esp_idf_sys::esp_sleep_get_wakeup_cause() } {
         esp_idf_sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_TIMER => {
@@ -332,6 +351,18 @@ fn main() {
             config.wifi_profiles.len()
         );
     }
+    if config.should_apply_bootstrap_recovery()
+        && let Some(payload) = bootstrap_config_from_env()
+    {
+        let outcome = config.apply_bootstrap_payload(&payload);
+        println!(
+            "photoframe-rs: applied bootstrap recovery base_url={} has_orch_token={} has_photo_token={} display_changed={}",
+            config.orchestrator_base_url,
+            i32::from(!config.orchestrator_token.is_empty()),
+            i32::from(!config.photo_token.is_empty()),
+            i32::from(outcome.display_config_changed),
+        );
+    }
 
     config.ensure_primary_wifi_in_profiles();
     println!("photoframe-rs: device_id={}", config.device_id);
@@ -444,8 +475,8 @@ fn main() {
     match runner.run(boot) {
         Ok(report) => {
             println!(
-                "photoframe-rs: cycle exit={:?} source={}",
-                report.exit, report.image_source
+                "photoframe-rs: cycle exit={:?} source={} checkin_reported={}",
+                report.exit, report.image_source, report.checkin_reported
             );
             EspWifiManager::stop();
             match report.exit {

@@ -739,6 +739,7 @@ dependencies = [
  "embuild",
  "esp-idf-sys",
  "photoframe-app",
+ "photoframe-contracts",
  "photoframe-domain",
  "photoframe-platform-espidf",
  "serde_json",

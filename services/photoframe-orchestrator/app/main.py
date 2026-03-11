@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -69,8 +70,10 @@ DEVICE_CONFIG_SECRET_KEYS = {"orchestrator_token", "photo_token"}
 app = FastAPI(title="PhotoFrame Orchestrator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 
+LOGGER = logging.getLogger("uvicorn.error")
 DB_LOCK = threading.Lock()
 DB: sqlite3.Connection | None = None
+STALE_CHECKIN_WARNINGS: dict[str, int] = {}
 
 
 def _open_db() -> sqlite3.Connection:
@@ -420,6 +423,14 @@ def _token_sha256(token: str) -> str:
   return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _token_fingerprint(token: str | None) -> str:
+  value = (token or "").strip()
+  if not value:
+    return "missing"
+  digest = _token_sha256(value)
+  return digest[:12]
+
+
 def _register_or_check_device_token(device_id: str, token: str) -> str:
   normalized = _normalize_device_id(device_id)
   if normalized == "*":
@@ -526,6 +537,11 @@ def _require_device_token(device_id: str, header_token: str | None) -> None:
   expected = _resolve_device_expected_token(device_id)
   if expected:
     if not _secure_equal(provided, expected):
+      LOGGER.warning(
+          "device auth rejected: device_id=%s reason=device-map-mismatch provided_sha=%s",
+          _normalize_device_id(device_id),
+          _token_fingerprint(provided),
+      )
       raise HTTPException(status_code=401, detail="invalid device token")
     return
 
@@ -538,11 +554,22 @@ def _require_device_token(device_id: str, header_token: str | None) -> None:
     status = _register_or_check_device_token(device_id, provided)
     if status == "ok":
       return
+    LOGGER.warning(
+        "device auth rejected: device_id=%s reason=%s provided_sha=%s",
+        _normalize_device_id(device_id),
+        status,
+        _token_fingerprint(provided),
+    )
     if status == "pending":
       raise HTTPException(status_code=401, detail="device token pending approval")
     raise HTTPException(status_code=401, detail="invalid device token")
 
   # 向后兼容：未配置设备 token 且请求未携带 token 时，沿用全局 token。
+  if (TOKEN or "").strip():
+    LOGGER.warning(
+        "device auth rejected: device_id=%s reason=missing-header-token provided_sha=missing",
+        _normalize_device_id(device_id),
+    )
   _require_token(header_token)
 
 
@@ -915,6 +942,48 @@ def _device_next_wakeup(device_id: str) -> int | None:
   return int(row["next_wakeup_epoch"])
 
 
+def _maybe_warn_missing_recent_checkin(
+    conn: sqlite3.Connection,
+    device_id: str,
+    server_now: int,
+) -> None:
+  row = conn.execute(
+      """
+      SELECT last_checkin_epoch, poll_interval_seconds, last_http_status, fetch_ok, last_error
+      FROM devices
+      WHERE device_id = ?
+      """,
+      (device_id,),
+  ).fetchone()
+  if row is None:
+    return
+
+  last_checkin_epoch = int(row["last_checkin_epoch"])
+  poll_interval_seconds = max(60, int(row["poll_interval_seconds"]))
+  stale_seconds = server_now - last_checkin_epoch
+  stale_threshold = poll_interval_seconds * 2
+  if last_checkin_epoch <= 0 or stale_seconds < stale_threshold:
+    return
+
+  last_warn_epoch = int(STALE_CHECKIN_WARNINGS.get(device_id, 0))
+  if last_warn_epoch > 0 and (server_now - last_warn_epoch) < stale_threshold:
+    return
+
+  STALE_CHECKIN_WARNINGS[device_id] = server_now
+  LOGGER.warning(
+      "device next without recent checkin: device_id=%s stale_seconds=%s "
+      "last_checkin_epoch=%s poll_interval_seconds=%s last_http_status=%s fetch_ok=%s "
+      "last_error=%r",
+      device_id,
+      stale_seconds,
+      last_checkin_epoch,
+      poll_interval_seconds,
+      int(row["last_http_status"]),
+      int(row["fetch_ok"]),
+      str(row["last_error"]),
+  )
+
+
 def _guess_effective_epoch(device_id: str, start_epoch: int) -> int | None:
   if device_id == "*":
     return None
@@ -971,6 +1040,23 @@ def index() -> str:
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
   return {"ok": True, "now_epoch": _now_epoch(), "timezone": TZ_NAME, "app_version": APP_VERSION}
+
+
+@app.get("/api/v1/device/debug-stage")
+def device_debug_stage(
+    device_id: str = Query(..., min_length=1, max_length=64),
+    stage: str = Query(..., min_length=1, max_length=64),
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_device_token(device_id, x_photoframe_token)
+  now_ts = _now_epoch()
+  LOGGER.warning(
+      "device debug stage: device_id=%s stage=%s server_epoch=%s",
+      _normalize_device_id(device_id),
+      stage,
+      now_ts,
+  )
+  return {"ok": True, "device_id": _normalize_device_id(device_id), "stage": stage, "server_epoch": now_ts}
 
 
 @app.get("/api/v1/assets/{asset_name}")
@@ -1208,6 +1294,7 @@ def device_next(
         """,
         (now_ts, device_id),
     ).fetchone()
+    _maybe_warn_missing_recent_checkin(conn, device_id, server_now)
     conn.commit()
 
   source = "daily"
@@ -1385,6 +1472,20 @@ def device_checkin(
     conn.execute("DELETE FROM device_power_samples WHERE received_epoch < ?", (cutoff,))
     conn.commit()
 
+  STALE_CHECKIN_WARNINGS.pop(payload.device_id, None)
+  LOGGER.info(
+      "device checkin accepted: device_id=%s checkin_epoch=%s fetch_ok=%s "
+      "last_http_status=%s battery_percent=%s battery_mv=%s charging=%s vbus_good=%s sta_ip=%s",
+      payload.device_id,
+      checkin_epoch,
+      1 if payload.fetch_ok else 0,
+      int(payload.last_http_status),
+      battery_percent,
+      battery_mv,
+      charging,
+      vbus_good,
+      sta_ip,
+  )
   return {"ok": True}
 
 

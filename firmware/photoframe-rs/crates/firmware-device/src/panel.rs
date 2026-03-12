@@ -26,6 +26,10 @@ const PIN_RST: i32 = 12;
 const PIN_BUSY: i32 = 13;
 #[cfg(target_os = "espidf")]
 const WHITE_PACKED: u8 = 0x11;
+#[cfg(target_os = "espidf")]
+const FLUSH_MAX_RETRIES: usize = 3;
+#[cfg(target_os = "espidf")]
+const FLUSH_RETRY_DELAY_MS: u64 = 500;
 
 #[cfg(target_os = "espidf")]
 struct PanelRuntime {
@@ -308,14 +312,12 @@ fn apply_panel_init_sequence(spi_handle: sys::spi_device_handle_t) -> Result<(),
 }
 
 #[cfg(target_os = "espidf")]
-fn ensure_initialized() -> Result<(), String> {
-    let mutex = runtime();
-    let mut state = mutex.lock().unwrap();
+fn ensure_initialized_locked(state: &mut PanelRuntime) -> Result<(), String> {
     if state.initialized {
         return Ok(());
     }
     if state.spi_handle.is_null() {
-        init_bus(&mut state)?;
+        init_bus(state)?;
     }
     apply_panel_init_sequence(state.spi_handle)?;
     state.initialized = true;
@@ -323,22 +325,64 @@ fn ensure_initialized() -> Result<(), String> {
 }
 
 #[cfg(target_os = "espidf")]
+fn reset_runtime_after_failure(state: &mut PanelRuntime) {
+    state.initialized = false;
+    if !state.spi_handle.is_null() {
+        let err = unsafe { sys::spi_bus_remove_device(state.spi_handle) };
+        if err != 0 {
+            println!("photoframe-rs/panel: spi_bus_remove_device failed: {err}");
+        }
+        state.spi_handle = ptr::null_mut();
+    }
+    let err = unsafe { sys::spi_bus_free(sys::spi_host_device_t_SPI3_HOST) };
+    if err != 0 && err != sys::ESP_ERR_INVALID_STATE {
+        println!("photoframe-rs/panel: spi_bus_free failed: {err}");
+    }
+}
+
+#[cfg(target_os = "espidf")]
 pub fn flush_packed_image(data: &[u8]) -> Result<(), String> {
     if data.len() != DISPLAY_LEN {
         return Err(format!("packed image len mismatch: {}", data.len()));
     }
-    ensure_initialized()?;
     let mutex = runtime();
-    let state = mutex.lock().unwrap();
-    for attempt in 0..3 {
+    let mut state = mutex
+        .lock()
+        .map_err(|_| "panel runtime mutex poisoned".to_string())?;
+    let mut last_error = String::from("packed flush failed");
+
+    for attempt in 0..FLUSH_MAX_RETRIES {
         if attempt > 0 {
-            sleep_ms(500);
+            sleep_ms(FLUSH_RETRY_DELAY_MS);
         }
-        if flush_raw(state.spi_handle, data).is_ok() {
-            return Ok(());
+        if let Err(err) = ensure_initialized_locked(&mut state) {
+            last_error = format!("panel init failed: {err}");
+            println!(
+                "photoframe-rs/panel: init attempt={}/{} err={}",
+                attempt + 1,
+                FLUSH_MAX_RETRIES,
+                err
+            );
+            reset_runtime_after_failure(&mut state);
+            continue;
+        }
+
+        match flush_raw(state.spi_handle, data) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                last_error = format!("flush attempt {} failed: {err}", attempt + 1);
+                println!(
+                    "photoframe-rs/panel: flush attempt={}/{} err={}",
+                    attempt + 1,
+                    FLUSH_MAX_RETRIES,
+                    err
+                );
+                reset_runtime_after_failure(&mut state);
+            }
         }
     }
-    Err("packed flush failed".into())
+
+    Err(last_error)
 }
 
 #[cfg(not(target_os = "espidf"))]

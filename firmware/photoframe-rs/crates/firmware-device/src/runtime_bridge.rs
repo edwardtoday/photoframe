@@ -111,10 +111,12 @@ impl EspRuntimeBridge {
             }
         };
         let _ = photoframe_platform_espidf::send_debug_stage_beacon(config, "before_panel_flush");
-        crate::panel::flush_packed_image(&packed.bytes).map_err(|err| {
+        if let Err(err) = crate::panel::flush_packed_image(&packed.bytes) {
+            let _ =
+                photoframe_platform_espidf::send_debug_stage_beacon(config, "panel_flush_failed");
             println!("photoframe-rs/render: panel flush failed: {err}");
-            FailureKind::GeneralFailure
-        })?;
+            return Err(FailureKind::GeneralFailure);
+        }
         let _ = photoframe_platform_espidf::send_debug_stage_beacon(config, "after_panel_flush");
         Ok(())
     }

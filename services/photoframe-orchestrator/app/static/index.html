@@ -22,65 +22,143 @@
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      padding: 24px;
+      padding: 10px;
       font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       color: var(--text);
       background: radial-gradient(circle at top left, #f9fbff 0%, var(--bg) 40%, #eef1f8 100%);
     }
 
     .container {
-      max-width: 1200px;
+      max-width: 1360px;
       margin: 0 auto;
       display: grid;
-      gap: 16px;
+      gap: 8px;
     }
 
-    .hero {
-      padding: 20px;
-      border-radius: var(--radius);
-      background: linear-gradient(135deg, #2846bf, #4869ff);
-      color: #fff;
-      box-shadow: var(--shadow);
+    .topbar {
+      position: sticky;
+      top: 6px;
+      z-index: 6;
+      display: grid;
+      gap: 8px;
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(8px);
     }
 
-    .hero h1 {
+    .topbar-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .topbar-title {
       margin: 0;
-      font-size: 24px;
+      font-size: 17px;
+      line-height: 1.2;
       font-weight: 700;
-      letter-spacing: 0.2px;
-    }
-
-    .hero p {
-      margin: 8px 0 12px;
-      color: rgba(255, 255, 255, 0.88);
-      font-size: 14px;
     }
 
     .pill-row {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px;
+      gap: 6px;
+      justify-content: flex-end;
     }
 
     .pill {
-      font-size: 12px;
-      color: #f0f4ff;
-      background: rgba(255, 255, 255, 0.16);
-      padding: 6px 10px;
+      font-size: 11px;
+      color: #2f3850;
+      background: #f4f6fb;
+      padding: 4px 8px;
       border-radius: 999px;
-      border: 1px solid rgba(255, 255, 255, 0.25);
+      border: 1px solid #dbe2ef;
     }
 
     .grid {
       display: grid;
-      grid-template-columns: 2fr 1fr;
-      gap: 16px;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
       align-items: start;
+    }
+
+    .grid.single-column {
+      grid-template-columns: 1fr;
+    }
+
+    .topbar-main {
+      display: grid;
+      grid-template-columns: minmax(220px, 300px) minmax(220px, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+    }
+
+    .context-info {
+      min-width: 0;
+      margin: 0;
+    }
+
+    .context-title {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.2;
+      color: #2f3850;
+    }
+
+    .context-meta {
+      margin: 2px 0 0;
+      font-size: 11px;
+      color: var(--sub);
+      line-height: 1.35;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .workspace-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+
+    .workspace-tab {
+      width: auto;
+      margin: 0;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid #d8deeb;
+      background: #f5f7fc;
+      color: #2f3850;
+      font-size: 11px;
+      font-weight: 600;
+      margin-top: 0;
+    }
+
+    .workspace-tab.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .workspace-hint {
+      margin: 0;
+      font-size: 11px;
+    }
+
+    .toolbar-refresh {
+      margin-top: 6px;
     }
 
     .stack {
       display: grid;
-      gap: 16px;
+      gap: 12px;
+    }
+
+    .stack.is-empty {
+      display: none;
     }
 
     .card {
@@ -88,18 +166,18 @@
       border: 1px solid var(--line);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
-      padding: 14px;
+      padding: 12px;
     }
 
     .card h3 {
-      margin: 0 0 10px;
-      font-size: 16px;
+      margin: 0 0 8px;
+      font-size: 14px;
     }
 
     .card p.help {
-      margin: 0 0 10px;
+      margin: 0 0 8px;
       color: var(--sub);
-      font-size: 12px;
+      font-size: 11px;
     }
 
     .row {
@@ -110,7 +188,7 @@
 
     label {
       display: block;
-      font-size: 13px;
+      font-size: 12px;
       color: var(--sub);
     }
 
@@ -130,10 +208,10 @@
     input, select, textarea, button {
       width: 100%;
       margin-top: 6px;
-      padding: 10px;
+      padding: 8px 9px;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      font-size: 14px;
+      border-radius: 8px;
+      font-size: 13px;
       background: #fff;
     }
 
@@ -190,6 +268,24 @@
       border-bottom: none;
     }
 
+    tbody tr:hover td {
+      background: #f7f9ff;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: 10px;
+    }
+
+    .table-wrap.table-scroll {
+      max-height: 300px;
+      overflow: auto;
+    }
+
+    .card.is-hidden {
+      display: none;
+    }
+
     .tag {
       display: inline-block;
       font-size: 11px;
@@ -223,7 +319,7 @@
       display: grid;
       grid-template-columns: repeat(3, 1fr);
       gap: 8px;
-      margin-bottom: 10px;
+      margin-bottom: 8px;
     }
 
     .stat {
@@ -247,7 +343,7 @@
     .timeline {
       display: grid;
       gap: 10px;
-      max-height: 760px;
+      max-height: 460px;
       overflow: auto;
       padding-right: 2px;
     }
@@ -324,6 +420,38 @@
       border: 1px solid #dfe3ec;
     }
 
+    .cfg-layout {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 10px;
+    }
+
+    .cfg-block {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fafbff;
+      padding: 10px;
+      min-width: 0;
+    }
+
+    .cfg-block.wide {
+      grid-column: span 2;
+    }
+
+    .cfg-block h4 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      line-height: 1.3;
+    }
+
+    .cfg-block .help {
+      margin-bottom: 8px;
+    }
+
+    .cfg-submit {
+      margin-top: 10px;
+    }
+
     .preview-box {
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -346,12 +474,31 @@
       border-radius: 10px;
       background: #fff;
       padding: 10px;
+      position: relative;
     }
 
     .chart-box canvas {
       width: 100%;
-      height: 320px;
+      height: 220px;
       display: block;
+    }
+
+    .power-tooltip {
+      position: absolute;
+      z-index: 5;
+      pointer-events: none;
+      display: none;
+      min-width: 170px;
+      max-width: 260px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(31, 36, 48, 0.18);
+      background: rgba(15, 23, 42, 0.94);
+      color: #e2e8f0;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.28);
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: nowrap;
     }
 
     .legend {
@@ -383,63 +530,92 @@
 
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
+      .topbar { position: static; }
+      .topbar-row { grid-template-columns: 1fr; gap: 6px; }
+      .pill-row { justify-content: flex-start; }
+      .topbar-main { grid-template-columns: 1fr; }
+      .workspace-tabs { justify-content: flex-start; }
+      .context-meta { white-space: normal; }
+      .cfg-block.wide { grid-column: auto; }
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <section class="hero">
-      <h1>PhotoFrame 插播编排控制台</h1>
-      <p>省电优先：设备仅在唤醒窗口拉取任务，插播生效时间由设备下一次唤醒决定。</p>
-      <div class="pill-row">
-        <div class="pill">服务版本：<strong id="appVersion">-</strong></div>
-        <div class="pill">服务时间：<strong id="serverNow">-</strong></div>
-        <div class="pill">最近刷新：<strong id="lastRefresh">-</strong></div>
+    <section class="card topbar">
+      <div class="topbar-row">
+        <h1 class="topbar-title">PhotoFrame 插播编排控制台</h1>
+        <div class="pill-row">
+          <div class="pill">服务版本：<strong id="appVersion">-</strong></div>
+          <div class="pill">服务时间：<strong id="serverNow">-</strong></div>
+          <div class="pill">最近刷新：<strong id="lastRefresh">-</strong></div>
+        </div>
+      </div>
+
+      <div class="topbar-main">
+        <label>当前设备（全页面统一）
+          <select id="deviceId">
+            <option value="*">全部设备 (*)</option>
+          </select>
+        </label>
+
+        <div class="context-info">
+          <p id="deviceContextTitle" class="context-title">当前设备：-</p>
+          <p id="deviceContextMeta" class="context-meta">-</p>
+          <p id="workspaceHint" class="muted workspace-hint">-</p>
+        </div>
+
+        <div>
+          <label>控制台 Token
+            <input id="token" type="password" placeholder="可选：X-PhotoFrame-Token" />
+          </label>
+          <button id="refreshBtn" class="secondary toolbar-refresh">刷新设备/插播状态</button>
+        </div>
+      </div>
+
+      <div id="workspaceTabs" class="workspace-tabs">
+        <button type="button" class="workspace-tab" data-workspace="overview">总览</button>
+        <button type="button" class="workspace-tab" data-workspace="publish">发布</button>
+        <button type="button" class="workspace-tab" data-workspace="config">配置</button>
+        <button type="button" class="workspace-tab" data-workspace="history">历史</button>
       </div>
     </section>
 
-    <section class="grid">
-      <div class="stack">
-        <div class="card">
+    <section id="workspaceGrid" class="grid">
+      <div id="primaryStack" class="stack">
+        <div class="card" data-workspace="overview">
           <h3>设备状态</h3>
-          <div class="stats">
-            <div class="stat"><div class="k">设备数</div><div class="v" id="deviceCount">0</div></div>
-            <div class="stat"><div class="k">插播任务数</div><div class="v" id="overrideCount">0</div></div>
-            <div class="stat"><div class="k">服务版本</div><div class="v" id="appVersionStat">-</div></div>
+          <div class="table-wrap table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>device_id</th>
+                  <th>last_seen</th>
+                  <th>next_wakeup</th>
+                  <th>ETA</th>
+                  <th>poll</th>
+                  <th>fail</th>
+                  <th>source</th>
+                  <th>sync</th>
+                  <th>battery</th>
+                  <th>power</th>
+                  <th>wifi</th>
+                  <th>ip</th>
+                  <th>cfg 目标/已见/已用</th>
+                  <th>cfg 最近查询</th>
+                  <th>cfg 应用结果</th>
+                  <th>error</th>
+                </tr>
+              </thead>
+              <tbody id="devicesBody"></tbody>
+            </table>
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th>device_id</th>
-                <th>last_seen</th>
-                <th>next_wakeup</th>
-                <th>ETA</th>
-                <th>poll</th>
-                <th>fail</th>
-                <th>source</th>
-                <th>sync</th>
-                <th>battery</th>
-                <th>power</th>
-                <th>ip</th>
-                <th>cfg 目标/已见/已用</th>
-                <th>cfg 最近查询</th>
-                <th>cfg 应用结果</th>
-                <th>error</th>
-              </tr>
-            </thead>
-            <tbody id="devicesBody"></tbody>
-          </table>
         </div>
 
-        <div class="card">
+        <div class="card" data-workspace="overview">
           <h3>电池曲线</h3>
           <p class="help">按设备 checkin 上报点绘制，默认最近 3 天；续航口径：拔 USB(vbus_good 1→0) → 电量 ≤ 阈值(%)（估算，精度受采样间隔影响）。</p>
           <div class="row">
-            <label>目标设备
-              <select id="powerDeviceId">
-                <option value="">请选择设备</option>
-              </select>
-            </label>
             <label>时间窗（天）
               <input id="powerDays" type="number" min="1" max="365" value="3" />
             </label>
@@ -465,52 +641,52 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card" data-workspace="publish">
           <h3>插播列表</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>device</th>
-                <th>state</th>
-                <th>start</th>
-                <th>end</th>
-                <th>预计生效</th>
-                <th>note</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="overridesBody"></tbody>
-          </table>
+          <div class="table-wrap table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>device</th>
+                  <th>state</th>
+                  <th>start</th>
+                  <th>end</th>
+                  <th>预计生效</th>
+                  <th>note</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="overridesBody"></tbody>
+            </table>
+          </div>
         </div>
 
-        <div class="card">
+        <div class="card" data-workspace="config">
           <h3>设备配对审批</h3>
           <p class="help">设备首次携带新 token 访问时会出现在这里。点击“信任”后即可正常调用设备接口。</p>
-          <table>
-            <thead>
-              <tr>
-                <th>device_id</th>
-                <th>首次发现</th>
-                <th>最近请求</th>
-                <th>状态</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="deviceTokensBody"></tbody>
-          </table>
+          <div class="table-wrap table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>device_id</th>
+                  <th>首次发现</th>
+                  <th>最近请求</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="deviceTokensBody"></tbody>
+            </table>
+          </div>
           <p id="deviceTokensHint" class="muted"></p>
         </div>
 
-        <div class="card">
+        <div class="card" data-workspace="publish">
           <h3>创建插播</h3>
+          <p class="help">目标设备使用顶部“当前设备”。若选择“全部设备(*)”，将创建全设备插播。</p>
           <form id="overrideForm">
             <div class="row">
-              <label>目标设备
-                <select id="deviceId">
-                  <option value="*">全部设备 (*)</option>
-                </select>
-              </label>
               <label>开始时间（可空：单设备按下次唤醒，全设备立即）
                 <input id="startsAt" type="datetime-local" />
               </label>
@@ -529,166 +705,165 @@
           <pre id="createResult"></pre>
         </div>
 
-        <div class="card">
-          <h3>连接与刷新</h3>
-          <p class="help">如果启用了 PHOTOFRAME_TOKEN，请在这里填写后刷新数据。浏览器会在本地记住你输入的 token。</p>
-          <div class="row">
-            <label>Token
-              <input id="token" type="password" placeholder="可选：X-PhotoFrame-Token" />
-            </label>
-            <label>操作
-              <button id="refreshBtn" class="secondary">刷新设备/插播状态</button>
-            </label>
-          </div>
-        </div>
-
-        <div class="card">
+        <div class="card" data-workspace="config">
           <h3>设备配置下发</h3>
-          <p class="help">留空表示不修改该项；灰字是设备最近一次上报值。</p>
+          <p class="help">留空表示不修改该项；灰字是“目标设备”最近一次上报值。</p>
           <form id="deviceConfigForm">
-            <div class="row">
-              <label>目标设备
-                <select id="configDeviceId">
-                  <option value="*">全部设备 (*)</option>
-                </select>
-              </label>
-              <label>备注
-                <input id="configNote" placeholder="例如：外网 token 切换" />
-              </label>
-            </div>
+            <div class="cfg-layout">
+              <section class="cfg-block">
+                <h4>发布备注</h4>
+                <label>备注
+                  <input id="configNote" placeholder="例如：外网 token 切换" />
+                </label>
+              </section>
 
-            <div class="row">
-              <label>编排服务开关
-                <select id="cfgOrchEnabled">
-                  <option value="">保持不变</option>
-                  <option value="1">启用</option>
-                  <option value="0">关闭</option>
-                </select>
-                <span id="cfgHintOrchEnabled" class="muted">当前: -</span>
-              </label>
-              <label>时区
-                <input id="cfgTimezone" placeholder="当前: -" />
-              </label>
-            </div>
+              <section class="cfg-block">
+                <h4>编排连接</h4>
+                <div class="row">
+                  <label>编排服务开关
+                    <select id="cfgOrchEnabled">
+                      <option value="">保持不变</option>
+                      <option value="1">启用</option>
+                      <option value="0">关闭</option>
+                    </select>
+                    <span id="cfgHintOrchEnabled" class="muted">当前: -</span>
+                  </label>
+                  <label>时区
+                    <input id="cfgTimezone" placeholder="当前: -" />
+                  </label>
+                </div>
+                <label>编排服务地址
+                  <input id="cfgOrchBaseUrl" placeholder="当前: -" />
+                </label>
+                <div class="row">
+                  <label>编排服务 Token
+                    <input id="cfgOrchToken" type="password" placeholder="当前: 未设置" />
+                  </label>
+                  <label>图片拉取 Token（X-Photo-Token）
+                    <input id="cfgPhotoToken" type="password" placeholder="当前: 未设置" />
+                  </label>
+                </div>
+              </section>
 
-            <label>编排服务地址
-              <input id="cfgOrchBaseUrl" placeholder="当前: -" />
-            </label>
-            <label>图片 URL 模板（支持 %DATE% / %DEVICE_ID%）
-              <input id="cfgImageUrlTemplate" placeholder="当前: -" />
-              <div class="inline-actions">
-                <button id="fillCurrentDailyBtn" class="secondary" type="button">填入编排服务 /public/daily.bmp</button>
-                <button id="fillCurrentDailyJpgBtn" class="secondary" type="button">填入编排服务 /public/daily.jpg（省流，需图片 token）</button>
-                <button id="fillFeaturedCurrentBtn" class="secondary" type="button">填入上游 featured/current/480x800.jpg</button>
-                <button id="fillImageByDateBtn" class="secondary" type="button">填入上游 image/480x800.jpg?date=%DATE%</button>
-              </div>
-            </label>
+              <section class="cfg-block wide">
+                <h4>图源模板</h4>
+                <label>图片 URL 模板（支持 %DATE% / %DEVICE_ID%）
+                  <input id="cfgImageUrlTemplate" placeholder="当前: -" />
+                </label>
+                <div class="inline-actions">
+                  <button id="fillCurrentDailyBtn" class="secondary" type="button">填入编排服务 /public/daily.bmp</button>
+                  <button id="fillCurrentDailyJpgBtn" class="secondary" type="button">填入编排服务 /public/daily.jpg（省流，需图片 token）</button>
+                  <button id="fillFeaturedCurrentBtn" class="secondary" type="button">填入上游 featured/current/480x800.jpg</button>
+                  <button id="fillImageByDateBtn" class="secondary" type="button">填入上游 image/480x800.jpg?date=%DATE%</button>
+                </div>
+                <p class="help">离家模式建议：将“图片 URL 模板”指向公网 daily.bmp，设备即使连不上编排服务也能持续拉图。</p>
+              </section>
 
-            <div class="row">
-              <label>编排服务 Token
-                <input id="cfgOrchToken" type="password" placeholder="当前: 未设置" />
-              </label>
-              <label>图片拉取 Token（X-Photo-Token）
-                <input id="cfgPhotoToken" type="password" placeholder="当前: 未设置" />
-              </label>
-            </div>
+              <section class="cfg-block wide">
+                <h4>Wi-Fi 列表（增删改查）</h4>
+                <p class="help">设备端最多保存 3 条。勾选“替换设备 Wi-Fi 列表”后，会以下面的 1~3 条完整覆盖设备已记住列表（可删除旧 SSID）。</p>
+                <p id="cfgHintWifiProfiles" class="muted">设备已记住: -</p>
+                <label class="inline-check">
+                  <input id="cfgWifiReplace" type="checkbox" />
+                  替换设备 Wi-Fi 列表（空列表将清空设备 Wi-Fi）
+                </label>
+                <div class="row">
+                  <label>SSID 1
+                    <input id="cfgWifiSsid1" placeholder="例如：HomeWiFi" />
+                  </label>
+                  <label>密码 1
+                    <input id="cfgWifiPwd1" type="password" placeholder="留空则保持该 SSID 现有密码" />
+                  </label>
+                </div>
+                <div class="row">
+                  <label>SSID 2
+                    <input id="cfgWifiSsid2" placeholder="例如：OfficeWiFi" />
+                  </label>
+                  <label>密码 2
+                    <input id="cfgWifiPwd2" type="password" placeholder="留空则保持该 SSID 现有密码" />
+                  </label>
+                </div>
+                <div class="row">
+                  <label>SSID 3
+                    <input id="cfgWifiSsid3" placeholder="例如：PhoneHotspot" />
+                  </label>
+                  <label>密码 3
+                    <input id="cfgWifiPwd3" type="password" placeholder="留空则保持该 SSID 现有密码" />
+                  </label>
+                </div>
+              </section>
 
-            <h4>Wi-Fi 列表（增删改查）</h4>
-            <p class="help">设备端最多保存 3 条。勾选“替换设备 Wi-Fi 列表”后，会以下面的 1~3 条完整覆盖设备已记住列表（可删除旧 SSID）。</p>
-            <p id="cfgHintWifiProfiles" class="muted">设备已记住: -</p>
-            <label class="inline-check">
-              <input id="cfgWifiReplace" type="checkbox" />
-              替换设备 Wi-Fi 列表（空列表将清空设备 Wi-Fi）
-            </label>
-            <div class="row">
-              <label>SSID 1
-                <input id="cfgWifiSsid1" placeholder="例如：HomeWiFi" />
-              </label>
-              <label>密码 1
-                <input id="cfgWifiPwd1" type="password" placeholder="留空则保持该 SSID 现有密码" />
-              </label>
-            </div>
-            <div class="row">
-              <label>SSID 2
-                <input id="cfgWifiSsid2" placeholder="例如：OfficeWiFi" />
-              </label>
-              <label>密码 2
-                <input id="cfgWifiPwd2" type="password" placeholder="留空则保持该 SSID 现有密码" />
-              </label>
-            </div>
-            <div class="row">
-              <label>SSID 3
-                <input id="cfgWifiSsid3" placeholder="例如：PhoneHotspot" />
-              </label>
-              <label>密码 3
-                <input id="cfgWifiPwd3" type="password" placeholder="留空则保持该 SSID 现有密码" />
-              </label>
-            </div>
+              <section class="cfg-block">
+                <h4>调度参数</h4>
+                <div class="row">
+                  <label>刷新间隔（分钟）
+                    <input id="cfgIntervalMinutes" type="number" min="1" placeholder="当前: -" />
+                  </label>
+                  <label>失败重试基数（分钟）
+                    <input id="cfgRetryBaseMinutes" type="number" min="1" placeholder="当前: -" />
+                  </label>
+                  <label>失败重试上限（分钟）
+                    <input id="cfgRetryMaxMinutes" type="number" min="1" placeholder="当前: -" />
+                  </label>
+                  <label>连续失败阈值
+                    <input id="cfgMaxFailure" type="number" min="1" placeholder="当前: -" />
+                  </label>
+                </div>
+              </section>
 
-            <div class="row">
-              <label>刷新间隔（分钟）
-                <input id="cfgIntervalMinutes" type="number" min="1" placeholder="当前: -" />
-              </label>
-              <label>失败重试基数（分钟）
-                <input id="cfgRetryBaseMinutes" type="number" min="1" placeholder="当前: -" />
-              </label>
-              <label>失败重试上限（分钟）
-                <input id="cfgRetryMaxMinutes" type="number" min="1" placeholder="当前: -" />
-              </label>
-              <label>连续失败阈值
-                <input id="cfgMaxFailure" type="number" min="1" placeholder="当前: -" />
-              </label>
+              <section class="cfg-block">
+                <h4>显示与色彩</h4>
+                <div class="row">
+                  <label>显示旋转
+                    <select id="cfgDisplayRotation">
+                      <option value="">保持不变</option>
+                      <option value="0">旋转 0（推荐）</option>
+                      <option value="2">旋转 180</option>
+                    </select>
+                    <span id="cfgHintDisplayRotation" class="muted">当前: -</span>
+                  </label>
+                  <label>色彩模式
+                    <select id="cfgColorProcessMode">
+                      <option value="">保持不变</option>
+                      <option value="0">自动判断（推荐）</option>
+                      <option value="1">总是转换为 6 色</option>
+                      <option value="2">认为输入已是 6 色</option>
+                    </select>
+                    <span id="cfgHintColorProcessMode" class="muted">当前: -</span>
+                  </label>
+                  <label>转换抖动
+                    <select id="cfgDitherMode">
+                      <option value="">保持不变</option>
+                      <option value="1">有序抖动（推荐）</option>
+                      <option value="0">关闭</option>
+                    </select>
+                    <span id="cfgHintDitherMode" class="muted">当前: -</span>
+                  </label>
+                  <label>6 色判断容差（0-64）
+                    <input id="cfgSixColorTolerance" type="number" min="0" max="64" placeholder="当前: -" />
+                  </label>
+                </div>
+              </section>
             </div>
-
-            <div class="row">
-              <label>显示旋转
-                <select id="cfgDisplayRotation">
-                  <option value="">保持不变</option>
-                  <option value="0">旋转 0（推荐）</option>
-                  <option value="2">旋转 180</option>
-                </select>
-                <span id="cfgHintDisplayRotation" class="muted">当前: -</span>
-              </label>
-              <label>色彩模式
-                <select id="cfgColorProcessMode">
-                  <option value="">保持不变</option>
-                  <option value="0">自动判断（推荐）</option>
-                  <option value="1">总是转换为 6 色</option>
-                  <option value="2">认为输入已是 6 色</option>
-                </select>
-                <span id="cfgHintColorProcessMode" class="muted">当前: -</span>
-              </label>
-              <label>转换抖动
-                <select id="cfgDitherMode">
-                  <option value="">保持不变</option>
-                  <option value="1">有序抖动（推荐）</option>
-                  <option value="0">关闭</option>
-                </select>
-                <span id="cfgHintDitherMode" class="muted">当前: -</span>
-              </label>
-              <label>6 色判断容差（0-64）
-                <input id="cfgSixColorTolerance" type="number" min="0" max="64" placeholder="当前: -" />
-              </label>
-            </div>
-
-            <p class="help">离家模式建议：将“图片 URL 模板”指向公网 daily.bmp，设备即使连不上编排服务也能持续拉图。</p>
-            <button type="submit">发布设备配置</button>
+            <button type="submit" class="cfg-submit">发布设备配置</button>
           </form>
           <pre id="configResult"></pre>
         </div>
+
+        <div class="card" data-workspace="history">
+          <h3>图片发布历史</h3>
+          <p class="help">展示服务曾下发到相框的图片记录（按时间倒序）。</p>
+          <div id="publishHistoryBody" class="timeline"></div>
+          <p id="publishHistoryHint" class="muted"></p>
+        </div>
       </div>
 
-      <aside class="stack">
-        <div class="card">
+      <aside id="secondaryStack" class="stack">
+        <div class="card" data-workspace="overview,publish">
           <h3>当前下发预览</h3>
-          <p class="help">预览“设备此刻来拉图”时服务会返回的 480x800 图。</p>
-          <div class="row">
-            <label>目标设备（与“创建插播”共用）
-              <input value="查看左侧创建插播的目标设备" disabled />
-            </label>
-            <label>操作
-              <button id="previewBtn" class="secondary" type="button">刷新当前预览</button>
-            </label>
+          <p class="help">预览“顶部当前设备此刻来拉图”时服务会返回的 480x800 图。</p>
+          <div class="inline-actions">
+            <button id="previewBtn" class="secondary" type="button">刷新当前预览</button>
           </div>
           <p id="previewMeta" class="muted">-</p>
           <div class="preview-box">
@@ -696,14 +871,7 @@
           </div>
         </div>
 
-        <div class="card">
-          <h3>图片发布历史</h3>
-          <p class="help">展示服务曾下发到相框的图片记录（按时间倒序）。</p>
-          <div id="publishHistoryBody" class="timeline"></div>
-          <p id="publishHistoryHint" class="muted"></p>
-        </div>
-
-        <div class="card">
+        <div class="card" data-workspace="history">
           <h3>设备配置发布历史</h3>
           <p class="help">展示曾下发到设备的配置版本与内容。</p>
           <div id="configHistoryBody" class="timeline"></div>

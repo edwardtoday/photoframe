@@ -13,15 +13,25 @@ let powerResizeTimer = null;
 
 const TOKEN_STORAGE_KEY = 'photoframe.console.token';
 const TOKEN_COOKIE_KEY = 'photoframe_console_token';
-const POWER_DEVICE_STORAGE_KEY = 'photoframe.console.power.device_id';
+const DEVICE_STORAGE_KEY = 'photoframe.console.device_id';
+const WORKSPACE_STORAGE_KEY = 'photoframe.console.workspace';
 const POWER_DAYS_STORAGE_KEY = 'photoframe.console.power.days';
 const POWER_LOW_THRESHOLD_STORAGE_KEY = 'photoframe.console.power.low_threshold';
-const POWER_DEVICE_COOKIE_KEY = 'photoframe_console_power_device';
+const DEVICE_COOKIE_KEY = 'photoframe_console_device';
+const WORKSPACE_COOKIE_KEY = 'photoframe_console_workspace';
 const POWER_DAYS_COOKIE_KEY = 'photoframe_console_power_days';
 const POWER_LOW_THRESHOLD_COOKIE_KEY = 'photoframe_console_power_low_threshold';
 
-let storedPowerDeviceId = '';
+let storedDeviceId = '';
 let powerAutoLoaded = false;
+let currentWorkspace = 'overview';
+
+const WORKSPACE_HINTS = {
+  overview: '总览：设备在线状态、供电趋势、当前下发预览',
+  publish: '发布：创建插播、查看插播列表与图片发布记录',
+  config: '配置：设备配对审批、连接设置、参数与 Wi‑Fi 管理',
+  history: '历史：发布历史与配置下发历史',
+};
 
 function readCookie(name) {
   const encodedName = `${name}=`;
@@ -81,7 +91,89 @@ function persistConsoleToken() {
   }
 }
 
+function normalizeWorkspace(raw) {
+  if (raw === 'overview' || raw === 'publish' || raw === 'config' || raw === 'history') {
+    return raw;
+  }
+  return 'overview';
+}
+
+function applyWorkspaceFilter() {
+  const cards = document.querySelectorAll('.card[data-workspace]');
+  for (const card of cards) {
+    const raw = card.getAttribute('data-workspace') || '';
+    const spaces = raw.split(',').map((item) => item.trim()).filter((item) => item);
+    const show = spaces.includes(currentWorkspace);
+    card.classList.toggle('is-hidden', !show);
+  }
+
+  const tabs = document.querySelectorAll('#workspaceTabs .workspace-tab');
+  for (const tab of tabs) {
+    const ws = tab.getAttribute('data-workspace') || '';
+    tab.classList.toggle('active', ws === currentWorkspace);
+  }
+
+  const grid = document.getElementById('workspaceGrid');
+  const primary = document.getElementById('primaryStack');
+  const secondary = document.getElementById('secondaryStack');
+  const hasVisibleCard = (root) => {
+    if (!root) return false;
+    return Array.from(root.querySelectorAll('.card[data-workspace]'))
+      .some((card) => !card.classList.contains('is-hidden'));
+  };
+  const hasPrimary = hasVisibleCard(primary);
+  const hasSecondary = hasVisibleCard(secondary);
+  if (primary) primary.classList.toggle('is-empty', !hasPrimary);
+  if (secondary) secondary.classList.toggle('is-empty', !hasSecondary);
+  if (grid) {
+    grid.classList.toggle('single-column', !hasPrimary || !hasSecondary);
+  }
+
+  setText('workspaceHint', WORKSPACE_HINTS[currentWorkspace] || '-');
+
+  if (currentWorkspace === 'overview') {
+    requestPowerChartRedrawWhenVisible();
+  }
+}
+
+function loadStoredWorkspace() {
+  let saved = '';
+  try {
+    saved = window.localStorage.getItem(WORKSPACE_STORAGE_KEY) || '';
+  } catch (_) {
+    // localStorage 受限时退化到 cookie
+  }
+  if (!saved) {
+    saved = readCookie(WORKSPACE_COOKIE_KEY);
+  }
+  currentWorkspace = normalizeWorkspace(saved);
+  applyWorkspaceFilter();
+}
+
+function persistWorkspace() {
+  try {
+    window.localStorage.setItem(WORKSPACE_STORAGE_KEY, currentWorkspace);
+  } catch (_) {
+    // ignore
+  }
+  writeCookie(WORKSPACE_COOKIE_KEY, currentWorkspace, 180 * 24 * 3600);
+}
+
+function initWorkspaceTabs() {
+  const tabRoot = document.getElementById('workspaceTabs');
+  if (!tabRoot) return;
+  for (const btn of tabRoot.querySelectorAll('.workspace-tab')) {
+    btn.addEventListener('click', () => {
+      currentWorkspace = normalizeWorkspace(btn.getAttribute('data-workspace') || 'overview');
+      persistWorkspace();
+      applyWorkspaceFilter();
+    });
+  }
+  loadStoredWorkspace();
+}
+
 function loadStoredPowerPrefs() {
+  const deviceSelect = document.getElementById('deviceId');
   const daysInput = document.getElementById('powerDays');
   const thresholdInput = document.getElementById('powerLowThreshold');
 
@@ -89,7 +181,7 @@ function loadStoredPowerPrefs() {
   let savedDays = '';
   let savedThreshold = '';
   try {
-    savedDevice = window.localStorage.getItem(POWER_DEVICE_STORAGE_KEY) || '';
+    savedDevice = window.localStorage.getItem(DEVICE_STORAGE_KEY) || '';
     savedDays = window.localStorage.getItem(POWER_DAYS_STORAGE_KEY) || '';
     savedThreshold = window.localStorage.getItem(POWER_LOW_THRESHOLD_STORAGE_KEY) || '';
   } catch (_) {
@@ -97,7 +189,7 @@ function loadStoredPowerPrefs() {
   }
 
   if (!savedDevice) {
-    savedDevice = readCookie(POWER_DEVICE_COOKIE_KEY);
+    savedDevice = readCookie(DEVICE_COOKIE_KEY);
   }
   if (!savedDays) {
     savedDays = readCookie(POWER_DAYS_COOKIE_KEY);
@@ -106,7 +198,13 @@ function loadStoredPowerPrefs() {
     savedThreshold = readCookie(POWER_LOW_THRESHOLD_COOKIE_KEY);
   }
 
-  storedPowerDeviceId = (savedDevice || '').trim();
+  storedDeviceId = (savedDevice || '').trim();
+  if (storedDeviceId === '*') {
+    storedDeviceId = '';
+  }
+  if (deviceSelect && storedDeviceId) {
+    deviceSelect.value = storedDeviceId;
+  }
 
   if (daysInput) {
     const daysNum = Number(savedDays);
@@ -124,7 +222,7 @@ function loadStoredPowerPrefs() {
 }
 
 function persistPowerPrefs() {
-  const deviceId = (document.getElementById('powerDeviceId')?.value || '').trim();
+  const deviceId = (document.getElementById('deviceId')?.value || '').trim();
   const daysRaw = Number(document.getElementById('powerDays')?.value || '');
   const days = Number.isFinite(daysRaw) ? Math.max(1, Math.min(365, Math.floor(daysRaw))) : null;
   const thresholdRaw = Number(document.getElementById('powerLowThreshold')?.value || '');
@@ -133,10 +231,10 @@ function persistPowerPrefs() {
     : null;
 
   try {
-    if (deviceId) {
-      window.localStorage.setItem(POWER_DEVICE_STORAGE_KEY, deviceId);
+    if (deviceId && deviceId !== '*') {
+      window.localStorage.setItem(DEVICE_STORAGE_KEY, deviceId);
     } else {
-      window.localStorage.removeItem(POWER_DEVICE_STORAGE_KEY);
+      window.localStorage.removeItem(DEVICE_STORAGE_KEY);
     }
     if (days != null) {
       window.localStorage.setItem(POWER_DAYS_STORAGE_KEY, String(days));
@@ -152,10 +250,10 @@ function persistPowerPrefs() {
     // ignore
   }
 
-  if (deviceId) {
-    writeCookie(POWER_DEVICE_COOKIE_KEY, deviceId, 180 * 24 * 3600);
+  if (deviceId && deviceId !== '*') {
+    writeCookie(DEVICE_COOKIE_KEY, deviceId, 180 * 24 * 3600);
   } else {
-    writeCookie(POWER_DEVICE_COOKIE_KEY, '', 0);
+    writeCookie(DEVICE_COOKIE_KEY, '', 0);
   }
   if (days != null) {
     writeCookie(POWER_DAYS_COOKIE_KEY, String(days), 180 * 24 * 3600);
@@ -437,9 +535,136 @@ function prepareHiDPICanvas(canvas) {
   return { ctx, width: cssW, height: cssH };
 }
 
+function redrawPowerChartIfReady() {
+  if (!powerChartCache) return false;
+  const canvas = document.getElementById('powerCanvas');
+  if (!canvas) return false;
+  const rect = canvas.getBoundingClientRect();
+  if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height)) return false;
+  if (rect.width < 24 || rect.height < 24) return false;
+  drawPowerChart(canvas, powerChartCache.items, {
+    fromEpoch: powerChartCache.from_epoch,
+    toEpoch: powerChartCache.to_epoch,
+  });
+  return true;
+}
+
+function requestPowerChartRedrawWhenVisible(maxFrames = 12) {
+  let frameCount = 0;
+  const tick = () => {
+    if (redrawPowerChartIfReady()) return;
+    frameCount += 1;
+    if (frameCount < maxFrames) {
+      requestAnimationFrame(tick);
+    }
+  };
+  requestAnimationFrame(tick);
+}
+
+function powerVbusText(vbus) {
+  if (vbus === 1) return 'USB';
+  if (vbus === 0) return 'Battery';
+  return '-';
+}
+
+function powerChargingText(charging) {
+  if (charging === 1) return '充电中';
+  if (charging === 0) return '未充电';
+  return '-';
+}
+
+function ensurePowerTooltip(canvas) {
+  const host = canvas?.parentElement;
+  if (!host) return null;
+  let tip = host.querySelector('.power-tooltip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.className = 'power-tooltip';
+    host.appendChild(tip);
+  }
+  return tip;
+}
+
+function hidePowerTooltip(canvas) {
+  const tip = ensurePowerTooltip(canvas);
+  if (tip) {
+    tip.style.display = 'none';
+  }
+}
+
+function bindPowerChartHover(canvas) {
+  if (!canvas || canvas.__powerHoverBound) return;
+  canvas.__powerHoverBound = true;
+
+  const onMove = (event) => {
+    const state = canvas.__powerHoverState;
+    if (!state || !Array.isArray(state.points) || state.points.length === 0) {
+      hidePowerTooltip(canvas);
+      return;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    const mx = event.clientX - rect.left;
+    const my = event.clientY - rect.top;
+    const tip = ensurePowerTooltip(canvas);
+    if (!tip) return;
+
+    let best = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const point of state.points) {
+      const candidates = [];
+      if (point.percentY != null) {
+        candidates.push({ key: 'percent', x: point.x, y: point.percentY });
+      }
+      if (point.mvY != null) {
+        candidates.push({ key: 'mv', x: point.x, y: point.mvY });
+      }
+      for (const candidate of candidates) {
+        const dx = mx - candidate.x;
+        const dy = my - candidate.y;
+        const dist = dx * dx + dy * dy;
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = point;
+        }
+      }
+    }
+
+    // 命中半径约 16px；避免鼠标在图上任意位置都弹窗。
+    if (!best || bestDist > 16 * 16) {
+      tip.style.display = 'none';
+      return;
+    }
+
+    const lines = [
+      `<div>${fmtEpoch(best.sampleEpoch)}</div>`,
+      `<div>电量: ${best.batteryPercent != null ? `${best.batteryPercent}%` : '-'}</div>`,
+      `<div>电压: ${best.batteryMv != null ? `${best.batteryMv}mV` : '-'}</div>`,
+      `<div>供电: ${powerVbusText(best.vbus)}</div>`,
+      `<div>充电: ${powerChargingText(best.charging)}</div>`,
+    ];
+    tip.innerHTML = lines.join('');
+    tip.style.display = 'block';
+
+    const pad = 12;
+    const maxLeft = Math.max(0, rect.width - tip.offsetWidth - 2);
+    const maxTop = Math.max(0, rect.height - tip.offsetHeight - 2);
+    let left = mx + pad;
+    let top = my + pad;
+    if (left > maxLeft) left = Math.max(0, mx - tip.offsetWidth - pad);
+    if (top > maxTop) top = Math.max(0, my - tip.offsetHeight - pad);
+    tip.style.left = `${left}px`;
+    tip.style.top = `${top}px`;
+  };
+
+  canvas.addEventListener('mousemove', onMove);
+  canvas.addEventListener('mouseleave', () => hidePowerTooltip(canvas));
+}
+
 function drawPowerChart(canvas, items, opts) {
   const { ctx, width, height } = prepareHiDPICanvas(canvas);
   ctx.clearRect(0, 0, width, height);
+  bindPowerChartHover(canvas);
 
   const pad = { l: 54, r: 68, t: 26, b: 30 };
   const x0 = pad.l;
@@ -451,6 +676,8 @@ function drawPowerChart(canvas, items, opts) {
   ctx.fillRect(0, 0, width, height);
 
   if (!items || items.length === 0) {
+    canvas.__powerHoverState = { points: [] };
+    hidePowerTooltip(canvas);
     ctx.fillStyle = '#5f6980';
     ctx.font = '12px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI';
     ctx.textAlign = 'center';
@@ -484,6 +711,33 @@ function drawPowerChart(canvas, items, opts) {
   const xScale = (epoch) => x0 + ((epoch - xMin) / (xMax - xMin)) * (x1 - x0);
   const yPercent = (p) => y1 - (p / 100) * (y1 - y0);
   const yMv = (mv) => y1 - ((mv - mvMin) / (mvMax - mvMin)) * (y1 - y0);
+
+  const hoverPoints = items.map((it) => {
+    const sampleEpoch = Number(it?.sample_epoch);
+    const batteryPercentRaw = Number(it?.battery_percent);
+    const batteryMvRaw = Number(it?.battery_mv);
+    const vbus = normalizeBinaryFlag(it?.vbus_good);
+    const charging = normalizeBinaryFlag(it?.charging);
+
+    const batteryPercent = Number.isFinite(batteryPercentRaw) && batteryPercentRaw >= 0
+      ? Math.max(0, Math.min(100, Math.round(batteryPercentRaw)))
+      : null;
+    const batteryMv = Number.isFinite(batteryMvRaw) && batteryMvRaw > 0
+      ? Math.round(batteryMvRaw)
+      : null;
+
+    return {
+      sampleEpoch,
+      x: Number.isFinite(sampleEpoch) ? xScale(sampleEpoch) : null,
+      percentY: batteryPercent != null ? yPercent(batteryPercent) : null,
+      mvY: (batteryMv != null && mvMin != null && mvMax != null) ? yMv(batteryMv) : null,
+      batteryPercent,
+      batteryMv,
+      vbus,
+      charging,
+    };
+  }).filter((it) => it.x != null);
+  canvas.__powerHoverState = { points: hoverPoints };
 
   function drawSeriesDots(getValue, isValueValid, toY, fillStyle, strokeStyle) {
     // “只有一个点”时折线几乎不可见，用散点让“是否上报”一目了然。
@@ -657,12 +911,12 @@ function drawPowerChart(canvas, items, opts) {
 }
 
 async function loadPowerSamples() {
-  const deviceId = (document.getElementById('powerDeviceId')?.value || '').trim();
+  const deviceId = (document.getElementById('deviceId')?.value || '').trim();
   const daysRaw = Number(document.getElementById('powerDays')?.value || 3);
   const thresholdRaw = Number(document.getElementById('powerLowThreshold')?.value || 10);
 
-  if (!deviceId) {
-    setText('powerSummary', '请选择设备后再刷新曲线。');
+  if (!deviceId || deviceId === '*') {
+    setText('powerSummary', '请在“创建插播”的目标设备中选择具体设备后再刷新曲线。');
     setText('powerHint', '');
     const canvas = document.getElementById('powerCanvas');
     if (canvas) {
@@ -732,7 +986,10 @@ async function loadPowerSamples() {
       to_epoch: data.to_epoch,
       items,
     };
-    drawPowerChart(canvas, items, { fromEpoch: data.from_epoch, toEpoch: data.to_epoch });
+    if (!redrawPowerChartIfReady()) {
+      // 当前工作区可能隐藏了画布，切回可见区后自动按真实尺寸重绘。
+      requestPowerChartRedrawWhenVisible();
+    }
   }
 }
 
@@ -853,6 +1110,43 @@ function getReportedWifiProfiles(device) {
     .filter((item) => item);
 }
 
+function formatReportedWifiProfiles(device, emptyText = '-') {
+  const profiles = getReportedWifiProfiles(device);
+  if (profiles.length === 0) {
+    return emptyText;
+  }
+  return profiles
+    .map((item) => (item.password_set === false ? `${item.ssid}(open)` : item.ssid))
+    .join(', ');
+}
+
+function updateDeviceContextBanner() {
+  const selectedDevice = document.getElementById('deviceId')?.value || '*';
+  const titleEl = document.getElementById('deviceContextTitle');
+  const metaEl = document.getElementById('deviceContextMeta');
+  if (!titleEl || !metaEl) return;
+
+  if (selectedDevice === '*') {
+    titleEl.textContent = '当前设备：全部设备 (*)';
+    metaEl.textContent = `将影响全部设备（当前在线 ${deviceMap.size} 台）`;
+    return;
+  }
+
+  const device = deviceMap.get(selectedDevice);
+  if (!device) {
+    titleEl.textContent = `当前设备：${selectedDevice}`;
+    metaEl.textContent = '设备详情尚未加载';
+    return;
+  }
+
+  const ip = device.sta_ip || '-';
+  const battery = batteryStatusText(device);
+  const nextWakeup = fmtEpoch(device.next_wakeup_epoch);
+  const wifi = formatReportedWifiProfiles(device, '-');
+  titleEl.textContent = `当前设备：${selectedDevice}`;
+  metaEl.textContent = `IP ${ip} · 电量 ${battery} · 下次唤醒 ${nextWakeup} · Wi‑Fi ${wifi}`;
+}
+
 function fillWifiEditorFromDevice(device) {
   const profiles = getReportedWifiProfiles(device).slice(0, 3);
   for (let i = 1; i <= 3; i++) {
@@ -877,7 +1171,7 @@ function fillWifiEditorFromDevice(device) {
 }
 
 function updateConfigHints() {
-  const selectedDevice = document.getElementById('configDeviceId').value || '*';
+  const selectedDevice = document.getElementById('deviceId').value || '*';
   const device = deviceMap.get(selectedDevice);
   const reported = normalizeReported(device);
 
@@ -919,18 +1213,17 @@ function updateConfigHints() {
   setPlaceholder('cfgMaxFailure', `当前: ${reportedOr('max_failure_before_long_sleep', '-')}`);
   setPlaceholder('cfgSixColorTolerance', `当前: ${reportedOr('six_color_tolerance', '-')}`);
 
-  const wifiProfiles = Array.isArray(reported?.wifi_profiles) ? reported.wifi_profiles : [];
-  const wifiText = wifiProfiles
-    .map((it) => {
-      if (typeof it === 'string') return it;
-      const ssid = typeof it?.ssid === 'string' ? it.ssid : '';
-      if (!ssid) return '';
-      const pset = typeof it?.password_set === 'boolean' ? it.password_set : null;
-      if (pset === false) return `${ssid}(open)`;
-      return ssid;
-    })
-    .filter((t) => t)
-    .join(', ') || '-';
+  let wifiText = '-';
+  if (selectedDevice === '*') {
+    if (deviceMap.size > 1) {
+      wifiText = '请先选择具体设备（当前为全部设备）';
+    } else if (deviceMap.size === 1) {
+      const onlyDevice = Array.from(deviceMap.values())[0];
+      wifiText = formatReportedWifiProfiles(onlyDevice, '-');
+    }
+  } else {
+    wifiText = formatReportedWifiProfiles(device, '-');
+  }
   setText('cfgHintWifiProfiles', `设备已记住: ${wifiText}`);
 }
 
@@ -1056,30 +1349,20 @@ function collectDeviceConfigPatch() {
 async function loadHealth() {
   const data = await fetchJson('/healthz');
   const version = data.app_version || '-';
-  document.getElementById('appVersion').textContent = version;
-  document.getElementById('appVersionStat').textContent = version;
+  setText('appVersion', version);
 }
 
 async function loadDevices() {
   const data = await fetchJson('/api/v1/devices');
   const body = document.getElementById('devicesBody');
-  const overrideDeviceSelect = document.getElementById('deviceId');
-  const configDeviceSelect = document.getElementById('configDeviceId');
-  const powerDeviceSelect = document.getElementById('powerDeviceId');
-  const selectedOverrideBefore = overrideDeviceSelect.value;
-  const selectedConfigBefore = configDeviceSelect.value;
-  const selectedPowerBefore = powerDeviceSelect ? powerDeviceSelect.value : '';
+  const deviceSelect = document.getElementById('deviceId');
+  const selectedBefore = deviceSelect.value;
 
   body.innerHTML = '';
-  overrideDeviceSelect.innerHTML = '<option value="*">全部设备 (*)</option>';
-  configDeviceSelect.innerHTML = '<option value="*">全部设备 (*)</option>';
-  if (powerDeviceSelect) {
-    powerDeviceSelect.innerHTML = '<option value="">请选择设备</option>';
-  }
+  deviceSelect.innerHTML = '<option value="*">全部设备 (*)</option>';
 
   const devices = data.devices || [];
   deviceMap = new Map();
-  document.getElementById('deviceCount').textContent = String(devices.length);
   document.getElementById('serverNow').textContent = fmtEpoch(data.now_epoch);
 
   for (const d of devices) {
@@ -1088,6 +1371,7 @@ async function loadDevices() {
     const tr = document.createElement('tr');
     const cfgVersion = `${d.config_target_version || 0}/${d.config_seen_version || 0}/${d.config_applied_version || 0}`;
     const cfgQuery = fmtEpoch(d.config_last_query_epoch);
+    const wifiSummary = formatReportedWifiProfiles(d, '-');
 
     tr.innerHTML = `
       <td><span class="tag">${escapeHtml(d.device_id)}</span></td>
@@ -1100,6 +1384,7 @@ async function loadDevices() {
       <td>${renderFetchStatus(d)}</td>
       <td>${escapeHtml(batteryStatusText(d))}</td>
       <td>${escapeHtml(powerSourceText(d))}</td>
+      <td title="${escapeHtml(wifiSummary)}">${escapeHtml(shorten(wifiSummary, 48))}</td>
       <td>${escapeHtml(d.sta_ip || '-')}</td>
       <td>${escapeHtml(cfgVersion)}</td>
       <td>${cfgQuery}</td>
@@ -1108,44 +1393,31 @@ async function loadDevices() {
     `;
     body.appendChild(tr);
 
-    appendDeviceOption(overrideDeviceSelect, d.device_id);
-    appendDeviceOption(configDeviceSelect, d.device_id);
-    if (powerDeviceSelect) {
-      appendDeviceOption(powerDeviceSelect, d.device_id);
-    }
+    appendDeviceOption(deviceSelect, d.device_id);
   }
 
-  if ([...overrideDeviceSelect.options].some((o) => o.value === selectedOverrideBefore)) {
-    overrideDeviceSelect.value = selectedOverrideBefore;
+  if (selectedBefore &&
+      selectedBefore !== '*' &&
+      [...deviceSelect.options].some((o) => o.value === selectedBefore)) {
+    deviceSelect.value = selectedBefore;
+  } else if (storedDeviceId && [...deviceSelect.options].some((o) => o.value === storedDeviceId)) {
+    deviceSelect.value = storedDeviceId;
+  } else if (deviceSelect.options.length > 1) {
+    // 默认选第一台设备，减少“全部设备”误操作与无效空状态。
+    deviceSelect.value = deviceSelect.options[1].value;
+  } else if ([...deviceSelect.options].some((o) => o.value === selectedBefore)) {
+    // 没有具体设备时，再保留“全部设备”。
+    deviceSelect.value = selectedBefore;
   }
-  if ([...configDeviceSelect.options].some((o) => o.value === selectedConfigBefore)) {
-    configDeviceSelect.value = selectedConfigBefore;
-  }
-  if (powerDeviceSelect) {
-    // 注意：页面首次加载时，select 默认值是占位符 ""。如果这里优先恢复 ""，会吞掉 localStorage 里的记忆设备。
-    if (selectedPowerBefore &&
-        [...powerDeviceSelect.options].some((o) => o.value === selectedPowerBefore)) {
-      powerDeviceSelect.value = selectedPowerBefore;
-    } else if (storedPowerDeviceId &&
-               [...powerDeviceSelect.options].some((o) => o.value === storedPowerDeviceId)) {
-      powerDeviceSelect.value = storedPowerDeviceId;
-      // 初次载入时恢复图表状态，减少重复点击（后续 30s 自动刷新不重复拉曲线）。
-      if (!powerAutoLoaded) {
-        powerAutoLoaded = true;
-        loadPowerSamplesSafe();
-      }
-    } else if (powerDeviceSelect.options.length === 2) {
-      // 只有一台设备时，默认选中，减少点击。
-      powerDeviceSelect.value = powerDeviceSelect.options[1].value;
-      persistPowerPrefs();
-      if (!powerAutoLoaded) {
-        powerAutoLoaded = true;
-        loadPowerSamplesSafe();
-      }
-    }
-  }
+  persistPowerPrefs();
 
+  fillWifiEditorFromDevice(deviceMap.get(deviceSelect.value || '*'));
   updateConfigHints();
+  updateDeviceContextBanner();
+  if (!powerAutoLoaded) {
+    powerAutoLoaded = true;
+    loadPowerSamplesSafe();
+  }
 }
 
 async function loadOverrides() {
@@ -1154,7 +1426,6 @@ async function loadOverrides() {
   body.innerHTML = '';
 
   const overrides = data.overrides || [];
-  document.getElementById('overrideCount').textContent = String(overrides.length);
 
   for (const item of overrides) {
     const tr = document.createElement('tr');
@@ -1343,7 +1614,7 @@ function renderConfigHistoryItem(item) {
 }
 
 async function loadDeviceConfigs() {
-  const selectedDevice = document.getElementById('configDeviceId').value || '*';
+  const selectedDevice = document.getElementById('deviceId').value || '*';
   const query = selectedDevice !== '*'
     ? `?device_id=${encodeURIComponent(selectedDevice)}&limit=80`
     : '?limit=80';
@@ -1408,7 +1679,7 @@ async function submitDeviceConfig(ev) {
   }
 
   const payload = {
-    device_id: document.getElementById('configDeviceId').value || '*',
+    device_id: document.getElementById('deviceId').value || '*',
     note: document.getElementById('configNote').value || '',
     config,
   };
@@ -1482,11 +1753,6 @@ document.getElementById('powerRefreshBtn').addEventListener('click', async () =>
   await loadPowerSamplesSafe();
 });
 
-document.getElementById('powerDeviceId').addEventListener('change', async () => {
-  persistPowerPrefs();
-  await loadPowerSamplesSafe();
-});
-
 document.getElementById('powerDays').addEventListener('change', async () => {
   persistPowerPrefs();
   await loadPowerSamplesSafe();
@@ -1511,32 +1777,24 @@ window.addEventListener('resize', () => {
     clearTimeout(powerResizeTimer);
   }
   powerResizeTimer = setTimeout(() => {
-    const canvas = document.getElementById('powerCanvas');
-    if (!canvas || !powerChartCache) return;
-    drawPowerChart(canvas, powerChartCache.items, {
-      fromEpoch: powerChartCache.from_epoch,
-      toEpoch: powerChartCache.to_epoch,
-    });
+    redrawPowerChartIfReady();
   }, 120);
 });
 
 document.getElementById('deviceId').addEventListener('change', async () => {
   try {
+    persistPowerPrefs();
+    updateDeviceContextBanner();
+    clearConfigPatchInputs();
+    fillWifiEditorFromDevice(deviceMap.get(document.getElementById('deviceId').value || '*'));
+    updateConfigHints();
     await loadPublishHistory();
     await loadCurrentPreview();
+    await loadDeviceConfigs();
+    await loadPowerSamplesSafe();
   } catch (err) {
     document.getElementById('publishHistoryHint').textContent = `加载历史失败: ${err.message}`;
     document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
-  }
-});
-
-document.getElementById('configDeviceId').addEventListener('change', async () => {
-  try {
-    clearConfigPatchInputs();
-    fillWifiEditorFromDevice(deviceMap.get(document.getElementById('configDeviceId').value || '*'));
-    updateConfigHints();
-    await loadDeviceConfigs();
-  } catch (err) {
     document.getElementById('configHistoryHint').textContent = `加载配置历史失败: ${err.message}`;
   }
 });
@@ -1589,6 +1847,7 @@ document.getElementById('token').addEventListener('blur', () => {
 loadStoredConsoleToken();
 persistConsoleToken();
 loadStoredPowerPrefs();
+initWorkspaceTabs();
 
 setInterval(() => {
   refreshAll().catch(() => {});

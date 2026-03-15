@@ -600,7 +600,18 @@ pub fn normalize_power_sample(
     let suspect_percent_stuck_full =
         out.battery_percent >= 100 && out.battery_mv > 0 && out.battery_mv <= 4185;
     let missing_percent = out.battery_percent < 0;
-    if on_battery && estimated_percent >= 0 && (suspect_percent_stuck_full || missing_percent) {
+    let suspect_percent_too_high = out.battery_percent >= 0
+        && estimated_percent >= 0
+        && (out.battery_percent - estimated_percent) >= 8;
+    let suspect_high_zone_drift =
+        out.battery_percent >= 98 && out.battery_mv > 0 && out.battery_mv <= 4160;
+    if on_battery
+        && estimated_percent >= 0
+        && (suspect_percent_stuck_full
+            || missing_percent
+            || suspect_percent_too_high
+            || suspect_high_zone_drift)
+    {
         out.battery_percent = estimated_percent;
     }
 

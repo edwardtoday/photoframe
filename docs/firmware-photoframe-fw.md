@@ -49,14 +49,16 @@
    - 串口日志会输出处理耗时（`detect=xxms total=xxms`），便于评估设备端转换成本。
    - 成功后刷新墨水屏，进入深度睡眠。
 
-3. **失败重试策略（指数退避）**
-   - 失败后按 `retry_base_minutes * 2^(failure_count-1)` 退避。
-   - 退避上限 `retry_max_minutes`。
-   - 连续失败计数持久化到 NVS。
-   - 例外：若是“拉图成功但渲染前 PMIC 初始化失败”，按**软失败**处理：不增加 `failure_count`，按常规 `interval_minutes` 休眠，避免偶发 PMIC/I2C 抖动导致长时间不上报。
+3. **自动唤醒与失败策略（北京时间对齐）**
+   - 正常自动同步固定对齐 **北京时间 05:00 / 16:00**。
+   - 若 orchestrator 明确要求更早拉取（例如插播即将生效），会尊重更短的 `poll_after_seconds`。
+   - 连续失败计数仍按原规则持久化到 NVS，但当设备时钟可信时，失败后也直接睡到**下一个北京时间时段**，避免几分钟级短退避持续耗电。
+   - 若设备时钟暂时不可信（例如刚上电仍是 1970），才回退到原有 `interval_minutes` / `retry_*` 兜底。
+   - 例外：若是“拉图成功但渲染前 PMIC 初始化失败”，按**软失败**处理：不增加 `failure_count`，并优先对齐下一个北京时间时段，避免偶发 PMIC/I2C 抖动导致高频重试。
 
 4. **按键语义（KEY/BOOT 区分）**
    - `KEY`：手动触发一次同步与上报（并按正常逻辑拉图；可命中 `304` 省流省电）。
+   - `KEY` 手动同步完成后，会额外保留 **60 秒 USB Serial/JTAG 接入窗口**；若这段时间内没有串口调试接入，则直接回到深睡。
    - `BOOT`：唤醒后强制拉图刷新（即使图片 hash 未变化也会刷新）。
    - 长按 `KEY`（3 秒）：打开 120 秒 STA 本地配置窗口（不清 Wi-Fi）。
    - 长按 `BOOT`（3 秒）：清 Wi-Fi 并进入 AP 配网模式（逃生口）。
@@ -111,7 +113,7 @@
 - `orchestrator_token`（设备首次自动生成并持久化，作为 `X-PhotoFrame-Token` 用于设备接口身份校验）
 - `photo_token`（可选，拉图时自动携带请求头 `X-Photo-Token`）
 - `image_url_template`（编排关闭时使用，支持 `%DATE%`、`%DEVICE_ID%`；不会自动追加 `date=`，会在缺少时自动追加 `device_id=`）
-- `interval_minutes`（默认 60）
+- `interval_minutes`（默认 60；仅在设备时钟不可信时作为轮询兜底）
 - `retry_base_minutes` / `retry_max_minutes`
 - `max_failure_before_long_sleep`
 - `display_rotation`（当前支持 `0` 或 `2`，默认 `0`）
@@ -226,7 +228,8 @@ MONITOR_AUTO_RECONNECT_ON_CLEAN_EXIT=1 scripts/monitor-host.sh /dev/cu.usbmodemX
 ## USB / 供电说明
 
 - 连接 USB 后，设备会被主机枚举为串口（可用于烧录与日志）。
-- 为便于持续观察串口日志：当固件检测到 **USB 供电存在（`vbus_good=1`）或 USB Serial/JTAG 已连接** 时，会在“本应进入深睡”的位置 **跳过深睡**，保持唤醒并每 10 秒打印一次 `usb hold:` 电源状态；当 USB 断开后再恢复深睡。
+- 常规自动轮次下：当固件检测到 **USB 供电存在（`vbus_good=1`）或 USB Serial/JTAG 已连接** 时，会在“本应进入深睡”的位置 **跳过深睡**，保持唤醒并每 10 秒打印一次 `usb hold:` 电源状态；当 USB 断开后再恢复深睡。
+- `KEY` 手动同步轮次下：只额外等待 **60 秒串口调试接入**。若仅有 USB 供电、但没有串口调试接入，不再无限保持唤醒。
 - 连接 USB 时，`vbus_good=1` 表示检测到外部供电；通常会进入充电路径（`charging=1` 时为充电中）。
 - 目前已验证并上报的指标：
   - `battery_mv`：电池电压（mV）

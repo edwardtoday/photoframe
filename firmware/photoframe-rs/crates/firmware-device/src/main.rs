@@ -24,7 +24,8 @@ use photoframe_domain::WakeSource;
 
 #[cfg(target_os = "espidf")]
 use photoframe_domain::{
-    FailureKind, LongPressAction, apply_cycle_outcome, seconds_to_microseconds, should_sync_time,
+    CycleAction, FailureKind, LongPressAction, apply_cycle_outcome, seconds_to_microseconds,
+    should_sync_time, sleep_seconds_until_next_beijing_sync,
 };
 
 #[cfg(target_os = "espidf")]
@@ -43,6 +44,15 @@ const BUILTIN_WIFI_PROFILES: [(&str, &str); 3] = [
 const LEGACY_IMAGE_URL_TEMPLATE: &str = "http://192.168.58.113:8000/image/480x800?date=%DATE%";
 #[cfg(target_os = "espidf")]
 const LEGACY_ORCHESTRATOR_BASE_URL: &str = "http://192.168.58.113:18081";
+#[cfg(target_os = "espidf")]
+const MANUAL_SYNC_SERIAL_GRACE_SECONDS: u64 = 60;
+
+#[cfg(target_os = "espidf")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreSleepHoldMode {
+    UsbOrSerial,
+    ManualSyncSerialGrace { wait_seconds: u64 },
+}
 
 #[cfg(target_os = "espidf")]
 fn configure_button_gpio() {
@@ -367,7 +377,9 @@ fn main() {
     config.ensure_primary_wifi_in_profiles();
     println!("photoframe-rs: device_id={}", config.device_id);
 
-    if config != previous_config && let Err(err) = storage.save_config(&config) {
+    if config != previous_config
+        && let Err(err) = storage.save_config(&config)
+    {
         println!("photoframe-rs: save bootstrap config failed: {err}");
     }
 
@@ -412,7 +424,10 @@ fn main() {
                 break;
             }
             Err(err) => {
-                println!("photoframe-rs: wifi connect failed idx={} err={}", profile_index, err);
+                println!(
+                    "photoframe-rs: wifi connect failed idx={} err={}",
+                    profile_index, err
+                );
                 EspWifiManager::stop();
             }
         }
@@ -432,12 +447,15 @@ fn main() {
             "photoframe-rs: wifi connect failed for all profiles, sleep={}s",
             decision.sleep_seconds
         );
-        enter_deep_sleep(decision.sleep_seconds, false);
+        let sleep_seconds = sleep_seconds_until_next_beijing_sync(system_now_epoch())
+            .unwrap_or(decision.sleep_seconds);
+        enter_deep_sleep(sleep_seconds, false, PreSleepHoldMode::UsbOrSerial);
     }
 
     apply_timezone(&config.timezone);
     let time_before_sync = system_now_epoch();
-    if should_sync_time(time_before_sync, config.last_time_sync_epoch) && sync_time(&config.timezone)
+    if should_sync_time(time_before_sync, config.last_time_sync_epoch)
+        && sync_time(&config.timezone)
     {
         config.last_time_sync_epoch = system_now_epoch();
         if let Err(err) = storage.save_config(&config) {
@@ -452,8 +470,8 @@ fn main() {
         }
     }
 
-    let power_sample = runtime_bridge::EspRuntimeBridge::read_power_sample()
-        .unwrap_or(portal_power_sample);
+    let power_sample =
+        runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or(portal_power_sample);
     let sta_ip = EspWifiManager::sta_ip_string();
 
     let clock = EspIdfClock;
@@ -488,14 +506,24 @@ fn main() {
                     seconds,
                     timer_only,
                 } => {
-                    enter_deep_sleep(seconds, timer_only);
+                    let hold_mode = if matches!(report.action, CycleAction::ManualSync) {
+                        PreSleepHoldMode::ManualSyncSerialGrace {
+                            wait_seconds: MANUAL_SYNC_SERIAL_GRACE_SECONDS,
+                        }
+                    } else {
+                        PreSleepHoldMode::UsbOrSerial
+                    };
+                    enter_deep_sleep(seconds, timer_only, hold_mode);
                 }
             }
         }
         Err(err) => {
             println!("photoframe-rs: cycle failed: {err}");
             EspWifiManager::stop();
-            enter_deep_sleep(config.retry_base_minutes.max(1) as u64 * 60, false);
+            let fallback_sleep_seconds = config.retry_base_minutes.max(1) as u64 * 60;
+            let sleep_seconds = sleep_seconds_until_next_beijing_sync(system_now_epoch())
+                .unwrap_or(fallback_sleep_seconds);
+            enter_deep_sleep(sleep_seconds, false, PreSleepHoldMode::UsbOrSerial);
         }
     }
 }
@@ -569,32 +597,55 @@ fn is_usb_serial_connected() -> bool {
 }
 
 #[cfg(target_os = "espidf")]
-fn hold_awake_while_usb_present(planned_sleep_seconds: u64, timer_only: bool) {
+fn hold_awake_before_sleep(
+    planned_sleep_seconds: u64,
+    timer_only: bool,
+    hold_mode: PreSleepHoldMode,
+) {
     const HOLD_LOOP_SLEEP_MS: u64 = 100;
     const POWER_SAMPLE_PERIOD: Duration = Duration::from_secs(3);
     const HOLD_LOG_PERIOD: Duration = Duration::from_secs(10);
     const MAX_POWER_SAMPLE_FAILURES: usize = 3;
 
-    let mut power_sample = runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
+    let mut power_sample =
+        runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
     let mut power_sample_failures = 0usize;
     let mut usb_serial_connected = is_usb_serial_connected();
     let mut usb_power_present = power_sample.vbus_good == 1;
-    if !usb_serial_connected && !usb_power_present {
-        return;
-    }
+    let mut serial_seen = usb_serial_connected;
+    let grace_deadline = match hold_mode {
+        PreSleepHoldMode::UsbOrSerial => None,
+        PreSleepHoldMode::ManualSyncSerialGrace { wait_seconds } => {
+            Some(Instant::now() + Duration::from_secs(wait_seconds.max(1)))
+        }
+    };
 
-    println!(
-        "photoframe-rs: usb present (serial={} vbus={}), skip {} deep sleep (planned {}s)",
-        i32::from(usb_serial_connected),
-        i32::from(usb_power_present),
-        if timer_only { "timer-only" } else { "normal" },
-        planned_sleep_seconds,
-    );
+    match hold_mode {
+        PreSleepHoldMode::UsbOrSerial => {
+            if !usb_serial_connected && !usb_power_present {
+                return;
+            }
+            println!(
+                "photoframe-rs: usb present (serial={} vbus={}), skip {} deep sleep (planned {}s)",
+                i32::from(usb_serial_connected),
+                i32::from(usb_power_present),
+                if timer_only { "timer-only" } else { "normal" },
+                planned_sleep_seconds,
+            );
+        }
+        PreSleepHoldMode::ManualSyncSerialGrace { wait_seconds } => {
+            println!(
+                "photoframe-rs: manual sync complete, keep awake {}s for usb serial attach",
+                wait_seconds.max(1),
+            );
+        }
+    }
 
     let mut last_power_sample_at = Instant::now() - POWER_SAMPLE_PERIOD;
     let mut last_log = Instant::now() - HOLD_LOG_PERIOD;
     loop {
         usb_serial_connected = is_usb_serial_connected();
+        serial_seen |= usb_serial_connected;
         if last_power_sample_at.elapsed() >= POWER_SAMPLE_PERIOD {
             match runtime_bridge::EspRuntimeBridge::read_power_sample() {
                 Some(sample) => {
@@ -608,10 +659,25 @@ fn hold_awake_while_usb_present(planned_sleep_seconds: u64, timer_only: bool) {
             last_power_sample_at = Instant::now();
         }
         usb_power_present = power_sample.vbus_good == 1;
-        if !usb_serial_connected
-            && (!usb_power_present || power_sample_failures >= MAX_POWER_SAMPLE_FAILURES)
-        {
-            break;
+        match hold_mode {
+            PreSleepHoldMode::UsbOrSerial => {
+                if !usb_serial_connected
+                    && (!usb_power_present || power_sample_failures >= MAX_POWER_SAMPLE_FAILURES)
+                {
+                    break;
+                }
+            }
+            PreSleepHoldMode::ManualSyncSerialGrace { .. } => {
+                if usb_serial_connected {
+                    // 串口调试已接入时持续保持唤醒，直到用户断开。
+                } else if serial_seen {
+                    break;
+                } else if let Some(deadline) = grace_deadline
+                    && Instant::now() >= deadline
+                {
+                    break;
+                }
+            }
         }
 
         if last_log.elapsed() >= HOLD_LOG_PERIOD {
@@ -628,7 +694,14 @@ fn hold_awake_while_usb_present(planned_sleep_seconds: u64, timer_only: bool) {
         thread::sleep(Duration::from_millis(HOLD_LOOP_SLEEP_MS));
     }
 
-    println!("photoframe-rs: usb no longer present, resume deep sleep");
+    match hold_mode {
+        PreSleepHoldMode::UsbOrSerial => {
+            println!("photoframe-rs: usb no longer present, resume deep sleep");
+        }
+        PreSleepHoldMode::ManualSyncSerialGrace { .. } => {
+            println!("photoframe-rs: manual sync grace finished, resume deep sleep");
+        }
+    }
 }
 
 #[cfg(target_os = "espidf")]
@@ -643,16 +716,15 @@ fn enter_ap_portal_or_idle() -> ! {
 }
 
 #[cfg(target_os = "espidf")]
-fn enter_deep_sleep(seconds: u64, timer_only: bool) -> ! {
-    hold_awake_while_usb_present(seconds, timer_only);
+fn enter_deep_sleep(seconds: u64, timer_only: bool, hold_mode: PreSleepHoldMode) -> ! {
+    hold_awake_before_sleep(seconds, timer_only, hold_mode);
     runtime_bridge::EspRuntimeBridge::prepare_for_sleep();
 
     unsafe {
         let _ = esp_idf_sys::esp_sleep_disable_wakeup_source(
             esp_idf_sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_ALL,
         );
-        let _ =
-            esp_idf_sys::esp_sleep_enable_timer_wakeup(seconds_to_microseconds(seconds));
+        let _ = esp_idf_sys::esp_sleep_enable_timer_wakeup(seconds_to_microseconds(seconds));
 
         if !timer_only {
             let wakeup_pins = (1u64 << KEY_BUTTON) | (1u64 << BOOT_BUTTON);

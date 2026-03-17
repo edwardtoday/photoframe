@@ -1,6 +1,7 @@
 use photoframe_contracts::{DeviceCheckinRequest, DeviceNextResponse};
 use photoframe_domain::{
-    CycleAction, FailureKind, LongPressAction, WakeSource, apply_cycle_outcome, decide_cycle_action,
+    CycleAction, FailureKind, LongPressAction, WakeSource, apply_cycle_outcome,
+    decide_cycle_action, sleep_seconds_until_next_beijing_sync,
 };
 
 use crate::{
@@ -30,6 +31,7 @@ pub trait OrchestratorApi {
         &mut self,
         config: &DeviceRuntimeConfig,
         now_epoch: i64,
+        preferred_poll_seconds: u64,
     ) -> Result<Option<DeviceNextResponse>, String>;
 
     fn report_checkin(
@@ -131,6 +133,7 @@ where
         let action = decide_cycle_action(boot.wake_source);
         let portal_window_opened =
             matches!(boot.long_press_action, LongPressAction::OpenStaPortalWindow);
+        let now_epoch = self.clock.now_epoch();
 
         if matches!(
             boot.long_press_action,
@@ -150,7 +153,8 @@ where
 
         if matches!(action, CycleAction::SleepTimerOnly) {
             let normal_sleep_seconds = u64::from(config.interval_minutes.max(1)) * 60;
-            let sleep_seconds = normal_sleep_seconds.clamp(60, 600);
+            let sleep_seconds = sleep_seconds_until_next_beijing_sync(now_epoch)
+                .unwrap_or(normal_sleep_seconds.clamp(60, 600));
             return Ok(CycleReport {
                 exit: CycleExit::Sleep {
                     seconds: sleep_seconds,
@@ -175,7 +179,6 @@ where
             });
         }
 
-        let now_epoch = self.clock.now_epoch();
         if config.orchestrator_enabled
             && !config.orchestrator_base_url.is_empty()
             && let Some(next_config) = self.orchestrator.sync_config(&config, now_epoch)?
@@ -198,15 +201,19 @@ where
         );
         let mut url = fallback_url.clone();
         let mut image_source = String::from("daily");
-        let mut success_sleep_seconds = u64::from(config.interval_minutes.max(1)) * 60;
+        let mut success_sleep_seconds = sleep_seconds_until_next_beijing_sync(now_epoch)
+            .unwrap_or_else(|| u64::from(config.interval_minutes.max(1)) * 60);
         let mut used_orchestrator_directive = false;
 
         if config.orchestrator_enabled && !config.orchestrator_base_url.is_empty() {
-            if let Some(directive) = self.orchestrator.fetch_directive(&config, now_epoch)? {
+            if let Some(directive) =
+                self.orchestrator
+                    .fetch_directive(&config, now_epoch, success_sleep_seconds)?
+            {
                 url = directive.image_url;
                 image_source = directive.source.unwrap_or_else(|| "daily".into());
                 if let Some(seconds) = directive.poll_after_seconds {
-                    success_sleep_seconds = u64::from(seconds.max(60));
+                    success_sleep_seconds = success_sleep_seconds.min(u64::from(seconds.max(60)));
                 }
                 used_orchestrator_directive = true;
             }
@@ -241,8 +248,8 @@ where
         );
         let mut fetch = ImageFetchOutcome::failed(0, "fetch not started");
         let mut fetch_url_used = None;
-        let orchestrator_origin = split_url_origin_and_rest(&config.orchestrator_base_url)
-            .map(|(origin, _)| origin);
+        let orchestrator_origin =
+            split_url_origin_and_rest(&config.orchestrator_base_url).map(|(origin, _)| origin);
 
         for candidate in fetch_urls {
             let orchestrator_token =
@@ -285,7 +292,9 @@ where
         }
 
         if fetch.ok {
-            let _ = self.orchestrator.report_debug_stage(&config, "after_fetch_ok");
+            let _ = self
+                .orchestrator
+                .report_debug_stage(&config, "after_fetch_ok");
         }
 
         let should_refresh = force_refresh || fetch.image_changed;
@@ -311,7 +320,9 @@ where
         let now_epoch = self.clock.now_epoch();
 
         if cycle_ok {
-            let _ = self.orchestrator.report_debug_stage(&config, "after_render_ok");
+            let _ = self
+                .orchestrator
+                .report_debug_stage(&config, "after_render_ok");
             config.failure_count = 0;
             if fetch.image_changed {
                 config.last_image_sha256 = fetch.sha256.clone();
@@ -329,7 +340,9 @@ where
             }
             config.last_success_epoch = now_epoch;
             self.storage.save_config(&config)?;
-            let _ = self.orchestrator.report_debug_stage(&config, "after_save_ok");
+            let _ = self
+                .orchestrator
+                .report_debug_stage(&config, "after_save_ok");
 
             let next_wakeup_epoch = now_epoch + success_sleep_seconds as i64;
             let _ = self
@@ -368,6 +381,8 @@ where
         let failure_kind = render_failure.unwrap_or(FailureKind::GeneralFailure);
         let decision =
             apply_cycle_outcome(&config.retry_policy(), config.failure_count, failure_kind);
+        let failure_sleep_seconds =
+            sleep_seconds_until_next_beijing_sync(now_epoch).unwrap_or(decision.sleep_seconds);
         let _ = self.orchestrator.report_debug_stage(
             &config,
             if fetch.ok {
@@ -378,7 +393,9 @@ where
         );
         config.failure_count = decision.next_failure_count;
         self.storage.save_config(&config)?;
-        let _ = self.orchestrator.report_debug_stage(&config, "after_save_fail");
+        let _ = self
+            .orchestrator
+            .report_debug_stage(&config, "after_save_fail");
 
         let _ = self
             .orchestrator
@@ -397,8 +414,8 @@ where
                 },
                 boot.sta_ip,
                 boot.power_sample,
-                now_epoch + decision.sleep_seconds as i64,
-                decision.sleep_seconds,
+                now_epoch + failure_sleep_seconds as i64,
+                failure_sleep_seconds,
                 fetch_url_used.as_deref().unwrap_or_default(),
                 &fallback_url,
             )
@@ -406,7 +423,7 @@ where
 
         Ok(CycleReport {
             exit: CycleExit::Sleep {
-                seconds: decision.sleep_seconds,
+                seconds: failure_sleep_seconds,
                 timer_only: false,
             },
             action,
@@ -451,7 +468,7 @@ where
             checkin_epoch: self.clock.now_epoch(),
             next_wakeup_epoch,
             sleep_seconds,
-            poll_interval_seconds: config.interval_minutes.max(1) * 60,
+            poll_interval_seconds: sleep_seconds.min(u64::from(u32::MAX)) as u32,
             failure_count: config.failure_count,
             last_http_status,
             fetch_ok,
@@ -490,10 +507,7 @@ fn orchestrator_token_for_url(
     String::new()
 }
 
-fn append_unique_urls(
-    out: &mut Vec<String>,
-    candidates: impl Iterator<Item = String>,
-) {
+fn append_unique_urls(out: &mut Vec<String>, candidates: impl Iterator<Item = String>) {
     for candidate in candidates {
         if !out.iter().any(|item| item == &candidate) {
             out.push(candidate);

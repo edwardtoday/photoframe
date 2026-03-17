@@ -5,8 +5,8 @@ use std::{
     ffi::{CString, c_char, c_void},
     net::UdpSocket,
     ptr,
-    sync::{Arc, Mutex},
     sync::atomic::{AtomicBool, Ordering},
+    sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
@@ -30,7 +30,6 @@ const AP_IP: [u8; 4] = [192, 168, 73, 1];
 const PORTAL_LOOP_STEP_MS: u64 = 200;
 #[cfg(target_os = "espidf")]
 const HTTPD_TASK_NO_AFFINITY: i32 = 0x7fff_ffff;
-
 
 #[cfg(target_os = "espidf")]
 static ROOT_URI: &[u8] = b"/\0";
@@ -263,7 +262,8 @@ fn esp_to_result(err: i32, op: &str) -> Result<(), String> {
 }
 
 #[cfg(target_os = "espidf")]
-fn ensure_wifi_stack_for_portal() -> Result<(*mut sys::esp_netif_t, *mut sys::esp_netif_t), String> {
+fn ensure_wifi_stack_for_portal() -> Result<(*mut sys::esp_netif_t, *mut sys::esp_netif_t), String>
+{
     esp_to_result(unsafe { sys::esp_netif_init() }, "esp_netif_init")?;
     esp_to_result(
         unsafe { sys::esp_event_loop_create_default() },
@@ -317,7 +317,10 @@ fn copy_bytes_to_array<const N: usize>(dst: &mut [u8; N], value: &str) {
 }
 
 #[cfg(target_os = "espidf")]
-fn start_config_ap_mode(_sta_netif: *mut sys::esp_netif_t, ap_netif: *mut sys::esp_netif_t) -> Result<(), String> {
+fn start_config_ap_mode(
+    _sta_netif: *mut sys::esp_netif_t,
+    ap_netif: *mut sys::esp_netif_t,
+) -> Result<(), String> {
     configure_ap_network(ap_netif)?;
 
     let mut ap_config = sys::wifi_ap_config_t::default();
@@ -364,7 +367,11 @@ fn send_json(req: *mut sys::httpd_req_t, body: &str) -> i32 {
 fn send_html(req: *mut sys::httpd_req_t, body: &str) -> i32 {
     unsafe {
         let _ = sys::httpd_resp_set_type(req, CONTENT_TYPE_HTML.as_ptr() as *const c_char);
-        sys::httpd_resp_send(req, body.as_ptr() as *const c_char, sys::HTTPD_RESP_USE_STRLEN as isize)
+        sys::httpd_resp_send(
+            req,
+            body.as_ptr() as *const c_char,
+            sys::HTTPD_RESP_USE_STRLEN as isize,
+        )
     }
 }
 
@@ -445,14 +452,28 @@ fn parse_local_patch(body: &str) -> Result<LocalConfigPatch, String> {
     let read_u32 = |key: &str| {
         value
             .get(key)
-            .and_then(|item| item.as_u64().or_else(|| item.as_i64().map(|n| n.max(0) as u64)))
+            .and_then(|item| {
+                item.as_u64()
+                    .or_else(|| item.as_i64().map(|n| n.max(0) as u64))
+            })
             .map(|number| number as u32)
     };
-    let read_i32 = |key: &str| value.get(key).and_then(|item| item.as_i64()).map(|number| number as i32);
-    let read_string = |key: &str| value.get(key).and_then(|item| item.as_str()).map(|text| text.to_string());
+    let read_i32 = |key: &str| {
+        value
+            .get(key)
+            .and_then(|item| item.as_i64())
+            .map(|number| number as i32)
+    };
+    let read_string = |key: &str| {
+        value
+            .get(key)
+            .and_then(|item| item.as_str())
+            .map(|text| text.to_string())
+    };
     let read_bool = |key: &str| {
         value.get(key).and_then(|item| {
-            item.as_bool().or_else(|| item.as_i64().map(|number| number != 0))
+            item.as_bool()
+                .or_else(|| item.as_i64().map(|number| number != 0))
         })
     };
 
@@ -529,7 +550,11 @@ unsafe extern "C" fn handle_scan_wifi(req: *mut sys::httpd_req_t) -> i32 {
     scan_cfg.show_hidden = false;
     let err = unsafe { sys::esp_wifi_scan_start(&scan_cfg, true) };
     if err != 0 {
-        return send_err(req, sys::httpd_err_code_t_HTTPD_500_INTERNAL_SERVER_ERROR, "scan failed");
+        return send_err(
+            req,
+            sys::httpd_err_code_t_HTTPD_500_INTERNAL_SERVER_ERROR,
+            "scan failed",
+        );
     }
 
     let mut count: u16 = 20;
@@ -567,7 +592,11 @@ unsafe extern "C" fn handle_scan_wifi(req: *mut sys::httpd_req_t) -> i32 {
 
 #[cfg(target_os = "espidf")]
 impl RustPortalServer {
-    fn start(config: DeviceRuntimeConfig, status: PortalRuntimeStatus, enable_dns: bool) -> Result<Self, String> {
+    fn start(
+        config: DeviceRuntimeConfig,
+        status: PortalRuntimeStatus,
+        enable_dns: bool,
+    ) -> Result<Self, String> {
         let storage = EspIdfStorage::new()?;
         let state = Box::new(PortalState {
             storage: Mutex::new(storage),
@@ -579,7 +608,10 @@ impl RustPortalServer {
 
         let mut handle = ptr::null_mut();
         let config = httpd_default_config();
-        esp_to_result(unsafe { sys::httpd_start(&mut handle, &config) }, "httpd_start")?;
+        esp_to_result(
+            unsafe { sys::httpd_start(&mut handle, &config) },
+            "httpd_start",
+        )?;
 
         for uri in [
             sys::httpd_uri_t {
@@ -699,7 +731,9 @@ fn run_dns_server(running: Arc<AtomicBool>) {
         resp[7] = 0x01;
         resp[12..12 + question_len].copy_from_slice(&req[12..12 + question_len]);
         let mut offset = 12 + question_len;
-        for byte in [0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3C, 0x00, 0x04] {
+        for byte in [
+            0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3C, 0x00, 0x04,
+        ] {
             resp[offset] = byte;
             offset += 1;
         }
@@ -713,8 +747,9 @@ fn run_dns_server(running: Arc<AtomicBool>) {
 
 #[cfg(target_os = "espidf")]
 fn portal_loop(server: &RustPortalServer, window_seconds: Option<i32>) -> Result<(), String> {
-    let deadline_us = window_seconds
-        .map(|seconds| unsafe { sys::esp_timer_get_time() } + i64::from(seconds.max(0)) * 1_000_000);
+    let deadline_us = window_seconds.map(
+        |seconds| unsafe { sys::esp_timer_get_time() } + i64::from(seconds.max(0)) * 1_000_000,
+    );
 
     loop {
         if server.should_reboot() {

@@ -1,7 +1,12 @@
 #![cfg_attr(not(target_os = "espidf"), allow(dead_code))]
 
 #[cfg(target_os = "espidf")]
-use std::{ptr, sync::{Mutex, OnceLock}, thread, time::Duration};
+use std::{
+    ptr,
+    sync::{Mutex, OnceLock},
+    thread,
+    time::Duration,
+};
 
 #[cfg(target_os = "espidf")]
 use esp_idf_sys as sys;
@@ -43,7 +48,10 @@ unsafe impl Send for PanelRuntime {}
 #[cfg(target_os = "espidf")]
 impl Default for PanelRuntime {
     fn default() -> Self {
-        Self { spi_handle: ptr::null_mut(), initialized: false }
+        Self {
+            spi_handle: ptr::null_mut(),
+            initialized: false,
+        }
     }
 }
 
@@ -63,7 +71,9 @@ fn sleep_ms(ms: u64) {
 #[cfg(target_os = "espidf")]
 fn init_bus(state: &mut PanelRuntime) -> Result<(), String> {
     let mut bus_cfg = sys::spi_bus_config_t::default();
-    bus_cfg.__bindgen_anon_1 = sys::spi_bus_config_t__bindgen_ty_1 { mosi_io_num: PIN_MOSI };
+    bus_cfg.__bindgen_anon_1 = sys::spi_bus_config_t__bindgen_ty_1 {
+        mosi_io_num: PIN_MOSI,
+    };
     bus_cfg.__bindgen_anon_2 = sys::spi_bus_config_t__bindgen_ty_2 { miso_io_num: -1 };
     bus_cfg.sclk_io_num = PIN_CLK;
     bus_cfg.__bindgen_anon_3 = sys::spi_bus_config_t__bindgen_ty_3 { quadwp_io_num: -1 };
@@ -149,7 +159,9 @@ fn wait_busy(stage: &str, timeout_ms: i32) -> Result<(), String> {
     let mut waited_ms = 0;
     while unsafe { sys::gpio_get_level(PIN_BUSY) } == 0 {
         if waited_ms >= timeout_ms {
-            return Err(format!("busy timeout at stage={stage} waited={waited_ms}ms"));
+            return Err(format!(
+                "busy timeout at stage={stage} waited={waited_ms}ms"
+            ));
         }
         sleep_ms(10);
         waited_ms += 10;
@@ -165,7 +177,9 @@ fn wait_busy(stage: &str, timeout_ms: i32) -> Result<(), String> {
 fn write_byte(spi_handle: sys::spi_device_handle_t, value: u8) -> Result<(), String> {
     let mut transaction = sys::spi_transaction_t {
         length: 8,
-        __bindgen_anon_1: sys::spi_transaction_t__bindgen_ty_1 { tx_buffer: &value as *const _ as *const _ },
+        __bindgen_anon_1: sys::spi_transaction_t__bindgen_ty_1 {
+            tx_buffer: &value as *const _ as *const _,
+        },
         ..Default::default()
     };
     let err = unsafe { sys::spi_device_polling_transmit(spi_handle, &mut transaction) };
@@ -219,7 +233,9 @@ fn write_buffer(spi_handle: sys::spi_device_handle_t, data: &[u8]) -> Result<(),
         };
         let err = unsafe { sys::spi_device_polling_transmit(spi_handle, &mut transaction) };
         if err != 0 {
-            unsafe { let _ = sys::gpio_set_level(PIN_CS, 1); }
+            unsafe {
+                let _ = sys::gpio_set_level(PIN_CS, 1);
+            }
             return Err(format!("spi tx buffer failed at offset={offset}: {err}"));
         }
         offset += chunk;

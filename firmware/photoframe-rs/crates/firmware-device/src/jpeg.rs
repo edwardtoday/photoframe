@@ -85,8 +85,14 @@ pub fn decode_rgb888(jpeg: &[u8]) -> Result<DecodedJpeg, String> {
 
     let mut config = JpegDecConfig {
         output_type: JPEG_PIXEL_FORMAT_RGB888,
-        scale: JpegResolution { width: 0, height: 0 },
-        clipper: JpegResolution { width: 0, height: 0 },
+        scale: JpegResolution {
+            width: 0,
+            height: 0,
+        },
+        clipper: JpegResolution {
+            width: 0,
+            height: 0,
+        },
         rotate: JPEG_ROTATE_0D,
         block_enable: false,
     };

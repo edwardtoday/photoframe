@@ -6,6 +6,8 @@ use photoframe_app::{
 use photoframe_contracts::{DeviceCheckinRequest, DeviceNextResponse};
 use photoframe_domain::{FailureKind, LongPressAction, WakeSource};
 
+const NEXT_BEIJING_SYNC_SLEEP_SECONDS: u64 = 43_600;
+
 #[derive(Default)]
 struct FakeClock;
 impl Clock for FakeClock {
@@ -40,6 +42,7 @@ struct FakeOrchestrator {
     directive: Option<DeviceNextResponse>,
     sync_calls: usize,
     directive_calls: usize,
+    last_preferred_poll_seconds: Option<u64>,
     checkin_calls: usize,
     checkin_error: Option<String>,
     debug_stages: Vec<String>,
@@ -58,8 +61,10 @@ impl OrchestratorApi for FakeOrchestrator {
         &mut self,
         _config: &DeviceRuntimeConfig,
         _now_epoch: i64,
+        preferred_poll_seconds: u64,
     ) -> Result<Option<DeviceNextResponse>, String> {
         self.directive_calls += 1;
+        self.last_preferred_poll_seconds = Some(preferred_poll_seconds);
         Ok(self.directive.clone())
     }
 
@@ -152,7 +157,7 @@ fn spurious_ext1_skips_network_cycle() {
     assert_eq!(
         report.exit,
         CycleExit::Sleep {
-            seconds: 600,
+            seconds: NEXT_BEIJING_SYNC_SLEEP_SECONDS,
             timer_only: true,
         }
     );
@@ -242,7 +247,11 @@ fn daily_directive_failure_falls_back_to_template_url() {
 
     assert!(report.is_ok());
     assert_eq!(runner.image_fetcher().fetch_calls.len(), 3);
-    assert!(runner.image_fetcher().fetch_calls[2].url.contains("date=2026-03-07"));
+    assert!(
+        runner.image_fetcher().fetch_calls[2]
+            .url
+            .contains("date=2026-03-07")
+    );
 }
 
 #[test]
@@ -287,8 +296,46 @@ fn not_modified_cycle_skips_render_but_still_succeeds() {
     assert_eq!(
         report.exit,
         CycleExit::Sleep {
-            seconds: 3600,
+            seconds: NEXT_BEIJING_SYNC_SLEEP_SECONDS,
             timer_only: false
+        }
+    );
+}
+
+#[test]
+fn failed_cycle_sleeps_until_next_beijing_sync_window() {
+    let mut runner = CycleRunner::new(
+        FakeClock,
+        FakeStorage {
+            config: seeded_config(),
+            save_count: 0,
+        },
+        FakeOrchestrator::default(),
+        FakeImageFetcher {
+            queued_results: vec![
+                ImageFetchOutcome::failed(502, "fetch failed"),
+                ImageFetchOutcome::failed(502, "fetch failed"),
+                ImageFetchOutcome::failed(502, "fetch failed"),
+            ],
+            ..FakeImageFetcher::default()
+        },
+        FakeDisplay::default(),
+    );
+
+    let report = runner
+        .run(BootContext {
+            wake_source: WakeSource::Timer,
+            long_press_action: LongPressAction::None,
+            sta_ip: None,
+            power_sample: PowerSample::default(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        report.exit,
+        CycleExit::Sleep {
+            seconds: NEXT_BEIJING_SYNC_SLEEP_SECONDS,
+            timer_only: false,
         }
     );
 }
@@ -364,6 +411,66 @@ fn successful_cycle_uses_directive_and_reports_checkin() {
     assert!(report.portal_window_opened);
     assert_eq!(runner.orchestrator().checkin_calls, 1);
     assert_eq!(runner.display().render_calls, 1);
+}
+
+#[test]
+fn successful_daily_cycle_requests_beijing_sleep_window_from_orchestrator() {
+    let mut runner = CycleRunner::new(
+        FakeClock,
+        FakeStorage {
+            config: seeded_config(),
+            save_count: 0,
+        },
+        FakeOrchestrator {
+            directive: Some(DeviceNextResponse {
+                image_url: "https://901.qingpei.me:40009/public/daily.jpg?device_id=pf-a1b2c3d4"
+                    .into(),
+                source: Some("daily".into()),
+                poll_after_seconds: Some(3600),
+                valid_until_epoch: None,
+                server_epoch: None,
+                device_epoch: None,
+                device_clock_ok: None,
+                effective_epoch: None,
+            }),
+            ..FakeOrchestrator::default()
+        },
+        FakeImageFetcher {
+            queued_results: vec![ImageFetchOutcome {
+                ok: true,
+                status_code: 200,
+                error: String::new(),
+                image_changed: false,
+                artifact: None,
+                sha256: String::new(),
+                etag: Some("\"etag\"".into()),
+                last_modified: None,
+            }],
+            ..FakeImageFetcher::default()
+        },
+        FakeDisplay::default(),
+    );
+
+    let report = runner
+        .run(BootContext {
+            wake_source: WakeSource::Timer,
+            long_press_action: LongPressAction::None,
+            sta_ip: None,
+            power_sample: PowerSample::default(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        runner.orchestrator().last_preferred_poll_seconds,
+        Some(NEXT_BEIJING_SYNC_SLEEP_SECONDS)
+    );
+    assert_eq!(
+        report.exit,
+        CycleExit::Sleep {
+            seconds: 3600,
+            timer_only: false,
+        }
+    );
 }
 
 #[test]
@@ -619,10 +726,7 @@ fn cross_origin_image_fetch_does_not_use_orchestrator_token_header() {
 
     assert!(report.is_ok());
     assert_eq!(runner.image_fetcher().fetch_calls.len(), 1);
-    assert_eq!(
-        runner.image_fetcher().fetch_calls[0].orchestrator_token,
-        ""
-    );
+    assert_eq!(runner.image_fetcher().fetch_calls[0].orchestrator_token, "");
 }
 
 #[test]
@@ -644,7 +748,9 @@ fn directive_url_prefers_orchestrator_origin_before_public_base_origin() {
         },
         FakeOrchestrator {
             directive: Some(DeviceNextResponse {
-                image_url: "http://192.168.58.113:8081/api/v1/preview/current.bmp?device_id=pf-a1b2c3d4".into(),
+                image_url:
+                    "http://192.168.58.113:8081/api/v1/preview/current.bmp?device_id=pf-a1b2c3d4"
+                        .into(),
                 source: Some("daily".into()),
                 poll_after_seconds: Some(1800),
                 valid_until_epoch: None,
@@ -680,7 +786,9 @@ fn directive_url_prefers_orchestrator_origin_before_public_base_origin() {
 
     assert!(report.is_ok());
     assert_eq!(runner.image_fetcher().fetch_calls.len(), 1);
-    assert!(runner.image_fetcher().fetch_calls[0]
-        .url
-        .starts_with("http://192.168.233.11:8081/api/v1/preview/current.bmp"));
+    assert!(
+        runner.image_fetcher().fetch_calls[0]
+            .url
+            .starts_with("http://192.168.233.11:8081/api/v1/preview/current.bmp")
+    );
 }

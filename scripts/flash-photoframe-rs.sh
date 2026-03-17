@@ -3,8 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-VENV_PY="${REPO_ROOT}/.venv-host-tools/bin/python"
-BUILD_ROOT="${REPO_ROOT}/firmware/photoframe-rs/target/xtensa-esp32s3-espidf/release"
+VENV_PY="${PHOTOFRAME_FLASH_VENV_PY_OVERRIDE:-${REPO_ROOT}/.venv-host-tools/bin/python}"
+BUILD_ROOT="${PHOTOFRAME_FLASH_BUILD_ROOT_OVERRIDE:-${REPO_ROOT}/firmware/photoframe-rs/target/xtensa-esp32s3-espidf/release}"
+ELF_ABS="${PHOTOFRAME_FLASH_ELF_ABS_OVERRIDE:-${BUILD_ROOT}/photoframe-firmware-device}"
+DEFAULT_APP_BIN="${PHOTOFRAME_FLASH_DEFAULT_APP_BIN_OVERRIDE:-${REPO_ROOT}/firmware/photoframe-rs/dist/photoframe-rs-app.bin}"
 
 PORT="${1:-}"
 shift || true
@@ -50,7 +52,10 @@ if [[ ! -x "${VENV_PY}" ]]; then
   exit 2
 fi
 
-FLASHER_ARGS="$(find "${BUILD_ROOT}/build" -path '*/out/build/flasher_args.json' | head -n 1)"
+FLASHER_ARGS="${PHOTOFRAME_FLASHER_ARGS_JSON_OVERRIDE:-}"
+if [[ -z "${FLASHER_ARGS}" ]]; then
+  FLASHER_ARGS="$(find "${BUILD_ROOT}/build" -path '*/out/build/flasher_args.json' | head -n 1)"
+fi
 if [[ -z "${FLASHER_ARGS}" || ! -f "${FLASHER_ARGS}" ]]; then
   echo "[error] 未找到 flasher_args.json；请先执行 scripts/build-photoframe-rs.sh" >&2
   exit 3
@@ -66,6 +71,8 @@ export PHOTOFRAME_FLASH_PORT="${PORT}"
 export PHOTOFRAME_FLASH_BAUD="${BAUD}"
 export PHOTOFRAME_FLASH_DRY_RUN="${DRY_RUN}"
 export PHOTOFRAME_FLASH_APP_BIN="${APP_BIN_OVERRIDE}"
+export PHOTOFRAME_FLASH_DEFAULT_APP_BIN="${DEFAULT_APP_BIN}"
+export PHOTOFRAME_FLASH_ELF="${ELF_ABS}"
 
 "${VENV_PY}" - <<'PY'
 import json
@@ -79,6 +86,15 @@ flasher_args = pathlib.Path(os.environ["PHOTOFRAME_FLASHER_ARGS_JSON"]).resolve(
 build_dir = flasher_args.parent
 data = json.loads(flasher_args.read_text(encoding="utf-8"))
 extra = data.get("extra_esptool_args", {})
+
+
+def resolve_path(raw: str) -> pathlib.Path:
+    path = pathlib.Path(raw).expanduser()
+    if not path.is_absolute():
+        path = (pathlib.Path.cwd() / path).resolve()
+    else:
+        path = path.resolve()
+    return path
 
 cmd = [
     sys.executable,
@@ -102,15 +118,35 @@ cmd.append("write_flash")
 for item in data.get("write_flash_args", []):
     cmd.append(str(item))
 
-flash_files = data.get("flash_files", {})
+flash_files = dict(data.get("flash_files", {}))
+app_offset = str((data.get("app") or {}).get("offset") or "")
+if not app_offset:
+    raise SystemExit("[error] flasher_args.json 缺少 app offset，无法确定应用分区")
+
 app_override = os.environ.get("PHOTOFRAME_FLASH_APP_BIN", "").strip()
 if app_override:
-    app_offset = str((data.get("app") or {}).get("offset") or "")
-    if not app_offset:
-        raise SystemExit("[error] flasher_args.json 缺少 app offset，无法覆盖应用镜像")
-    flash_files = dict(flash_files)
-    flash_files[app_offset] = str(pathlib.Path(app_override).resolve())
-    print(f"[info] 使用覆盖应用镜像: {flash_files[app_offset]}")
+    app_image = resolve_path(app_override)
+    if not app_image.is_file():
+        raise SystemExit(f"[error] 覆盖应用镜像不存在: {app_image}")
+    print(f"[info] 使用覆盖应用镜像: {app_image}")
+else:
+    app_image = resolve_path(os.environ["PHOTOFRAME_FLASH_DEFAULT_APP_BIN"])
+    if not app_image.is_file():
+        raise SystemExit(
+            "[error] 默认应用镜像不存在；请先执行 scripts/build-photoframe-rs.sh "
+            f"生成 {app_image}"
+        )
+    elf_path = resolve_path(os.environ["PHOTOFRAME_FLASH_ELF"])
+    if elf_path.is_file() and app_image.stat().st_mtime + 1 < elf_path.stat().st_mtime:
+        raise SystemExit(
+            "[error] 默认应用镜像早于当前 ELF 产物，可能是陈旧镜像；"
+            "请先执行 scripts/build-photoframe-rs.sh 再刷机\n"
+            f"  dist app: {app_image}\n"
+            f"  current elf: {elf_path}"
+        )
+    print(f"[info] 默认使用 dist 应用镜像: {app_image}")
+
+flash_files[app_offset] = str(app_image)
 for offset, rel in sorted(flash_files.items(), key=lambda item: int(item[0], 0)):
     path = pathlib.Path(rel)
     if not path.is_absolute():

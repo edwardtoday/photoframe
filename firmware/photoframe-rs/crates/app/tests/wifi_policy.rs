@@ -36,8 +36,14 @@ fn ensure_primary_wifi_rotates_oldest_when_full() {
 
     config.ensure_primary_wifi_in_profiles();
 
-    assert_eq!(config.wifi_profiles.len(), DeviceRuntimeConfig::MAX_WIFI_PROFILES);
-    assert_eq!(config.wifi_profiles.first().map(|item| item.ssid.as_str()), Some("AP-1"));
+    assert_eq!(
+        config.wifi_profiles.len(),
+        DeviceRuntimeConfig::MAX_WIFI_PROFILES
+    );
+    assert_eq!(
+        config.wifi_profiles.first().map(|item| item.ssid.as_str()),
+        Some("AP-1")
+    );
     assert_eq!(
         config.wifi_profiles.last().map(|item| item.ssid.as_str()),
         Some("Newest")

@@ -58,11 +58,7 @@ impl EspIdfStorage {
             let mut handle: sys::nvs_handle_t = 0;
             let ns = CString::new("photoframe").unwrap();
             check_esp(
-                sys::nvs_open(
-                    ns.as_ptr(),
-                    sys::nvs_open_mode_t_NVS_READWRITE,
-                    &mut handle,
-                ),
+                sys::nvs_open(ns.as_ptr(), sys::nvs_open_mode_t_NVS_READWRITE, &mut handle),
                 "nvs_open",
             )?;
             Ok(Self { handle })
@@ -169,10 +165,10 @@ impl Storage for EspIdfStorage {
                 .get_i32("retry_base")?
                 .unwrap_or(config.retry_base_minutes as i32)
                 .max(1) as u32;
-            config.retry_max_minutes = self
-                .get_i32("retry_max")?
-                .unwrap_or(config.retry_max_minutes as i32)
-                .max(config.retry_base_minutes as i32) as u32;
+            config.retry_max_minutes =
+                self.get_i32("retry_max")?
+                    .unwrap_or(config.retry_max_minutes as i32)
+                    .max(config.retry_base_minutes as i32) as u32;
             config.max_failure_before_long_sleep = self
                 .get_i32("max_fail")?
                 .unwrap_or(config.max_failure_before_long_sleep as i32)
@@ -191,11 +187,8 @@ impl Storage for EspIdfStorage {
                 0,
                 2,
             );
-            config.dither_mode = clamp_i32(
-                self.get_i32("dither")?.unwrap_or(config.dither_mode),
-                0,
-                1,
-            );
+            config.dither_mode =
+                clamp_i32(self.get_i32("dither")?.unwrap_or(config.dither_mode), 0, 1);
             config.six_color_tolerance = clamp_i32(
                 self.get_i32("clr_tol")?
                     .unwrap_or(config.six_color_tolerance),
@@ -409,7 +402,10 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
                 now_epoch,
                 config.remote_config_version.max(0),
             );
-            let response = http_get_json::<DeviceConfigResponse>(&url, Some((&PHOTOFRAME_TOKEN_HEADER, &config.orchestrator_token)))?;
+            let response = http_get_json::<DeviceConfigResponse>(
+                &url,
+                Some((&PHOTOFRAME_TOKEN_HEADER, &config.orchestrator_token)),
+            )?;
             if response.config_version <= config.remote_config_version {
                 return Ok(None);
             }
@@ -424,10 +420,11 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
         &mut self,
         config: &DeviceRuntimeConfig,
         now_epoch: i64,
+        preferred_poll_seconds: u64,
     ) -> Result<Option<DeviceNextResponse>, String> {
         #[cfg(not(target_os = "espidf"))]
         {
-            let _ = (config, now_epoch);
+            let _ = (config, now_epoch, preferred_poll_seconds);
             Err("EspIdfOrchestratorApi 尚未接入 HTTP 客户端".into())
         }
 
@@ -440,7 +437,7 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
                 return Ok(None);
             }
 
-            let default_poll_seconds = (config.interval_minutes.max(1) * 60).max(60);
+            let default_poll_seconds = preferred_poll_seconds.clamp(60, 86_400) as u32;
             let url = format!(
                 "{}/api/v1/device/next?device_id={}&now_epoch={}&default_poll_seconds={}&failure_count={}&accept_formats=jpeg,bmp",
                 trim_trailing_slash(&config.orchestrator_base_url),
@@ -450,7 +447,11 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
                 config.failure_count,
             );
 
-            http_get_json::<DeviceNextResponse>(&url, Some((&PHOTOFRAME_TOKEN_HEADER, &config.orchestrator_token))).map(Some)
+            http_get_json::<DeviceNextResponse>(
+                &url,
+                Some((&PHOTOFRAME_TOKEN_HEADER, &config.orchestrator_token)),
+            )
+            .map(Some)
         }
     }
 
@@ -474,7 +475,10 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
                 for attempt in 0..3 {
                     match http_post_json_status(
                         &url,
-                        Some((&PHOTOFRAME_TOKEN_HEADER, &payload.reported_config.orchestrator_token)),
+                        Some((
+                            &PHOTOFRAME_TOKEN_HEADER,
+                            &payload.reported_config.orchestrator_token,
+                        )),
                         &body,
                     ) {
                         Ok(status) if (200..300).contains(&status) => {
@@ -556,10 +560,7 @@ impl ImageFetcher for EspIdfImageFetcher {
     }
 }
 
-pub fn send_debug_stage_beacon(
-    config: &DeviceRuntimeConfig,
-    stage: &str,
-) -> Result<(), String> {
+pub fn send_debug_stage_beacon(config: &DeviceRuntimeConfig, stage: &str) -> Result<(), String> {
     #[cfg(not(target_os = "espidf"))]
     {
         let _ = (config, stage);
@@ -582,7 +583,10 @@ pub fn send_debug_stage_beacon(
             url_encode_component(&config.device_id),
             url_encode_component(stage),
         );
-        match http_get_bytes(&url, Some((&PHOTOFRAME_TOKEN_HEADER, &config.orchestrator_token))) {
+        match http_get_bytes(
+            &url,
+            Some((&PHOTOFRAME_TOKEN_HEADER, &config.orchestrator_token)),
+        ) {
             Ok(_) => Ok(()),
             Err(err) => {
                 println!(
@@ -632,10 +636,7 @@ fn resolve_redirect_url(current_url: &str, location: &str) -> Option<String> {
 
     let path_end = rest.find('?').unwrap_or(rest.len());
     let path = &rest[..path_end];
-    let base_dir = path
-        .rfind('/')
-        .map(|index| &path[..=index])
-        .unwrap_or("/");
+    let base_dir = path.rfind('/').map(|index| &path[..=index]).unwrap_or("/");
     Some(format!("{origin}{base_dir}{location}"))
 }
 
@@ -695,13 +696,15 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
                 return Err(err);
             }
         }
-        if let Some(value) = &plan.previous_etag && !value.is_empty()
+        if let Some(value) = &plan.previous_etag
+            && !value.is_empty()
             && let Err(err) = set_header(client, "If-None-Match", value)
         {
             sys::esp_http_client_cleanup(client);
             return Err(err);
         }
-        if let Some(value) = &plan.previous_last_modified && !value.is_empty()
+        if let Some(value) = &plan.previous_last_modified
+            && !value.is_empty()
             && let Err(err) = set_header(client, "If-Modified-Since", value)
         {
             sys::esp_http_client_cleanup(client);
@@ -710,7 +713,8 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
 
         let mut redirect_count = 0usize;
         loop {
-            if let Err(err) = check_esp(sys::esp_http_client_open(client, 0), "esp_http_client_open")
+            if let Err(err) =
+                check_esp(sys::esp_http_client_open(client, 0), "esp_http_client_open")
             {
                 sys::esp_http_client_cleanup(client);
                 return Err(err);
@@ -767,7 +771,10 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
                 } else {
                     ""
                 };
-                return Err(format!("unexpected status: {status_code}{extra} url={}", plan.url));
+                return Err(format!(
+                    "unexpected status: {status_code}{extra} url={}",
+                    plan.url
+                ));
             }
 
             if content_len <= 0 || content_len > 4 * 1024 * 1024 {
@@ -835,7 +842,8 @@ fn http_get_bytes(url: &str, token_header: Option<(&str, &str)>) -> Result<Vec<u
         if client.is_null() {
             return Err("esp_http_client_init failed".into());
         }
-        if let Some((header, token)) = token_header && !token.is_empty()
+        if let Some((header, token)) = token_header
+            && !token.is_empty()
             && let Err(err) = set_header(client, header, token)
         {
             sys::esp_http_client_cleanup(client);
@@ -844,7 +852,8 @@ fn http_get_bytes(url: &str, token_header: Option<(&str, &str)>) -> Result<Vec<u
 
         let mut redirect_count = 0usize;
         loop {
-            if let Err(err) = check_esp(sys::esp_http_client_open(client, 0), "esp_http_client_open")
+            if let Err(err) =
+                check_esp(sys::esp_http_client_open(client, 0), "esp_http_client_open")
             {
                 sys::esp_http_client_cleanup(client);
                 return Err(err);
@@ -895,7 +904,10 @@ fn http_get_bytes(url: &str, token_header: Option<(&str, &str)>) -> Result<Vec<u
                 } else {
                     body_preview.chars().take(160).collect::<String>()
                 };
-                let mut details = format!("unexpected status: {status} url={}", url.to_str().unwrap_or_default());
+                let mut details = format!(
+                    "unexpected status: {status} url={}",
+                    url.to_str().unwrap_or_default()
+                );
                 if let Some(value) = server_header.as_deref() {
                     details.push_str(&format!(" server={value}"));
                 }
@@ -938,7 +950,9 @@ fn http_post_json_status(
         if client.is_null() {
             return Err("esp_http_client_init failed".into());
         }
-        if let Some((header, token)) = token_header && !token.is_empty() {
+        if let Some((header, token)) = token_header
+            && !token.is_empty()
+        {
             if let Err(err) = set_header(client, header, token) {
                 sys::esp_http_client_cleanup(client);
                 return Err(format!("set_header {header} failed: {err}"));
@@ -959,8 +973,10 @@ fn http_post_json_status(
             sys::esp_http_client_cleanup(client);
             return Err(err);
         }
-        if let Err(err) = check_esp(sys::esp_http_client_perform(client), "esp_http_client_perform")
-        {
+        if let Err(err) = check_esp(
+            sys::esp_http_client_perform(client),
+            "esp_http_client_perform",
+        ) {
             sys::esp_http_client_cleanup(client);
             return Err(err);
         }
@@ -971,7 +987,11 @@ fn http_post_json_status(
 }
 
 #[cfg(target_os = "espidf")]
-unsafe fn set_header(client: sys::esp_http_client_handle_t, key: &str, value: &str) -> Result<(), String> {
+unsafe fn set_header(
+    client: sys::esp_http_client_handle_t,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
     let key = CString::new(key).map_err(|err| err.to_string())?;
     let value = CString::new(value).map_err(|err| err.to_string())?;
     check_esp(
@@ -981,7 +1001,10 @@ unsafe fn set_header(client: sys::esp_http_client_handle_t, key: &str, value: &s
 }
 
 #[cfg(target_os = "espidf")]
-unsafe fn get_header_value(client: sys::esp_http_client_handle_t, key: &str) -> Result<Option<String>, String> {
+unsafe fn get_header_value(
+    client: sys::esp_http_client_handle_t,
+    key: &str,
+) -> Result<Option<String>, String> {
     let key = CString::new(key).map_err(|err| err.to_string())?;
     let mut ptr_value: *mut c_char = ptr::null_mut();
     let err = unsafe { sys::esp_http_client_get_header(client, key.as_ptr(), &mut ptr_value) };
@@ -1019,7 +1042,10 @@ unsafe fn read_body_stream(client: sys::esp_http_client_handle_t) -> Result<Vec<
 }
 
 #[cfg(target_os = "espidf")]
-unsafe fn read_body_exact(client: sys::esp_http_client_handle_t, content_len: usize) -> Result<Vec<u8>, String> {
+unsafe fn read_body_exact(
+    client: sys::esp_http_client_handle_t,
+    content_len: usize,
+) -> Result<Vec<u8>, String> {
     let mut out = vec![0u8; content_len];
     let mut offset = 0usize;
     while offset < content_len {
@@ -1138,10 +1164,7 @@ mod tests {
             Some("https://fastly.picsum.photos/id/58/480/800.jpg".to_string())
         );
         assert_eq!(
-            resolve_redirect_url(
-                "https://picsum.photos/images/list",
-                "next?page=2"
-            ),
+            resolve_redirect_url("https://picsum.photos/images/list", "next?page=2"),
             Some("https://picsum.photos/images/next?page=2".to_string())
         );
     }

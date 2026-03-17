@@ -20,20 +20,45 @@ struct PaletteColor {
 }
 
 const PALETTE: [PaletteColor; 6] = [
-    PaletteColor { code: COLOR_BLACK, r: 0, g: 0, b: 0 },
-    PaletteColor { code: COLOR_WHITE, r: 255, g: 255, b: 255 },
-    PaletteColor { code: COLOR_YELLOW, r: 255, g: 255, b: 0 },
-    PaletteColor { code: COLOR_RED, r: 255, g: 0, b: 0 },
-    PaletteColor { code: COLOR_BLUE, r: 0, g: 0, b: 255 },
-    PaletteColor { code: COLOR_GREEN, r: 0, g: 255, b: 0 },
+    PaletteColor {
+        code: COLOR_BLACK,
+        r: 0,
+        g: 0,
+        b: 0,
+    },
+    PaletteColor {
+        code: COLOR_WHITE,
+        r: 255,
+        g: 255,
+        b: 255,
+    },
+    PaletteColor {
+        code: COLOR_YELLOW,
+        r: 255,
+        g: 255,
+        b: 0,
+    },
+    PaletteColor {
+        code: COLOR_RED,
+        r: 255,
+        g: 0,
+        b: 0,
+    },
+    PaletteColor {
+        code: COLOR_BLUE,
+        r: 0,
+        g: 0,
+        b: 255,
+    },
+    PaletteColor {
+        code: COLOR_GREEN,
+        r: 0,
+        g: 255,
+        b: 0,
+    },
 ];
 
-const BAYER_4X4: [[i8; 4]; 4] = [
-    [0, 8, 2, 10],
-    [12, 4, 14, 6],
-    [3, 11, 1, 9],
-    [15, 7, 13, 5],
-];
+const BAYER_4X4: [[i8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
 const DITHER_STRENGTH: i32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,7 +253,9 @@ pub fn render_bmp24_to_packed(bmp: &[u8], options: RenderOptions) -> Result<Pack
     if file.kind != *b"BM" {
         return Err("invalid bmp magic".into());
     }
-    let info = unsafe { &*(bmp[core::mem::size_of::<BmpFileHeader>()..].as_ptr() as *const BmpInfoHeader) };
+    let info = unsafe {
+        &*(bmp[core::mem::size_of::<BmpFileHeader>()..].as_ptr() as *const BmpInfoHeader)
+    };
     let width = info.width;
     let height_abs = info.height.abs();
     let bottom_up = info.height > 0;
@@ -256,7 +283,11 @@ pub fn render_bmp24_to_packed(bmp: &[u8], options: RenderOptions) -> Result<Pack
         } else {
             (y, height_abs as usize - 1 - x)
         };
-        let src_row = if bottom_up { height_abs as usize - 1 - sy } else { sy };
+        let src_row = if bottom_up {
+            height_abs as usize - 1 - sy
+        } else {
+            sy
+        };
         let offset = src_row * row_stride + sx * 3;
         let b = pixels[offset];
         let g = pixels[offset + 1];
@@ -280,19 +311,33 @@ mod tests {
 
     #[test]
     fn rgb_primary_red_maps_to_red_palette() {
-        let rgb = vec![255u8, 0, 0].into_iter().cycle().take(PANEL_WIDTH * PANEL_HEIGHT * 3).collect::<Vec<_>>();
+        let rgb = vec![255u8, 0, 0]
+            .into_iter()
+            .cycle()
+            .take(PANEL_WIDTH * PANEL_HEIGHT * 3)
+            .collect::<Vec<_>>();
         let image = render_rgb888_to_packed(
             &rgb,
             PANEL_WIDTH,
             PANEL_HEIGHT,
-            RenderOptions { panel_rotation: 0, color_process_mode: 2, dithering_mode: 0, six_color_tolerance: 0 },
-        ).unwrap();
+            RenderOptions {
+                panel_rotation: 0,
+                color_process_mode: 2,
+                dithering_mode: 0,
+                six_color_tolerance: 0,
+            },
+        )
+        .unwrap();
         assert_eq!(get_packed_pixel(&image.bytes, PANEL_WIDTH, 0, 0), COLOR_RED);
     }
 
     #[test]
     fn rotation_180_moves_first_pixel_to_last() {
-        let mut rgb = vec![255u8, 255, 255].into_iter().cycle().take(PANEL_WIDTH * PANEL_HEIGHT * 3).collect::<Vec<_>>();
+        let mut rgb = vec![255u8, 255, 255]
+            .into_iter()
+            .cycle()
+            .take(PANEL_WIDTH * PANEL_HEIGHT * 3)
+            .collect::<Vec<_>>();
         rgb[0] = 255;
         rgb[1] = 0;
         rgb[2] = 0;
@@ -300,8 +345,17 @@ mod tests {
             &rgb,
             PANEL_WIDTH,
             PANEL_HEIGHT,
-            RenderOptions { panel_rotation: 2, color_process_mode: 2, dithering_mode: 0, six_color_tolerance: 0 },
-        ).unwrap();
-        assert_eq!(get_packed_pixel(&image.bytes, PANEL_WIDTH, PANEL_WIDTH - 1, PANEL_HEIGHT - 1), COLOR_RED);
+            RenderOptions {
+                panel_rotation: 2,
+                color_process_mode: 2,
+                dithering_mode: 0,
+                six_color_tolerance: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            get_packed_pixel(&image.bytes, PANEL_WIDTH, PANEL_WIDTH - 1, PANEL_HEIGHT - 1),
+            COLOR_RED
+        );
     }
 }

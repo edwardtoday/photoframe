@@ -29,13 +29,16 @@ fn remote_patch_replaces_wifi_profiles_and_preserves_existing_password_when_miss
     let mut config = DeviceRuntimeConfig {
         primary_wifi_ssid: "Home".into(),
         primary_wifi_password: "secret".into(),
-        wifi_profiles: vec![WifiCredential {
-            ssid: "Home".into(),
-            password: "secret".into(),
-        }, WifiCredential {
-            ssid: "Office".into(),
-            password: "office-secret".into(),
-        }],
+        wifi_profiles: vec![
+            WifiCredential {
+                ssid: "Home".into(),
+                password: "secret".into(),
+            },
+            WifiCredential {
+                ssid: "Office".into(),
+                password: "office-secret".into(),
+            },
+        ],
         last_connected_wifi_index: Some(1),
         ..DeviceRuntimeConfig::default()
     };

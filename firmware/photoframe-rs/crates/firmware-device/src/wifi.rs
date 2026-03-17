@@ -242,7 +242,10 @@ impl EspWifiManager {
 
         let mut wifi_config = sys::wifi_config_t { sta: sta_config };
 
-        RETRY_LIMIT.store(if retry_limit > 0 { retry_limit } else { 5 }, Ordering::SeqCst);
+        RETRY_LIMIT.store(
+            if retry_limit > 0 { retry_limit } else { 5 },
+            Ordering::SeqCst,
+        );
         RETRY_COUNT.store(0, Ordering::SeqCst);
         LAST_DISCONNECT_REASON.store(0, Ordering::SeqCst);
 
@@ -255,7 +258,9 @@ impl EspWifiManager {
         }
 
         esp_to_result(
-            unsafe { sys::esp_wifi_set_config(sys::wifi_interface_t_WIFI_IF_STA, &mut wifi_config) },
+            unsafe {
+                sys::esp_wifi_set_config(sys::wifi_interface_t_WIFI_IF_STA, &mut wifi_config)
+            },
             "esp_wifi_set_config(STA)",
         )?;
 
@@ -321,7 +326,11 @@ impl EspWifiManager {
         if ptr.is_null() {
             return None;
         }
-        Some(unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned())
+        Some(
+            unsafe { CStr::from_ptr(buf.as_ptr()) }
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 
     #[cfg(not(target_os = "espidf"))]

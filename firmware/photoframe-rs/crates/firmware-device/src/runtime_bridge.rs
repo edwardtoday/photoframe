@@ -40,13 +40,11 @@ impl EspRuntimeBridge {
             ImageFormat::Bmp => {
                 let _ =
                     photoframe_platform_espidf::send_debug_stage_beacon(config, "before_bmp_pack");
-                let packed =
-                    crate::render_core::render_bmp24_to_packed(&artifact.bytes, options).map_err(
-                        |err| {
-                            println!("photoframe-rs/render: bmp render failed: {err}");
-                            FailureKind::GeneralFailure
-                        },
-                    )?;
+                let packed = crate::render_core::render_bmp24_to_packed(&artifact.bytes, options)
+                    .map_err(|err| {
+                    println!("photoframe-rs/render: bmp render failed: {err}");
+                    FailureKind::GeneralFailure
+                })?;
                 let _ =
                     photoframe_platform_espidf::send_debug_stage_beacon(config, "after_bmp_pack");
                 packed
@@ -57,9 +55,9 @@ impl EspRuntimeBridge {
                     "before_jpeg_decode",
                 );
                 let decoded = crate::jpeg::decode_rgb888(&artifact.bytes).map_err(|err| {
-                        println!("photoframe-rs/render: jpeg decode failed: {err}");
-                        FailureKind::GeneralFailure
-                    })?;
+                    println!("photoframe-rs/render: jpeg decode failed: {err}");
+                    FailureKind::GeneralFailure
+                })?;
                 println!(
                     "photoframe-rs/render: jpeg decoded width={} height={} rgb_len={}",
                     decoded.width, decoded.height, decoded.rgb_len
@@ -133,5 +131,4 @@ impl EspRuntimeBridge {
 
     #[cfg(not(target_os = "espidf"))]
     pub fn prepare_for_sleep() {}
-
 }

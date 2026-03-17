@@ -118,7 +118,10 @@ fn sample_i2c_line_levels() -> Option<(i32, i32)> {
         let _ = sys::gpio_set_direction(I2C_SDA_PIN, sys::gpio_mode_t_GPIO_MODE_INPUT);
         let _ = sys::gpio_pullup_en(I2C_SCL_PIN);
         let _ = sys::gpio_pullup_en(I2C_SDA_PIN);
-        Some((sys::gpio_get_level(I2C_SCL_PIN), sys::gpio_get_level(I2C_SDA_PIN)))
+        Some((
+            sys::gpio_get_level(I2C_SCL_PIN),
+            sys::gpio_get_level(I2C_SDA_PIN),
+        ))
     }
 }
 
@@ -241,14 +244,7 @@ fn read_reg(state: &mut PowerRuntime, reg: u8) -> Option<u8> {
     let mut value = 0u8;
     for attempt in 0..3 {
         let err = unsafe {
-            sys::i2c_master_transmit_receive(
-                state.dev,
-                &reg,
-                1,
-                &mut value,
-                1,
-                I2C_TIMEOUT_MS,
-            )
+            sys::i2c_master_transmit_receive(state.dev, &reg, 1, &mut value, 1, I2C_TIMEOUT_MS)
         };
         if err == 0 {
             return Some(value);
@@ -274,7 +270,9 @@ fn write_reg(state: &mut PowerRuntime, reg: u8, value: u8) -> bool {
 
     let payload = [reg, value];
     for attempt in 0..3 {
-        let err = unsafe { sys::i2c_master_transmit(state.dev, payload.as_ptr(), payload.len(), I2C_TIMEOUT_MS) };
+        let err = unsafe {
+            sys::i2c_master_transmit(state.dev, payload.as_ptr(), payload.len(), I2C_TIMEOUT_MS)
+        };
         if err == 0 {
             return true;
         }
@@ -409,7 +407,9 @@ fn init_power() -> Result<(), String> {
         }
     };
     if chip_id != EXPECTED_CHIP_ID {
-        log(&format!("unexpected pmic chip id=0x{chip_id:02x} expect=0x{EXPECTED_CHIP_ID:02x}"));
+        log(&format!(
+            "unexpected pmic chip id=0x{chip_id:02x} expect=0x{EXPECTED_CHIP_ID:02x}"
+        ));
     }
 
     let ok = configure_aldo_3300(&mut state, REG_LDO_VOL2_CTRL)
@@ -452,9 +452,7 @@ fn store_cache(cache: PowerCache) {
 pub fn read_power_sample() -> Option<PowerSample> {
     if init_power().is_err() {
         if let Some(cache) = cached_power() {
-            return Some(
-                normalize_power_sample(PowerSample::default(), Some(cache)).sample,
-            );
+            return Some(normalize_power_sample(PowerSample::default(), Some(cache)).sample);
         }
         return None;
     }
@@ -471,9 +469,7 @@ pub fn read_power_sample() -> Option<PowerSample> {
         None => {
             reset_i2c_bus(&mut state);
             if let Some(cache) = cached_power() {
-                return Some(
-                    normalize_power_sample(PowerSample::default(), Some(cache)).sample,
-                );
+                return Some(normalize_power_sample(PowerSample::default(), Some(cache)).sample);
             }
             return None;
         }
@@ -482,7 +478,11 @@ pub fn read_power_sample() -> Option<PowerSample> {
     let mut sample = PowerSample {
         battery_mv: -1,
         battery_percent: -1,
-        charging: if ((status2 >> 5) & 0x03) == 0x01 { 1 } else { 0 },
+        charging: if ((status2 >> 5) & 0x03) == 0x01 {
+            1
+        } else {
+            0
+        },
         vbus_good: if (status1 & (1u8 << 5)) != 0 { 1 } else { 0 },
     };
 
@@ -491,7 +491,10 @@ pub fn read_power_sample() -> Option<PowerSample> {
     {
         sample.battery_percent = percent as i32;
     }
-    if let (Some(h), Some(l)) = (read_reg(&mut state, REG_ADC_BATT_H), read_reg(&mut state, REG_ADC_BATT_L)) {
+    if let (Some(h), Some(l)) = (
+        read_reg(&mut state, REG_ADC_BATT_H),
+        read_reg(&mut state, REG_ADC_BATT_L),
+    ) {
         let mv = (((h & 0x1F) as i32) << 8) | l as i32;
         if mv > 0 {
             sample.battery_mv = mv;

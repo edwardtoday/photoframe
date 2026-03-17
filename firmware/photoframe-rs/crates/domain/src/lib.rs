@@ -77,6 +77,12 @@ pub struct BackoffDecision {
     pub sleep_seconds: u64,
 }
 
+pub const MIN_VALID_EPOCH: i64 = 1_735_689_600; // 2025-01-01 UTC
+
+const BEIJING_UTC_OFFSET_SECONDS: i64 = 8 * 3600;
+const DAY_SECONDS: i64 = 24 * 3600;
+const BEIJING_SYNC_SECONDS_OF_DAY: [i64; 2] = [5 * 3600, 16 * 3600];
+
 /// 把“本轮结果”映射为下一轮休眠时长与失败计数。
 /// 这里严格对齐当前 C++ 固件的退避/软失败语义，避免功耗策略漂移。
 pub fn apply_cycle_outcome(
@@ -120,9 +126,29 @@ fn regular_sleep_seconds(interval_minutes: u32) -> u64 {
     u64::from(interval_minutes.max(1)) * 60
 }
 
+/// 正常自动轮询固定对齐到北京时间 05:00 / 16:00。
+/// 若设备时钟仍不可信，则返回 None，让调用方回退到原有 interval/backoff 兜底。
+pub fn sleep_seconds_until_next_beijing_sync(now_epoch: i64) -> Option<u64> {
+    if now_epoch < MIN_VALID_EPOCH {
+        return None;
+    }
+
+    let local_epoch = now_epoch.saturating_add(BEIJING_UTC_OFFSET_SECONDS);
+    let seconds_of_day = local_epoch.rem_euclid(DAY_SECONDS);
+
+    for slot in BEIJING_SYNC_SECONDS_OF_DAY {
+        if slot > seconds_of_day {
+            let delta = slot - seconds_of_day;
+            return Some(delta.max(60) as u64);
+        }
+    }
+
+    let next_day_delta = (DAY_SECONDS - seconds_of_day) + BEIJING_SYNC_SECONDS_OF_DAY[0];
+    Some(next_day_delta.max(60) as u64)
+}
+
 /// 与当前固件保持一致：当 RTC 时间明显无效、上次校时无效、或距离上次校时超过一天时触发校时。
 pub fn should_sync_time(now_epoch: i64, last_time_sync_epoch: i64) -> bool {
-    const MIN_VALID_EPOCH: i64 = 1_735_689_600; // 2025-01-01 UTC
     const SYNC_INTERVAL_SEC: i64 = 24 * 3600;
 
     if now_epoch < MIN_VALID_EPOCH {

@@ -363,16 +363,23 @@ impl DeviceRuntimeConfig {
                 if ssid.is_empty() {
                     continue;
                 }
-                if next_profiles.iter().any(|profile: &WifiCredential| profile.ssid == ssid) {
+                if next_profiles
+                    .iter()
+                    .any(|profile: &WifiCredential| profile.ssid == ssid)
+                {
                     continue;
                 }
-                let password = item.password.as_deref().map(str::to_string).unwrap_or_else(|| {
-                    self.wifi_profiles
-                        .iter()
-                        .find(|profile| profile.ssid == ssid)
-                        .map(|profile| profile.password.clone())
-                        .unwrap_or_default()
-                });
+                let password = item
+                    .password
+                    .as_deref()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        self.wifi_profiles
+                            .iter()
+                            .find(|profile| profile.ssid == ssid)
+                            .map(|profile| profile.password.clone())
+                            .unwrap_or_default()
+                    });
                 next_profiles.push(WifiCredential {
                     ssid: ssid.to_string(),
                     password,

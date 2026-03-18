@@ -5,7 +5,7 @@ use std::{
     ptr,
     sync::{Mutex, OnceLock},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[cfg(target_os = "espidf")]
@@ -93,7 +93,7 @@ fn init_bus(state: &mut PanelRuntime) -> Result<(), String> {
 
     let mut dev_cfg = sys::spi_device_interface_config_t::default();
     dev_cfg.spics_io_num = -1;
-    dev_cfg.clock_speed_hz = 10 * 1000 * 1000;
+    dev_cfg.clock_speed_hz = 40 * 1000 * 1000;
     dev_cfg.mode = 0;
     dev_cfg.queue_size = 7;
     dev_cfg.flags = sys::SPI_DEVICE_HALFDUPLEX;
@@ -167,9 +167,7 @@ fn wait_busy(stage: &str, timeout_ms: i32) -> Result<(), String> {
         waited_ms += 10;
     }
     let cost_ms = (unsafe { sys::esp_timer_get_time() } - start_us) / 1000;
-    if cost_ms >= 1000 {
-        println!("photoframe-rs/panel: busy cleared stage={stage} cost={cost_ms}ms");
-    }
+    println!("photoframe-rs/timing: panel_busy stage={stage} cost={cost_ms}ms");
     Ok(())
 }
 
@@ -267,9 +265,22 @@ fn turn_on_display(spi_handle: sys::spi_device_handle_t) -> Result<(), String> {
 
 #[cfg(target_os = "espidf")]
 fn flush_raw(spi_handle: sys::spi_device_handle_t, data: &[u8]) -> Result<(), String> {
+    let start = Instant::now();
     write_command(spi_handle, 0x10)?;
+    let transfer_start = Instant::now();
     write_buffer(spi_handle, data)?;
-    turn_on_display(spi_handle)
+    let transfer_ms = transfer_start.elapsed().as_millis();
+    let trigger_start = Instant::now();
+    turn_on_display(spi_handle)?;
+    let trigger_ms = trigger_start.elapsed().as_millis();
+    println!(
+        "photoframe-rs/timing: panel_flush transfer={}ms trigger={}ms total={}ms bytes={}",
+        transfer_ms,
+        trigger_ms,
+        start.elapsed().as_millis(),
+        data.len()
+    );
+    Ok(())
 }
 
 #[cfg(target_os = "espidf")]

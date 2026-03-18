@@ -90,7 +90,7 @@ static PORTAL_HTML: &str = r#"<!doctype html>
       <option value="2">旋转 180</option>
     </select>
     <select id="colorMode">
-      <option value="0">色彩模式：自动判断</option>
+      <option value="0">色彩模式：直接转换（推荐）</option>
       <option value="1">总是转换为 6 色</option>
       <option value="2">输入已是 6 色</option>
     </select>

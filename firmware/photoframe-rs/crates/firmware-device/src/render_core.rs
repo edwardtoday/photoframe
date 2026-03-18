@@ -183,34 +183,17 @@ where
     let color_mode = options.color_process_mode.min(2);
     let dithering_mode = options.dithering_mode.min(1);
     let tolerance = options.six_color_tolerance.min(64);
-
-    let mut treat_as_six_color = color_mode == 2;
-    if color_mode == 0 {
-        treat_as_six_color = true;
-        'outer: for y in 0..PANEL_HEIGHT {
-            for x in 0..PANEL_WIDTH {
-                let (r, g, b) = get_rgb(x, y);
-                if match_palette_color(r, g, b, tolerance).is_none() {
-                    treat_as_six_color = false;
-                    break 'outer;
-                }
-            }
-        }
-    }
-
+    let treat_as_six_color = color_mode == 2;
     let use_dither = !treat_as_six_color && dithering_mode == 1;
     let mut display = vec![((COLOR_WHITE << 4) | COLOR_WHITE) as u8; DISPLAY_LEN];
     for y in 0..PANEL_HEIGHT {
         for x in 0..PANEL_WIDTH {
             let (mut r, mut g, mut b) = get_rgb(x, y);
-            let code = if treat_as_six_color {
-                match_palette_color(r, g, b, tolerance).unwrap_or_else(|| quantize_color(r, g, b))
-            } else {
-                if use_dither {
-                    apply_ordered_dither(x, y, &mut r, &mut g, &mut b);
-                }
-                quantize_color(r, g, b)
-            };
+            if use_dither {
+                apply_ordered_dither(x, y, &mut r, &mut g, &mut b);
+            }
+            let code =
+                match_palette_color(r, g, b, tolerance).unwrap_or_else(|| quantize_color(r, g, b));
             set_packed_pixel(&mut display, PANEL_WIDTH, x, y, code);
         }
     }

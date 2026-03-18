@@ -32,6 +32,15 @@ const WORKSPACE_HINTS = {
   config: '配置：设备配对审批、连接设置、参数与 Wi‑Fi 管理',
   history: '历史：发布历史与配置下发历史',
 };
+const DITHER_ALGORITHM_LABELS = {
+  none: '保持原图',
+  bayer: 'Bayer 4x4',
+  'floyd-steinberg': 'Floyd-Steinberg',
+  jarvis: 'Jarvis (JJN)',
+  stucki: 'Stucki',
+  atkinson: 'Atkinson',
+  sierra: 'Sierra',
+};
 
 function readCookie(name) {
   const encodedName = `${name}=`;
@@ -299,6 +308,7 @@ function formatOverrideCreateResult(data) {
   const lines = [
     `插播 #${data.id} 已创建`,
     `目标设备: ${data.device_id}`,
+    `服务端 Dither: ${ditherAlgorithmLabel(data.dither_algorithm)}`,
     `开始策略: ${startPolicyLabel(data.start_policy)}`,
     `开始时间: ${fmtEpoch(data.start_epoch)}`,
     `结束时间: ${fmtEpoch(data.end_epoch)}`,
@@ -326,6 +336,10 @@ function optionLabel(value, mapping) {
   }
   const key = String(value);
   return mapping[key] || key;
+}
+
+function ditherAlgorithmLabel(value) {
+  return optionLabel(value, DITHER_ALGORITHM_LABELS);
 }
 
 function batteryStatusText(device) {
@@ -1196,7 +1210,7 @@ function updateConfigHints() {
   setText('cfgHintOrchEnabled', `当前: ${optionLabel(orchEnabled, { '0': '关闭', '1': '启用' })}`);
   setText('cfgHintDisplayRotation', `当前: ${optionLabel(rotation, { '0': '旋转 0', '2': '旋转 180' })}`);
   setText('cfgHintColorProcessMode', `当前: ${optionLabel(colorMode, {
-    '0': '自动判断',
+    '0': '直接转换',
     '1': '总是转换为 6 色',
     '2': '认为输入已是 6 色',
   })}`);
@@ -1437,6 +1451,7 @@ async function loadOverrides() {
       <td>${fmtEpoch(item.start_epoch)}</td>
       <td>${fmtEpoch(item.end_epoch)}</td>
       <td>${fmtEpoch(item.expected_effective_epoch)}</td>
+      <td>${escapeHtml(ditherAlgorithmLabel(item.dither_algorithm))}</td>
       <td>${escapeHtml(item.note || '')}</td>
       <td>${delBtn}</td>
     `;
@@ -1528,6 +1543,9 @@ function renderPublishHistoryItem(item) {
   const overrideText = item.override_id == null ? '-' : `#${item.override_id}`;
   const safeUrl = escapeHtml(item.image_url || '');
   const shortUrl = escapeHtml(shorten(item.image_url || '', 78));
+  const ditherText = item.dither_algorithm
+    ? ditherAlgorithmLabel(item.dither_algorithm)
+    : '-';
 
   return `
     <article class="release-item">
@@ -1538,6 +1556,7 @@ function renderPublishHistoryItem(item) {
       <p class="release-summary">${shortUrl}</p>
       <ul>
         <li>override_id: ${escapeHtml(overrideText)}</li>
+        <li>dither: ${escapeHtml(ditherText)}</li>
         <li>poll_after: ${fmtDuration(item.poll_after_seconds)}</li>
         <li>valid_until: ${fmtEpoch(item.valid_until_epoch)}</li>
         <li><a href="${safeUrl}" target="_blank" rel="noreferrer">打开原图</a></li>
@@ -1596,7 +1615,9 @@ async function loadCurrentPreview() {
 
   const source = resp.headers.get('X-PhotoFrame-Source') || 'daily';
   const target = resp.headers.get('X-PhotoFrame-Device') || selectedDevice;
-  meta.textContent = `设备 ${target} · 当前来源 ${source} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
+  const dither = resp.headers.get('X-PhotoFrame-Dither') || '';
+  const ditherText = dither ? ditherAlgorithmLabel(dither) : '上游/未预处理';
+  meta.textContent = `设备 ${target} · 当前来源 ${source} · Dither ${ditherText} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
 }
 
 function renderConfigHistoryItem(item) {
@@ -1646,6 +1667,7 @@ async function submitOverride(ev) {
   fd.append('duration_minutes', document.getElementById('duration').value);
   fd.append('starts_at', document.getElementById('startsAt').value || '');
   fd.append('note', document.getElementById('note').value || '');
+  fd.append('dither_algorithm', document.getElementById('overrideDitherAlgorithm').value || 'none');
 
   const headers = authHeaders();
   const resp = await fetch('/api/v1/overrides/upload', {

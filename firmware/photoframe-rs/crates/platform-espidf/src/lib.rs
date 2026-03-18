@@ -22,6 +22,7 @@ use std::{
     ffi::{CStr, CString},
     os::raw::c_char,
     ptr,
+    time::Instant,
 };
 
 pub struct EspIdfClock;
@@ -646,6 +647,14 @@ fn is_redirect_status(status: i32) -> bool {
 }
 
 #[cfg(target_os = "espidf")]
+fn image_format_label(format: &ImageFormat) -> &'static str {
+    match format {
+        ImageFormat::Bmp => "bmp",
+        ImageFormat::Jpeg => "jpeg",
+    }
+}
+
+#[cfg(target_os = "espidf")]
 fn payload_to_patch(payload: DeviceConfigPayload) -> RemoteConfigPatch {
     RemoteConfigPatch {
         orchestrator_enabled: payload.orchestrator_enabled,
@@ -669,6 +678,7 @@ fn payload_to_patch(payload: DeviceConfigPayload) -> RemoteConfigPatch {
 #[cfg(target_os = "espidf")]
 fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String> {
     let url = CString::new(plan.url.clone()).map_err(|err| err.to_string())?;
+    let fetch_start = Instant::now();
     unsafe {
         let mut config: sys::esp_http_client_config_t = std::mem::zeroed();
         config.url = url.as_ptr();
@@ -713,6 +723,7 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
 
         let mut redirect_count = 0usize;
         loop {
+            let open_start = Instant::now();
             if let Err(err) =
                 check_esp(sys::esp_http_client_open(client, 0), "esp_http_client_open")
             {
@@ -721,6 +732,7 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
             }
             let _ = sys::esp_http_client_fetch_headers(client);
             let status_code = sys::esp_http_client_get_status_code(client);
+            let headers_ms = open_start.elapsed().as_millis();
 
             if is_redirect_status(status_code) {
                 if redirect_count >= MAX_HTTP_REDIRECTS {
@@ -749,6 +761,12 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
             let last_modified = get_header_value(client, "Last-Modified")?;
 
             if status_code == 304 {
+                println!(
+                    "photoframe-rs/timing: fetch status=304 total={}ms headers={}ms body=0ms bytes=0 changed=false format=unchanged url={}",
+                    fetch_start.elapsed().as_millis(),
+                    headers_ms,
+                    plan.url
+                );
                 sys::esp_http_client_close(client);
                 sys::esp_http_client_cleanup(client);
                 return Ok(ImageFetchOutcome {
@@ -783,6 +801,7 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
                 return Err(format!("invalid content length: {content_len}"));
             }
 
+            let body_start = Instant::now();
             let data = match read_body_exact(client, content_len as usize) {
                 Ok(data) => data,
                 Err(err) => {
@@ -791,12 +810,23 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
                     return Err(err);
                 }
             };
+            let body_ms = body_start.elapsed().as_millis();
             sys::esp_http_client_close(client);
             sys::esp_http_client_cleanup(client);
 
             let sha256 = sha256_hex(&data);
             let image_changed = sha256 != plan.previous_sha256;
             let format = detect_format(content_type.as_deref(), &data);
+            println!(
+                "photoframe-rs/timing: fetch status=200 total={}ms headers={}ms body={}ms bytes={} changed={} format={} url={}",
+                fetch_start.elapsed().as_millis(),
+                headers_ms,
+                body_ms,
+                data.len(),
+                image_changed,
+                image_format_label(&format),
+                plan.url
+            );
             let artifact = Some(ImageArtifact {
                 format,
                 width: 0,

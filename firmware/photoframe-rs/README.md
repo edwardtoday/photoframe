@@ -59,7 +59,7 @@ scripts/build-photoframe-rs.sh
 - 恢复时可在构建前注入：
 
 ```bash
-export PHOTOFRAME_BOOTSTRAP_CONFIG_JSON='{"orchestrator_base_url":"https://901.qingpei.me:40009","orchestrator_token":"...","photo_token":"...","image_url_template":"https://901.qingpei.me:40009/public/daily.jpg?device_id=%DEVICE_ID%","timezone":"CST-8","display_rotation":2}'
+export PHOTOFRAME_BOOTSTRAP_CONFIG_JSON='{"orchestrator_base_url":"https://901.qingpei.me:40009","orchestrator_token":"...","photo_token":"...","image_url_template":"https://901.qingpei.me:40009/public/daily.bmp?device_id=%DEVICE_ID%","timezone":"CST-8","display_rotation":2}'
 scripts/build-photoframe-rs.sh
 scripts/flash-photoframe-rs.sh /dev/cu.usbmodem111201 115200 --app-bin firmware/photoframe-rs/dist/photoframe-rs-recovery-app.bin
 ```

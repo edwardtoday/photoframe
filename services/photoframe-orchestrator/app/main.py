@@ -7,6 +7,7 @@ import os
 import sqlite3
 import threading
 import time
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,113 @@ DEVICE_CONFIG_ALLOWED_KEYS = {
     "timezone",
 }
 DEVICE_CONFIG_SECRET_KEYS = {"orchestrator_token", "photo_token"}
+OVERRIDE_DITHER_DEFAULT = "none"
+PHOTOFRAME_PALETTE: tuple[tuple[int, int, int], ...] = (
+    (0, 0, 0),
+    (255, 255, 255),
+    (255, 255, 0),
+    (255, 0, 0),
+    (0, 0, 255),
+    (0, 255, 0),
+)
+BAYER_4X4: tuple[tuple[int, ...], ...] = (
+    (0, 8, 2, 10),
+    (12, 4, 14, 6),
+    (3, 11, 1, 9),
+    (15, 7, 13, 5),
+)
+BAYER_STRENGTH = 5.0
+DITHER_ALGORITHM_SPECS: dict[str, dict[str, Any]] = {
+    "none": {
+        "label": "保持原图",
+        "description": "不做服务端预抖动，保持当前 24-bit 上传链路",
+        "kind": "passthrough",
+    },
+    "bayer": {
+        "label": "Bayer 4x4",
+        "description": "有序抖动，颗粒规整，生成速度最快",
+        "kind": "ordered",
+    },
+    "floyd-steinberg": {
+        "label": "Floyd-Steinberg",
+        "description": "经典误差扩散，边缘锐利",
+        "kind": "diffusion",
+        "kernel": (
+            (1, 0, 7 / 16),
+            (-1, 1, 3 / 16),
+            (0, 1, 5 / 16),
+            (1, 1, 1 / 16),
+        ),
+    },
+    "jarvis": {
+        "label": "Jarvis (JJN)",
+        "description": "扩散范围更大，层次更平滑",
+        "kind": "diffusion",
+        "kernel": (
+            (1, 0, 7 / 48),
+            (2, 0, 5 / 48),
+            (-2, 1, 3 / 48),
+            (-1, 1, 5 / 48),
+            (0, 1, 7 / 48),
+            (1, 1, 5 / 48),
+            (2, 1, 3 / 48),
+            (-2, 2, 1 / 48),
+            (-1, 2, 3 / 48),
+            (0, 2, 5 / 48),
+            (1, 2, 3 / 48),
+            (2, 2, 1 / 48),
+        ),
+    },
+    "stucki": {
+        "label": "Stucki",
+        "description": "误差分配更均匀，细节与噪点平衡",
+        "kind": "diffusion",
+        "kernel": (
+            (1, 0, 8 / 42),
+            (2, 0, 4 / 42),
+            (-2, 1, 2 / 42),
+            (-1, 1, 4 / 42),
+            (0, 1, 8 / 42),
+            (1, 1, 4 / 42),
+            (2, 1, 2 / 42),
+            (-2, 2, 1 / 42),
+            (-1, 2, 2 / 42),
+            (0, 2, 4 / 42),
+            (1, 2, 2 / 42),
+            (2, 2, 1 / 42),
+        ),
+    },
+    "atkinson": {
+        "label": "Atkinson",
+        "description": "对比更强，颗粒感明显",
+        "kind": "diffusion",
+        "kernel": (
+            (1, 0, 1 / 8),
+            (2, 0, 1 / 8),
+            (-1, 1, 1 / 8),
+            (0, 1, 1 / 8),
+            (1, 1, 1 / 8),
+            (0, 2, 1 / 8),
+        ),
+    },
+    "sierra": {
+        "label": "Sierra",
+        "description": "平衡层次与稳定性，适合照片",
+        "kind": "diffusion",
+        "kernel": (
+            (1, 0, 5 / 32),
+            (2, 0, 3 / 32),
+            (-2, 1, 2 / 32),
+            (-1, 1, 4 / 32),
+            (0, 1, 5 / 32),
+            (1, 1, 4 / 32),
+            (2, 1, 2 / 32),
+            (-1, 2, 2 / 32),
+            (0, 2, 3 / 32),
+            (1, 2, 2 / 32),
+        ),
+    },
+}
 
 app = FastAPI(title="PhotoFrame Orchestrator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
@@ -104,6 +212,8 @@ def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
   _ensure_table_column(conn, "devices", "charging", "INTEGER NOT NULL DEFAULT -1")
   _ensure_table_column(conn, "devices", "vbus_good", "INTEGER NOT NULL DEFAULT -1")
   _ensure_table_column(conn, "devices", "sta_ip", "TEXT NOT NULL DEFAULT ''")
+  _ensure_table_column(conn, "overrides", "dither_algorithm", f"TEXT NOT NULL DEFAULT '{OVERRIDE_DITHER_DEFAULT}'")
+  _ensure_table_column(conn, "publish_history", "dither_algorithm", "TEXT NOT NULL DEFAULT ''")
 
   conn.execute(
       """
@@ -860,17 +970,17 @@ def _resolve_current_payload_for_device(
     conn: sqlite3.Connection,
     now_ts: int,
     target_device: str,
-) -> tuple[bytes, str]:
+) -> tuple[bytes, str, str]:
   active = _active_override_for_device(conn, now_ts, target_device)
   if active is not None:
     path = ASSET_DIR / str(active["asset_name"])
     if not path.exists():
       raise HTTPException(status_code=502, detail="override asset missing")
-    return path.read_bytes(), "override"
+    return path.read_bytes(), "override", _normalize_override_dither_algorithm(active["dither_algorithm"])
 
   upstream_url = _daily_image_url(now_ts)
   payload = _fetch_daily_bmp_bytes(upstream_url)
-  return payload, "daily"
+  return payload, "daily", ""
 
 
 def _public_base(request: Request) -> str:
@@ -891,7 +1001,153 @@ def _parse_start_epoch(starts_at: str | None) -> int:
   return int(dt.timestamp())
 
 
-def _read_and_convert_bmp(upload: UploadFile) -> tuple[str, str]:
+def _normalize_override_dither_algorithm(raw: str | None) -> str:
+  value = (raw or OVERRIDE_DITHER_DEFAULT).strip().lower()
+  if value == "":
+    return OVERRIDE_DITHER_DEFAULT
+  if value not in DITHER_ALGORITHM_SPECS:
+    raise HTTPException(status_code=400, detail=f"unsupported dither_algorithm: {value}")
+  return value
+
+
+def _clamp_channel(value: float) -> int:
+  if value <= 0:
+    return 0
+  if value >= 255:
+    return 255
+  return int(round(value))
+
+
+def _nearest_palette_color(rgb: tuple[float, float, float]) -> tuple[int, int, int]:
+  r, g, b = rgb
+  best = PHOTOFRAME_PALETTE[0]
+  best_distance = math.inf
+  for candidate in PHOTOFRAME_PALETTE:
+    cr, cg, cb = candidate
+    dr = r - cr
+    dg = g - cg
+    db = b - cb
+    distance = dr * dr + dg * dg + db * db
+    if distance < best_distance:
+      best = candidate
+      best_distance = distance
+  return best
+
+
+def _new_error_row(width: int) -> list[float]:
+  return [0.0] * (width * 3)
+
+
+def _pixel_list(image: Image.Image) -> list[tuple[int, int, int]]:
+  width, height = image.size
+  pixels = image.load()
+  return [pixels[x, y] for y in range(height) for x in range(width)]
+
+
+def _apply_bayer_dither(image: Image.Image) -> Image.Image:
+  width, height = image.size
+  source_pixels = _pixel_list(image)
+  output: list[tuple[int, int, int]] = []
+
+  for y in range(height):
+    row_offset = y * width
+    for x in range(width):
+      r0, g0, b0 = source_pixels[row_offset + x]
+      threshold = BAYER_4X4[y & 0x3][x & 0x3] - 8
+      delta = threshold * BAYER_STRENGTH
+      adjusted = (
+          _clamp_channel(r0 + delta),
+          _clamp_channel(g0 + delta),
+          _clamp_channel(b0 + delta),
+      )
+      output.append(_nearest_palette_color(adjusted))
+
+  rendered = Image.new("RGB", image.size)
+  rendered.putdata(output)
+  return rendered
+
+
+def _apply_error_diffusion(image: Image.Image, kernel: tuple[tuple[int, int, float], ...]) -> Image.Image:
+  width, height = image.size
+  source_pixels = _pixel_list(image)
+  max_dy = max(dy for _, dy, _ in kernel)
+  error_rows = [_new_error_row(width) for _ in range(max_dy + 1)]
+  output: list[tuple[int, int, int]] = [PHOTOFRAME_PALETTE[1]] * (width * height)
+
+  # 误差扩散需要逐像素维护未来 1-2 行的 RGB 残差，这里用紧凑 float buffer 避免引入 numpy。
+  for y in range(height):
+    row_offset = y * width
+    current_errors = error_rows[0]
+    for x in range(width):
+      source_r, source_g, source_b = source_pixels[row_offset + x]
+      base = x * 3
+      r = _clamp_channel(source_r + current_errors[base])
+      g = _clamp_channel(source_g + current_errors[base + 1])
+      b = _clamp_channel(source_b + current_errors[base + 2])
+      quantized = _nearest_palette_color((r, g, b))
+      output[row_offset + x] = quantized
+
+      err_r = r - quantized[0]
+      err_g = g - quantized[1]
+      err_b = b - quantized[2]
+      if err_r == 0 and err_g == 0 and err_b == 0:
+        continue
+
+      for dx, dy, weight in kernel:
+        nx = x + dx
+        if nx < 0 or nx >= width or y + dy >= height:
+          continue
+        target_row = error_rows[dy]
+        target_base = nx * 3
+        target_row[target_base] += err_r * weight
+        target_row[target_base + 1] += err_g * weight
+        target_row[target_base + 2] += err_b * weight
+
+    error_rows.pop(0)
+    error_rows.append(_new_error_row(width))
+
+  rendered = Image.new("RGB", image.size)
+  rendered.putdata(output)
+  return rendered
+
+
+def _apply_override_dither(image: Image.Image, dither_algorithm: str) -> Image.Image:
+  normalized = _normalize_override_dither_algorithm(dither_algorithm)
+  spec = DITHER_ALGORITHM_SPECS[normalized]
+  kind = str(spec["kind"])
+
+  if kind == "passthrough":
+    return image.copy()
+  if kind == "ordered":
+    return _apply_bayer_dither(image)
+  if kind == "diffusion":
+    kernel = spec.get("kernel")
+    if not isinstance(kernel, tuple):
+      raise RuntimeError(f"kernel missing for dither algorithm: {normalized}")
+    return _apply_error_diffusion(image, kernel)
+  raise RuntimeError(f"unsupported dither algorithm kind: {kind}")
+
+
+def _render_override_assets(image: Image.Image, dither_algorithm: str) -> tuple[bytes, bytes]:
+  rendered = _apply_override_dither(image, dither_algorithm)
+
+  out_bmp = io.BytesIO()
+  rendered.save(out_bmp, format="BMP")
+  bmp_data = out_bmp.getvalue()
+
+  jpeg_quality = 85
+  try:
+    jpeg_quality = int(os.getenv("PHOTOFRAME_ASSET_JPEG_QUALITY", "85"))
+  except ValueError:
+    jpeg_quality = 85
+  jpeg_quality = max(40, min(95, jpeg_quality))
+
+  out_jpg = io.BytesIO()
+  rendered.save(out_jpg, format="JPEG", quality=jpeg_quality, optimize=True, progressive=False)
+  return bmp_data, out_jpg.getvalue()
+
+
+def _read_and_convert_bmp(upload: UploadFile, dither_algorithm: str) -> tuple[str, str]:
   raw = upload.file.read()
   if not raw:
     raise HTTPException(status_code=400, detail="empty upload file")
@@ -901,21 +1157,7 @@ def _read_and_convert_bmp(upload: UploadFile) -> tuple[str, str]:
       rgb = image.convert("RGB")
       # 固件侧以 480x800 为基准渲染（另一方向由固件旋转）。服务端统一做裁剪缩放保证设备可直接显示。
       fitted = ImageOps.fit(rgb, (480, 800), method=Image.Resampling.LANCZOS)
-      out_bmp = io.BytesIO()
-      fitted.save(out_bmp, format="BMP")
-      bmp_data = out_bmp.getvalue()
-
-      # 同时产出 JPEG 版本（同名 sha256.jpg），用于设备侧省流省电下载。
-      jpeg_quality = 85
-      try:
-        jpeg_quality = int(os.getenv("PHOTOFRAME_ASSET_JPEG_QUALITY", "85"))
-      except Exception:
-        jpeg_quality = 85
-      jpeg_quality = max(40, min(95, jpeg_quality))
-
-      out_jpg = io.BytesIO()
-      fitted.save(out_jpg, format="JPEG", quality=jpeg_quality, optimize=True, progressive=False)
-      jpg_data = out_jpg.getvalue()
+      bmp_data, jpg_data = _render_override_assets(fitted, dither_algorithm)
   except Exception as exc:  # pragma: no cover
     raise HTTPException(status_code=400, detail="cannot decode image") from exc
 
@@ -1096,9 +1338,17 @@ def public_daily_bmp(
   conn = _ensure_db()
 
   _record_public_daily_activity(conn, target_device, now_ts)
-  payload, source = _resolve_current_payload_for_device(conn, now_ts, target_device)
+  payload, source, dither_algorithm = _resolve_current_payload_for_device(conn, now_ts, target_device)
   etag_value = hashlib.sha256(payload).hexdigest()
   etag = f"\"{etag_value}\""
+  headers = {
+      "Cache-Control": "private, max-age=60",
+      "ETag": etag,
+      "X-PhotoFrame-Source": source,
+      "X-PhotoFrame-Device": target_device,
+  }
+  if dither_algorithm:
+    headers["X-PhotoFrame-Dither"] = dither_algorithm
 
   inm = (request.headers.get("if-none-match") or "").strip()
   if inm:
@@ -1107,23 +1357,13 @@ def public_daily_bmp(
       return Response(
           status_code=304,
           content=b"",
-          headers={
-              "Cache-Control": "private, max-age=60",
-              "ETag": etag,
-              "X-PhotoFrame-Source": source,
-              "X-PhotoFrame-Device": target_device,
-          },
+          headers=headers,
       )
 
   return Response(
       content=payload,
       media_type="image/bmp",
-      headers={
-          "Cache-Control": "private, max-age=60",
-          "ETag": etag,
-          "X-PhotoFrame-Source": source,
-          "X-PhotoFrame-Device": target_device,
-      },
+      headers=headers,
   )
 
 
@@ -1140,7 +1380,7 @@ def public_daily_jpg(
   conn = _ensure_db()
 
   _record_public_daily_activity(conn, target_device, now_ts)
-  payload, source = _resolve_current_payload_for_device(conn, now_ts, target_device)
+  payload, source, dither_algorithm = _resolve_current_payload_for_device(conn, now_ts, target_device)
   try:
     with Image.open(io.BytesIO(payload)) as image:
       rgb = image.convert("RGB")
@@ -1152,6 +1392,14 @@ def public_daily_jpg(
 
   etag_value = hashlib.sha256(jpg_bytes).hexdigest()
   etag = f"\"{etag_value}\""
+  headers = {
+      "Cache-Control": "private, max-age=60",
+      "ETag": etag,
+      "X-PhotoFrame-Source": source,
+      "X-PhotoFrame-Device": target_device,
+  }
+  if dither_algorithm:
+    headers["X-PhotoFrame-Dither"] = dither_algorithm
   inm = (request.headers.get("if-none-match") or "").strip()
   if inm:
     candidates = [part.strip() for part in inm.split(",") if part.strip()]
@@ -1159,23 +1407,13 @@ def public_daily_jpg(
       return Response(
           status_code=304,
           content=b"",
-          headers={
-              "Cache-Control": "private, max-age=60",
-              "ETag": etag,
-              "X-PhotoFrame-Source": source,
-              "X-PhotoFrame-Device": target_device,
-          },
+          headers=headers,
       )
 
   return Response(
       content=jpg_bytes,
       media_type="image/jpeg",
-      headers={
-          "Cache-Control": "private, max-age=60",
-          "ETag": etag,
-          "X-PhotoFrame-Source": source,
-          "X-PhotoFrame-Device": target_device,
-      },
+      headers=headers,
   )
 
 
@@ -1190,15 +1428,18 @@ def preview_current_bmp(
   _require_device_token(target_device, x_photoframe_token)
   conn = _ensure_db()
 
-  payload, source = _resolve_current_payload_for_device(conn, now_ts, target_device)
+  payload, source, dither_algorithm = _resolve_current_payload_for_device(conn, now_ts, target_device)
+  headers = {
+      "Cache-Control": "no-store",
+      "X-PhotoFrame-Source": source,
+      "X-PhotoFrame-Device": target_device,
+  }
+  if dither_algorithm:
+    headers["X-PhotoFrame-Dither"] = dither_algorithm
   return Response(
       content=payload,
       media_type="image/bmp",
-      headers={
-          "Cache-Control": "no-store",
-          "X-PhotoFrame-Source": source,
-          "X-PhotoFrame-Device": target_device,
-      },
+      headers=headers,
   )
 
 
@@ -1213,7 +1454,7 @@ def preview_current_jpg(
   _require_device_token(target_device, x_photoframe_token)
   conn = _ensure_db()
 
-  payload, source = _resolve_current_payload_for_device(conn, now_ts, target_device)
+  payload, source, dither_algorithm = _resolve_current_payload_for_device(conn, now_ts, target_device)
   try:
     with Image.open(io.BytesIO(payload)) as image:
       rgb = image.convert("RGB")
@@ -1223,14 +1464,18 @@ def preview_current_jpg(
   except Exception as exc:
     raise HTTPException(status_code=502, detail="cannot encode preview jpg") from exc
 
+  headers = {
+      "Cache-Control": "no-store",
+      "X-PhotoFrame-Source": source,
+      "X-PhotoFrame-Device": target_device,
+  }
+  if dither_algorithm:
+    headers["X-PhotoFrame-Dither"] = dither_algorithm
+
   return Response(
       content=jpg_bytes,
       media_type="image/jpeg",
-      headers={
-          "Cache-Control": "no-store",
-          "X-PhotoFrame-Source": source,
-          "X-PhotoFrame-Device": target_device,
-      },
+      headers=headers,
   )
 
 
@@ -1315,10 +1560,12 @@ def device_next(
   else:
     image_url = _daily_image_url(now_ts)
   active_override_id = None
+  active_dither_algorithm = ""
 
   if active is not None:
     source = "override"
     active_override_id = int(active["id"])
+    active_dither_algorithm = _normalize_override_dither_algorithm(active["dither_algorithm"])
     valid_until = int(active["end_epoch"])
     asset_name = str(active["asset_name"])
     asset_sha256 = str(active["asset_sha256"])
@@ -1340,8 +1587,8 @@ def device_next(
         """
         INSERT INTO publish_history (
           device_id, issued_epoch, source, image_url, override_id,
-          poll_after_seconds, valid_until_epoch, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          poll_after_seconds, valid_until_epoch, created_at, dither_algorithm
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             device_id,
@@ -1352,6 +1599,7 @@ def device_next(
             int(poll_sec),
             int(valid_until),
             server_now,
+            active_dither_algorithm,
         ),
     )
     # 控制历史表体积，保留最近 5000 条即可满足家庭场景追溯需求。
@@ -1961,7 +2209,7 @@ def publish_history(
   rows = conn.execute(
       f"""
       SELECT id, device_id, issued_epoch, source, image_url, override_id,
-             poll_after_seconds, valid_until_epoch
+             poll_after_seconds, valid_until_epoch, dither_algorithm
       FROM publish_history
       {where}
       ORDER BY issued_epoch DESC, id DESC
@@ -1982,6 +2230,7 @@ def publish_history(
             "override_id": None if row["override_id"] is None else int(row["override_id"]),
             "poll_after_seconds": int(row["poll_after_seconds"]),
             "valid_until_epoch": int(row["valid_until_epoch"]),
+            "dither_algorithm": row["dither_algorithm"],
         }
     )
 
@@ -2025,6 +2274,7 @@ def overrides(now_epoch: int | None = Query(default=None)) -> dict[str, Any]:
             "state": state,
             "asset_name": row["asset_name"],
             "asset_sha256": row["asset_sha256"],
+            "dither_algorithm": _normalize_override_dither_algorithm(row["dither_algorithm"]),
             "note": row["note"],
             "created_epoch": int(row["created_epoch"]),
             "expected_effective_epoch": _guess_effective_epoch(row["device_id"], start),
@@ -2042,6 +2292,7 @@ def override_upload(
     device_id: str = Form(default="*"),
     starts_at: str | None = Form(default=None),
     note: str = Form(default=""),
+    dither_algorithm: str = Form(default=OVERRIDE_DITHER_DEFAULT),
     x_photoframe_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
   _require_token(x_photoframe_token)
@@ -2063,17 +2314,30 @@ def override_upload(
 
   end_epoch = start_epoch + duration_minutes * 60
 
-  asset_name, sha256 = _read_and_convert_bmp(file)
+  normalized_dither_algorithm = _normalize_override_dither_algorithm(dither_algorithm)
+  asset_name, sha256 = _read_and_convert_bmp(file, normalized_dither_algorithm)
   now_ts = _now_epoch()
   conn = _ensure_db()
 
   with DB_LOCK:
     cursor = conn.execute(
         """
-        INSERT INTO overrides (device_id, start_epoch, end_epoch, asset_name, asset_sha256, note, created_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO overrides (
+          device_id, start_epoch, end_epoch, asset_name, asset_sha256,
+          note, created_epoch, dither_algorithm
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (target_device, start_epoch, end_epoch, asset_name, sha256, note, now_ts),
+        (
+            target_device,
+            start_epoch,
+            end_epoch,
+            asset_name,
+            sha256,
+            note,
+            now_ts,
+            normalized_dither_algorithm,
+        ),
     )
     override_id = int(cursor.lastrowid)
     conn.commit()
@@ -2091,6 +2355,7 @@ def override_upload(
       "start_epoch": start_epoch,
       "end_epoch": end_epoch,
       "duration_minutes": duration_minutes,
+      "dither_algorithm": normalized_dither_algorithm,
       "start_policy": start_policy,
       "will_expire_before_effective": will_expire_before_effective,
       "image_url": image_url,

@@ -13,6 +13,8 @@
   - 设备回报：`POST /api/v1/device/config/applied`
   - 历史查询：`GET /api/v1/device-configs`
 - Web 上传插播图并设置播放窗口：`POST /api/v1/overrides/upload`
+  - 上传时可选服务端 dither：`Bayer / Floyd-Steinberg / Jarvis / Stucki / Atkinson / Sierra`
+  - 选中后，服务端会先按相框 6 色调色板生成实际下发的 BMP/JPEG 资产
 - 管理插播列表：`GET /api/v1/overrides`、`DELETE /api/v1/overrides/{id}`
 - 图片下发历史：`GET /api/v1/publish-history`
 - 管理页预览当前下发图：`GET /api/v1/preview/current.bmp`
@@ -106,6 +108,14 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 - `PHOTOFRAME_ASSET_JPEG_QUALITY`：插播上传时生成 `.jpg` 派生资源的质量参数（40-95，默认 85）
 - `DAILY_FETCH_TIMEOUT_SECONDS`：公网日图代理拉取上游超时（秒，默认 10）
 - `TZ`：服务端时区
+
+## 插播图片 Dither
+
+- 控制台“创建插播”支持选择服务端 dither 算法。
+- `保持原图`：维持当前行为，只做裁剪缩放，不做服务端预抖动。
+- 其余选项会在 orchestrator 侧先量化到设备 6 色调色板，再生成 `.bmp` / `.jpg` 派生资源。
+- 当前实现覆盖文章里提到的主要算法族：`Bayer 4x4`、`Floyd-Steinberg`、`Jarvis (JJN)`、`Stucki`、`Atkinson`、`Sierra`。
+- 设备端建议使用 `color_process_mode=2`（认为输入已是 6 色），或至少使用新的 `color_process_mode=0` 直转热路径，避免旧式全屏预扫描带来的固定时延。
 
 ## 公网日图接口
 

@@ -681,6 +681,7 @@
                   <th>start</th>
                   <th>end</th>
                   <th>预计生效</th>
+                  <th>dither</th>
                   <th>note</th>
                   <th>操作</th>
                 </tr>
@@ -725,7 +726,19 @@
             <label>备注
               <input id="note" placeholder="例如：家庭聚会插播" />
             </label>
-            <label>上传图片（任意格式，服务端会转成 480x800 BMP）
+            <label>服务端 Dither 算法
+              <select id="overrideDitherAlgorithm">
+                <option value="none">保持原图（不预处理）</option>
+                <option value="bayer">Bayer 4x4</option>
+                <option value="floyd-steinberg">Floyd-Steinberg</option>
+                <option value="jarvis">Jarvis (JJN)</option>
+                <option value="stucki">Stucki</option>
+                <option value="atkinson">Atkinson</option>
+                <option value="sierra">Sierra</option>
+              </select>
+            </label>
+            <p class="help">选择服务端 dither 后，编排器会先量化到相框 6 色调色板，再生成实际下发的 BMP/JPEG。</p>
+            <label>上传图片（任意格式，服务端会裁剪为 480x800，并按所选算法生成下发图）
               <input id="imageFile" type="file" accept="image/*" required />
             </label>
             <button type="submit">提交插播</button>
@@ -853,7 +866,7 @@
                   <label>色彩模式
                     <select id="cfgColorProcessMode">
                       <option value="">保持不变</option>
-                      <option value="0">自动判断（推荐）</option>
+                      <option value="0">直接转换（推荐）</option>
                       <option value="1">总是转换为 6 色</option>
                       <option value="2">认为输入已是 6 色</option>
                     </select>

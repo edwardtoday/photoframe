@@ -784,7 +784,6 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
             let content_type = get_header_value(client, "Content-Type")?;
             let etag = get_header_value(client, "ETag")?;
             let last_modified = get_header_value(client, "Last-Modified")?;
-
             if status_code == 304 {
                 println!(
                     "photoframe-rs/timing: fetch status=304 total={}ms headers={}ms body=0ms bytes=0 changed=false format=unchanged url={}",
@@ -827,7 +826,7 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
             }
 
             let body_start = Instant::now();
-            let data = match read_body_exact(client, content_len as usize) {
+            let data = match read_body_exact(client, content_len as usize, &plan.url) {
                 Ok(data) => data,
                 Err(err) => {
                     sys::esp_http_client_close(client);
@@ -1100,15 +1099,19 @@ unsafe fn read_body_stream(client: sys::esp_http_client_handle_t) -> Result<Vec<
 unsafe fn read_body_exact(
     client: sys::esp_http_client_handle_t,
     content_len: usize,
+    url: &str,
 ) -> Result<Vec<u8>, String> {
     let mut out = vec![0u8; content_len];
     let mut offset = 0usize;
+    const READ_CHUNK: usize = 1024;
     while offset < content_len {
+        let remaining = content_len - offset;
+        let request_len = remaining.min(READ_CHUNK);
         let read = unsafe {
             sys::esp_http_client_read(
                 client,
                 out[offset..].as_mut_ptr() as *mut c_char,
-                (content_len - offset) as i32,
+                request_len as i32,
             )
         };
         if read <= 0 {

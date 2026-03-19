@@ -8,6 +8,9 @@ use photoframe_domain::FailureKind;
 use std::time::Instant;
 
 #[cfg(target_os = "espidf")]
+use crate::wifi::EspWifiManager;
+
+#[cfg(target_os = "espidf")]
 const TRACE_NONE: u32 = 0;
 #[cfg(target_os = "espidf")]
 const TRACE_BEFORE_POWER_READY: u32 = 1;
@@ -31,6 +34,8 @@ const TRACE_PANEL_TURN_ON_04: u32 = 22;
 const TRACE_PANEL_TURN_ON_12: u32 = 23;
 #[cfg(target_os = "espidf")]
 const TRACE_PANEL_TURN_ON_02: u32 = 24;
+#[cfg(target_os = "espidf")]
+const TRACE_AFTER_CYCLE_RETURN: u32 = 30;
 
 #[cfg(target_os = "espidf")]
 #[unsafe(link_section = ".rtc.data")]
@@ -98,6 +103,7 @@ pub(crate) fn take_render_trace() -> Option<&'static str> {
         TRACE_PANEL_TURN_ON_04 => Some("panel_turn_on_04"),
         TRACE_PANEL_TURN_ON_12 => Some("panel_turn_on_12"),
         TRACE_PANEL_TURN_ON_02 => Some("panel_turn_on_02"),
+        TRACE_AFTER_CYCLE_RETURN => Some("after_cycle_return"),
         _ => Some("unknown"),
     }
 }
@@ -273,9 +279,34 @@ fn render_image_direct(
     };
     record_render_trace(TRACE_BEFORE_PANEL_FLUSH);
     let _ = photoframe_platform_espidf::send_debug_stage_beacon(config, "before_panel_flush");
+    let hostname = if config.device_id.is_empty() {
+        "photoframe-rs"
+    } else {
+        config.device_id.as_str()
+    };
+    println!("photoframe-rs/render: pause wifi before panel flush");
+    EspWifiManager::pause_for_render();
     let flush_start = Instant::now();
-    if let Err(err) = crate::panel::flush_packed_image(&packed.bytes) {
-        flush_ms = flush_start.elapsed().as_millis();
+    let flush_result = crate::panel::flush_packed_image(&packed.bytes);
+    flush_ms = flush_start.elapsed().as_millis();
+    println!("photoframe-rs/render: resume wifi after panel flush");
+    if let Err(err) = EspWifiManager::reconnect_after_render(hostname, config) {
+        println!("photoframe-rs/render: wifi resume failed after flush: {err}");
+        log_render_timing(
+            "err",
+            "wifi_resume",
+            &artifact.format,
+            artifact.bytes.len(),
+            packed.bytes.len(),
+            power_ms,
+            decode_ms,
+            pack_ms,
+            flush_ms,
+            render_start.elapsed().as_millis(),
+        );
+        return Err(FailureKind::GeneralFailure);
+    }
+    if let Err(err) = flush_result {
         let _ = photoframe_platform_espidf::send_debug_stage_beacon(config, "panel_flush_failed");
         println!("photoframe-rs/render: panel flush failed: {err}");
         log_render_timing(

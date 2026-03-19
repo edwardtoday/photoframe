@@ -342,6 +342,9 @@ where
             self.storage.save_config(&config)?;
             let _ = self
                 .orchestrator
+                .report_debug_stage(&config, "after_render_mutations");
+            let _ = self
+                .orchestrator
                 .report_debug_stage(&config, "after_save_ok");
 
             let next_wakeup_epoch = now_epoch + success_sleep_seconds as i64;
@@ -364,6 +367,12 @@ where
                     &fallback_url,
                 )
                 .unwrap_or(false);
+            let _ = self
+                .orchestrator
+                .report_debug_stage(&config, "after_checkin_ok");
+            let _ = self
+                .orchestrator
+                .report_debug_stage(&config, "before_return_ok");
 
             return Ok(CycleReport {
                 exit: CycleExit::Sleep {

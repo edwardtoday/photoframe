@@ -229,11 +229,10 @@ impl EspWifiManager {
         copy_bytes_to_array(&mut sta_config.password, password);
         sta_config.scan_method = sys::wifi_scan_method_t_WIFI_ALL_CHANNEL_SCAN;
         sta_config.sort_method = sys::wifi_sort_method_t_WIFI_CONNECT_AP_BY_SIGNAL;
-        sta_config.threshold = sys::wifi_scan_threshold_t {
-            rssi: 0,
-            authmode: sys::wifi_auth_mode_t_WIFI_AUTH_WPA2_PSK,
-            rssi_5g_adjustment: 0,
-        };
+        let mut threshold = sys::wifi_scan_threshold_t::default();
+        threshold.rssi = 0;
+        threshold.authmode = sys::wifi_auth_mode_t_WIFI_AUTH_WPA2_PSK;
+        sta_config.threshold = threshold;
         sta_config.pmf_cfg = sys::wifi_pmf_config_t {
             capable: true,
             required: false,
@@ -303,6 +302,50 @@ impl EspWifiManager {
         unsafe {
             let _ = sys::esp_wifi_stop();
         }
+    }
+
+    #[cfg(target_os = "espidf")]
+    pub fn pause_for_render() {
+        unsafe {
+            let _ = sys::esp_wifi_disconnect();
+            let _ = sys::esp_wifi_stop();
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    #[cfg(target_os = "espidf")]
+    pub fn reconnect_after_render(
+        hostname: &str,
+        config: &photoframe_app::DeviceRuntimeConfig,
+    ) -> Result<(), String> {
+        let mut last_err = String::from("no wifi profile available after render");
+        for profile_index in config.wifi_connection_order() {
+            let profile = &config.wifi_profiles[profile_index];
+            println!(
+                "photoframe-rs: wifi resume try idx={} ssid={}",
+                profile_index, profile.ssid
+            );
+            match Self::connect(hostname, &profile.ssid, &profile.password, 20, 3) {
+                Ok(()) => {
+                    println!(
+                        "photoframe-rs: wifi resume ok idx={} ssid={} ip={}",
+                        profile_index,
+                        profile.ssid,
+                        Self::sta_ip_string().unwrap_or_else(|| "-".into())
+                    );
+                    return Ok(());
+                }
+                Err(err) => {
+                    println!(
+                        "photoframe-rs: wifi resume failed idx={} err={}",
+                        profile_index, err
+                    );
+                    last_err = err;
+                    Self::stop();
+                }
+            }
+        }
+        Err(last_err)
     }
 
     #[cfg(not(target_os = "espidf"))]

@@ -219,37 +219,35 @@ struct RustPortalServer {
 
 #[cfg(target_os = "espidf")]
 fn httpd_default_config() -> sys::httpd_config_t {
-    sys::httpd_config_t {
-        task_priority: 5,
-        stack_size: 4096,
-        // ESP-IDF 5.5 下 tskNO_AFFINITY 仍是 0x7fffffff，不能写 -1。
-        core_id: HTTPD_TASK_NO_AFFINITY,
-        task_caps: sys::MALLOC_CAP_INTERNAL | sys::MALLOC_CAP_8BIT,
-        max_req_hdr_len: sys::CONFIG_HTTPD_MAX_REQ_HDR_LEN as usize,
-        max_uri_len: sys::CONFIG_HTTPD_MAX_URI_LEN as usize,
-        server_port: 80,
-        ctrl_port: sys::ESP_HTTPD_DEF_CTRL_PORT as u16,
-        max_open_sockets: 7,
-        max_uri_handlers: 8,
-        max_resp_headers: 8,
-        backlog_conn: 5,
-        lru_purge_enable: false,
-        recv_wait_timeout: 5,
-        send_wait_timeout: 5,
-        global_user_ctx: ptr::null_mut(),
-        global_user_ctx_free_fn: None,
-        global_transport_ctx: ptr::null_mut(),
-        global_transport_ctx_free_fn: None,
-        enable_so_linger: false,
-        linger_timeout: 0,
-        keep_alive_enable: false,
-        keep_alive_idle: 0,
-        keep_alive_interval: 0,
-        keep_alive_count: 0,
-        open_fn: None,
-        close_fn: None,
-        uri_match_fn: None,
-    }
+    let mut config = sys::httpd_config_t::default();
+    config.task_priority = 5;
+    config.stack_size = 4096;
+    // ESP-IDF 5.5 下 tskNO_AFFINITY 仍是 0x7fffffff，不能写 -1。
+    config.core_id = HTTPD_TASK_NO_AFFINITY;
+    config.task_caps = sys::MALLOC_CAP_INTERNAL | sys::MALLOC_CAP_8BIT;
+    config.server_port = 80;
+    config.ctrl_port = sys::ESP_HTTPD_DEF_CTRL_PORT as u16;
+    config.max_open_sockets = 7;
+    config.max_uri_handlers = 8;
+    config.max_resp_headers = 8;
+    config.backlog_conn = 5;
+    config.lru_purge_enable = false;
+    config.recv_wait_timeout = 5;
+    config.send_wait_timeout = 5;
+    config.global_user_ctx = ptr::null_mut();
+    config.global_user_ctx_free_fn = None;
+    config.global_transport_ctx = ptr::null_mut();
+    config.global_transport_ctx_free_fn = None;
+    config.enable_so_linger = false;
+    config.linger_timeout = 0;
+    config.keep_alive_enable = false;
+    config.keep_alive_idle = 0;
+    config.keep_alive_interval = 0;
+    config.keep_alive_count = 0;
+    config.open_fn = None;
+    config.close_fn = None;
+    config.uri_match_fn = None;
+    config
 }
 
 #[cfg(target_os = "espidf")]

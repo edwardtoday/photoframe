@@ -379,14 +379,7 @@ fn main() {
 
     config.ensure_primary_wifi_in_profiles();
 
-    if crate::power::ensure_ready_for_render() {
-        match crate::panel::warmup_panel() {
-            Ok(()) => println!("photoframe-rs: panel warmup ok"),
-            Err(err) => println!("photoframe-rs: panel warmup failed: {err}"),
-        }
-    } else {
-        println!("photoframe-rs: panel warmup skipped: power not ready");
-    }
+    println!("photoframe-rs: panel warmup deferred until render");
     println!("photoframe-rs: device_id={}", config.device_id);
 
     if config != previous_config
@@ -474,16 +467,16 @@ fn main() {
             println!("photoframe-rs: save time sync epoch failed: {err}");
         }
     }
-    let portal_power_sample = runtime_bridge::EspRuntimeBridge::read_power_sample()
-        .unwrap_or_else(|| PowerSample::default());
+    let mut portal_power_sample = PowerSample::default();
     if matches!(long_press_action, LongPressAction::OpenStaPortalWindow) {
+        portal_power_sample =
+            runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
         if let Err(err) = portal::run_sta_portal_window(portal_power_sample, false) {
             println!("photoframe-rs: sta portal window failed: {err}");
         }
     }
 
-    let power_sample =
-        runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or(portal_power_sample);
+    let power_sample = portal_power_sample;
     let sta_ip = EspWifiManager::sta_ip_string();
 
     let clock = EspIdfClock;
@@ -504,6 +497,7 @@ fn main() {
 
     match runner.run(boot) {
         Ok(report) => {
+            runtime_bridge::record_render_trace(30);
             println!(
                 "photoframe-rs: cycle exit={:?} source={} checkin_reported={}",
                 report.exit, report.image_source, report.checkin_reported
@@ -518,6 +512,10 @@ fn main() {
                     seconds,
                     timer_only,
                 } => {
+                    let _ = photoframe_platform_espidf::send_debug_stage_beacon(
+                        &config,
+                        "before_sleep_enter",
+                    );
                     let hold_mode = if matches!(report.action, CycleAction::ManualSync) {
                         PreSleepHoldMode::ManualSyncSerialGrace {
                             wait_seconds: MANUAL_SYNC_SERIAL_GRACE_SECONDS,

@@ -186,6 +186,7 @@ app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 
 LOGGER = logging.getLogger("uvicorn.error")
 DB_LOCK = threading.Lock()
+DAILY_CACHE_LOCK = threading.Lock()
 DB: sqlite3.Connection | None = None
 STALE_CHECKIN_WARNINGS: dict[str, int] = {}
 
@@ -1070,7 +1071,7 @@ def _resolve_current_payload_for_device(
 
   upstream_url = _daily_image_url(now_ts)
   picked = _normalize_daily_dither_algorithm(daily_dither_algorithm or _get_daily_dither_algorithm())
-  payload = _render_daily_payload(upstream_url, output_format, picked)
+  payload = _render_daily_payload(now_ts, upstream_url, output_format, picked)
   return payload, "daily", picked
 
 
@@ -1123,27 +1124,46 @@ def _fit_daily_source_image(source_bytes: bytes) -> Image.Image:
     raise HTTPException(status_code=502, detail="daily upstream cannot decode image") from exc
 
 
-def _daily_cache_paths(url: str, source_bytes: bytes, dither_algorithm: str) -> tuple[Path, Path]:
-  source_sha = hashlib.sha256(source_bytes).hexdigest()
-  cache_key = hashlib.sha256(f"{url}\n{source_sha}\n{dither_algorithm}".encode("utf-8")).hexdigest()
-  return DAILY_CACHE_DIR / f"{cache_key}.bmp", DAILY_CACHE_DIR / f"{cache_key}.jpg"
+def _daily_asset_names(now_ts: int, dither_algorithm: str) -> tuple[str, str]:
+  date_text = datetime.fromtimestamp(now_ts, LOCAL_TZ).strftime("%Y-%m-%d")
+  suffix = dither_algorithm.replace("/", "-").replace(" ", "-")
+  return (
+      f"daily-{date_text}-{suffix}.bmp",
+      f"daily-{date_text}-{suffix}.jpg",
+  )
 
 
-def _render_daily_payload(url: str, output_format: str, dither_algorithm: str) -> bytes:
-  source_bytes = _fetch_daily_source_bytes(url)
-  bmp_path, jpg_path = _daily_cache_paths(url, source_bytes, dither_algorithm)
-  target_path = bmp_path if output_format == "bmp" else jpg_path
-  if target_path.exists():
-    return target_path.read_bytes()
+def _ensure_daily_assets(now_ts: int, url: str, dither_algorithm: str) -> tuple[str, str]:
+  bmp_name, jpg_name = _daily_asset_names(now_ts, dither_algorithm)
+  bmp_path = ASSET_DIR / bmp_name
+  jpg_path = ASSET_DIR / jpg_name
+  if bmp_path.exists() and jpg_path.exists():
+    return bmp_name, jpg_name
 
-  fitted = _fit_daily_source_image(source_bytes)
-  bmp_data, jpg_data = _render_override_assets(fitted, dither_algorithm)
-  DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-  if not bmp_path.exists():
+  with DAILY_CACHE_LOCK:
+    if bmp_path.exists() and jpg_path.exists():
+      return bmp_name, jpg_name
+
+    source_bytes = _fetch_daily_source_bytes(url)
+    fitted = _fit_daily_source_image(source_bytes)
+    bmp_data, jpg_data = _render_override_assets(fitted, dither_algorithm)
+    ASSET_DIR.mkdir(parents=True, exist_ok=True)
     bmp_path.write_bytes(bmp_data)
-  if not jpg_path.exists():
     jpg_path.write_bytes(jpg_data)
-  return bmp_data if output_format == "bmp" else jpg_data
+    LOGGER.info(
+        "daily asset refreshed: bmp=%s jpg=%s dither=%s source=%s",
+        bmp_name,
+        jpg_name,
+        dither_algorithm,
+        url,
+    )
+  return bmp_name, jpg_name
+
+
+def _render_daily_payload(now_ts: int, url: str, output_format: str, dither_algorithm: str) -> bytes:
+  bmp_name, jpg_name = _ensure_daily_assets(now_ts, url, dither_algorithm)
+  target_name = bmp_name if output_format == "bmp" else jpg_name
+  return (ASSET_DIR / target_name).read_bytes()
 
 
 def _clamp_channel(value: float) -> int:
@@ -1717,21 +1737,18 @@ def device_next(
   source = "daily"
   valid_until = now_ts + poll_sec
   active_dither_algorithm = _get_daily_dither_algorithm()
-  # 省电优先：优先下发服务端可控的 daily 代理 URL，避免设备直连上游日图导致格式不兼容与不可控缓存。
-  # - 已配置 PUBLIC_DAILY_BMP_TOKEN：下发 /public/daily.*（支持 ETag/304）。
-  # - 未配置 PUBLIC_DAILY_BMP_TOKEN：优先按设备能力下发 /api/v1/preview/current.jpg|bmp（设备 token 鉴权）。
-  # - 仅支持 JPEG 的老设备：回退到上游 DAILY_IMAGE_URL_TEMPLATE。
-  if (PUBLIC_DAILY_BMP_TOKEN or "").strip():
-    if prefer_bmp:
-      image_url = f"{_public_base(request)}/public/daily.bmp?device_id={device_id}"
-    else:
-      image_url = f"{_public_base(request)}/public/daily.jpg?device_id={device_id}"
+  daily_bmp_name, daily_jpg_name = _ensure_daily_assets(
+      now_ts,
+      _daily_image_url(now_ts),
+      active_dither_algorithm,
+  )
+  # 省电优先：daily 先在服务端固化成静态 asset，设备直接拉静态文件，避免每次唤醒都命中动态日图端点。
+  if prefer_bmp:
+    image_url = f"{_public_base(request)}/api/v1/assets/{daily_bmp_name}"
   elif prefer_jpeg:
-    image_url = f"{_public_base(request)}/api/v1/preview/current.jpg?device_id={device_id}&now_epoch={now_ts}"
-  elif prefer_bmp:
-    image_url = f"{_public_base(request)}/api/v1/preview/current.bmp?device_id={device_id}&now_epoch={now_ts}"
+    image_url = f"{_public_base(request)}/api/v1/assets/{daily_jpg_name}"
   else:
-    image_url = _daily_image_url(now_ts)
+    image_url = f"{_public_base(request)}/api/v1/assets/{daily_bmp_name}"
   active_override_id = None
 
   if active is not None:

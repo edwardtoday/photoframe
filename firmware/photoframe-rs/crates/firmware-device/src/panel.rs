@@ -35,10 +35,10 @@ const FLUSH_MAX_RETRIES: usize = 3;
 #[cfg(target_os = "espidf")]
 const FLUSH_RETRY_DELAY_MS: u64 = 500;
 #[cfg(target_os = "espidf")]
-const DEBUG_PANEL_WRITE_CHUNK_BYTES: usize = 64;
+const DEBUG_PANEL_WRITE_CHUNK_BYTES: usize = 256;
 #[cfg(target_os = "espidf")]
-const DEBUG_PANEL_WRITE_CHUNK_DELAY_MS: u64 = 50;
-
+const DEBUG_PANEL_WRITE_CHUNK_DELAY_MS: u64 = 1;
+#[cfg(target_os = "espidf")]
 #[cfg(target_os = "espidf")]
 struct PanelRuntime {
     spi_handle: sys::spi_device_handle_t,
@@ -161,13 +161,14 @@ fn wait_busy(stage: &str, timeout_ms: i32) -> Result<(), String> {
     let start_us = unsafe { sys::esp_timer_get_time() };
     let mut waited_ms = 0;
     while unsafe { sys::gpio_get_level(PIN_BUSY) } == 0 {
-        if waited_ms >= timeout_ms {
-            return Err(format!(
-                "busy timeout at stage={stage} waited={waited_ms}ms"
-            ));
-        }
         sleep_ms(10);
         waited_ms += 10;
+        if waited_ms >= timeout_ms {
+            println!(
+                "photoframe-rs/panel: busy timeout tolerated stage={stage} waited={waited_ms}ms"
+            );
+            break;
+        }
     }
     let cost_ms = (unsafe { sys::esp_timer_get_time() } - start_us) / 1000;
     println!("photoframe-rs/timing: panel_busy stage={stage} cost={cost_ms}ms");
@@ -269,7 +270,8 @@ fn turn_on_display(spi_handle: sys::spi_device_handle_t) -> Result<(), String> {
     crate::runtime_bridge::record_render_trace(24);
     write_command(spi_handle, 0x02)?;
     write_data(spi_handle, 0x00)?;
-    wait_busy("turn_on/0x02", 45_000)
+    wait_busy("turn_on/0x02", 45_000)?;
+    Ok(())
 }
 
 #[cfg(target_os = "espidf")]

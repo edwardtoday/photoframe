@@ -422,6 +422,7 @@ pub fn flush_packed_image(data: &[u8]) -> Result<(), String> {
 }
 
 #[cfg(target_os = "espidf")]
+#[allow(dead_code)]
 pub fn warmup_panel() -> Result<(), String> {
     let mutex = runtime();
     let mut state = mutex

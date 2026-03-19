@@ -34,8 +34,6 @@ const TRACE_PANEL_TURN_ON_04: u32 = 22;
 const TRACE_PANEL_TURN_ON_12: u32 = 23;
 #[cfg(target_os = "espidf")]
 const TRACE_PANEL_TURN_ON_02: u32 = 24;
-#[cfg(target_os = "espidf")]
-const TRACE_AFTER_CYCLE_RETURN: u32 = 30;
 
 #[cfg(target_os = "espidf")]
 #[unsafe(link_section = ".rtc.data")]
@@ -103,7 +101,6 @@ pub(crate) fn take_render_trace() -> Option<&'static str> {
         TRACE_PANEL_TURN_ON_04 => Some("panel_turn_on_04"),
         TRACE_PANEL_TURN_ON_12 => Some("panel_turn_on_12"),
         TRACE_PANEL_TURN_ON_02 => Some("panel_turn_on_02"),
-        TRACE_AFTER_CYCLE_RETURN => Some("after_cycle_return"),
         _ => Some("unknown"),
     }
 }

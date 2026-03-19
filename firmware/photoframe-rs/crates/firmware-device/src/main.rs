@@ -497,7 +497,6 @@ fn main() {
 
     match runner.run(boot) {
         Ok(report) => {
-            runtime_bridge::record_render_trace(30);
             println!(
                 "photoframe-rs: cycle exit={:?} source={} checkin_reported={}",
                 report.exit, report.image_source, report.checkin_reported
@@ -512,10 +511,6 @@ fn main() {
                     seconds,
                     timer_only,
                 } => {
-                    let _ = photoframe_platform_espidf::send_debug_stage_beacon(
-                        &config,
-                        "before_sleep_enter",
-                    );
                     let hold_mode = if matches!(report.action, CycleAction::ManualSync) {
                         PreSleepHoldMode::ManualSyncSerialGrace {
                             wait_seconds: MANUAL_SYNC_SERIAL_GRACE_SECONDS,

@@ -1099,7 +1099,7 @@ unsafe fn read_body_stream(client: sys::esp_http_client_handle_t) -> Result<Vec<
 unsafe fn read_body_exact(
     client: sys::esp_http_client_handle_t,
     content_len: usize,
-    url: &str,
+    _url: &str,
 ) -> Result<Vec<u8>, String> {
     let mut out = vec![0u8; content_len];
     let mut offset = 0usize;

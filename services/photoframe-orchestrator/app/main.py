@@ -79,6 +79,15 @@ PHOTOFRAME_PALETTE: tuple[tuple[int, int, int], ...] = (
     (0, 0, 255),
     (0, 255, 0),
 )
+EPAPER_LAB_REFERENCE_PALETTE: tuple[dict[str, Any], ...] = (
+    {"name": "black", "rgb": (0, 0, 0), "lab": (5.0, 0.0, 0.0)},
+    {"name": "white", "rgb": (255, 255, 255), "lab": (95.0, 0.0, 0.0)},
+    {"name": "red", "rgb": (200, 40, 40), "lab": (50.0, 65.0, 50.0)},
+    {"name": "yellow", "rgb": (230, 200, 60), "lab": (85.0, -5.0, 70.0)},
+    {"name": "blue", "rgb": (40, 80, 160), "lab": (40.0, 5.0, -55.0)},
+    {"name": "green", "rgb": (40, 140, 80), "lab": (60.0, -45.0, 35.0)},
+)
+EPAPER_GREEN_PENALTY = 1.2
 BAYER_4X4: tuple[tuple[int, ...], ...] = (
     (0, 8, 2, 10),
     (12, 4, 14, 6),
@@ -175,6 +184,26 @@ DITHER_ALGORITHM_SPECS: dict[str, dict[str, Any]] = {
             (0, 2, 3 / 32),
             (1, 2, 2 / 32),
         ),
+    },
+    "lab-ciede2000": {
+        "label": "Lab + CIEDE2000",
+        "description": "六色电子纸匹配，基于 Lab/ΔE00 选色并对绿色轻微惩罚",
+        "kind": "diffusion",
+        "kernel": (
+            (1, 0, 8 / 42),
+            (2, 0, 4 / 42),
+            (-2, 1, 2 / 42),
+            (-1, 1, 4 / 42),
+            (0, 1, 8 / 42),
+            (1, 1, 4 / 42),
+            (2, 1, 2 / 42),
+            (-2, 2, 1 / 42),
+            (-1, 2, 2 / 42),
+            (0, 2, 4 / 42),
+            (1, 2, 2 / 42),
+            (2, 2, 1 / 42),
+        ),
+        "matcher": "lab-ciede2000",
     },
 }
 DAILY_DITHER_ALGORITHM_KEYS: tuple[str, ...] = tuple(
@@ -1190,6 +1219,120 @@ def _nearest_palette_color(rgb: tuple[float, float, float]) -> tuple[int, int, i
   return best
 
 
+def _srgb_to_linear(channel: float) -> float:
+  value = channel / 255.0
+  if value <= 0.04045:
+    return value / 12.92
+  return ((value + 0.055) / 1.055) ** 2.4
+
+
+def _rgb_to_lab(rgb: tuple[float, float, float]) -> tuple[float, float, float]:
+  r_lin = _srgb_to_linear(rgb[0])
+  g_lin = _srgb_to_linear(rgb[1])
+  b_lin = _srgb_to_linear(rgb[2])
+
+  x = r_lin * 0.4124564 + g_lin * 0.3575761 + b_lin * 0.1804375
+  y = r_lin * 0.2126729 + g_lin * 0.7151522 + b_lin * 0.0721750
+  z = r_lin * 0.0193339 + g_lin * 0.1191920 + b_lin * 0.9503041
+
+  xr = x / 0.95047
+  yr = y / 1.00000
+  zr = z / 1.08883
+
+  def f(value: float) -> float:
+    delta = 6 / 29
+    if value > delta ** 3:
+      return value ** (1 / 3)
+    return value / (3 * delta * delta) + 4 / 29
+
+  fx = f(xr)
+  fy = f(yr)
+  fz = f(zr)
+  return (116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz))
+
+
+def _ciede2000(lab1: tuple[float, float, float], lab2: tuple[float, float, float]) -> float:
+  l1, a1, b1 = lab1
+  l2, a2, b2 = lab2
+  avg_lp = (l1 + l2) / 2.0
+  c1 = math.sqrt(a1 * a1 + b1 * b1)
+  c2 = math.sqrt(a2 * a2 + b2 * b2)
+  avg_c = (c1 + c2) / 2.0
+  g = 0.5 * (1.0 - math.sqrt((avg_c ** 7) / ((avg_c ** 7) + (25.0 ** 7)))) if avg_c else 0.0
+  a1p = (1.0 + g) * a1
+  a2p = (1.0 + g) * a2
+  c1p = math.sqrt(a1p * a1p + b1 * b1)
+  c2p = math.sqrt(a2p * a2p + b2 * b2)
+  avg_cp = (c1p + c2p) / 2.0
+
+  def hp(ap: float, bp: float) -> float:
+    if ap == 0.0 and bp == 0.0:
+      return 0.0
+    angle = math.degrees(math.atan2(bp, ap))
+    return angle + 360.0 if angle < 0.0 else angle
+
+  h1p = hp(a1p, b1)
+  h2p = hp(a2p, b2)
+  delta_lp = l2 - l1
+  delta_cp = c2p - c1p
+
+  if c1p == 0.0 or c2p == 0.0:
+    delta_hp = 0.0
+  else:
+    diff = h2p - h1p
+    if abs(diff) <= 180.0:
+      delta_hp = diff
+    elif diff > 180.0:
+      delta_hp = diff - 360.0
+    else:
+      delta_hp = diff + 360.0
+  delta_hp_term = 2.0 * math.sqrt(c1p * c2p) * math.sin(math.radians(delta_hp / 2.0))
+
+  if c1p == 0.0 or c2p == 0.0:
+    avg_hp = h1p + h2p
+  elif abs(h1p - h2p) <= 180.0:
+    avg_hp = (h1p + h2p) / 2.0
+  elif (h1p + h2p) < 360.0:
+    avg_hp = (h1p + h2p + 360.0) / 2.0
+  else:
+    avg_hp = (h1p + h2p - 360.0) / 2.0
+
+  t = (
+      1.0
+      - 0.17 * math.cos(math.radians(avg_hp - 30.0))
+      + 0.24 * math.cos(math.radians(2.0 * avg_hp))
+      + 0.32 * math.cos(math.radians(3.0 * avg_hp + 6.0))
+      - 0.20 * math.cos(math.radians(4.0 * avg_hp - 63.0))
+  )
+  delta_theta = 30.0 * math.exp(-(((avg_hp - 275.0) / 25.0) ** 2))
+  rc = 2.0 * math.sqrt((avg_cp ** 7) / ((avg_cp ** 7) + (25.0 ** 7))) if avg_cp else 0.0
+  sl = 1.0 + (0.015 * ((avg_lp - 50.0) ** 2)) / math.sqrt(20.0 + ((avg_lp - 50.0) ** 2))
+  sc = 1.0 + 0.045 * avg_cp
+  sh = 1.0 + 0.015 * avg_cp * t
+  rt = -math.sin(math.radians(2.0 * delta_theta)) * rc
+
+  return math.sqrt(
+      (delta_lp / sl) ** 2
+      + (delta_cp / sc) ** 2
+      + (delta_hp_term / sh) ** 2
+      + rt * (delta_cp / sc) * (delta_hp_term / sh)
+  )
+
+
+def _nearest_palette_color_lab_ciede2000(rgb: tuple[float, float, float]) -> tuple[int, int, int]:
+  source_lab = _rgb_to_lab(rgb)
+  best = EPAPER_LAB_REFERENCE_PALETTE[0]
+  best_distance = math.inf
+  for candidate in EPAPER_LAB_REFERENCE_PALETTE:
+    distance = _ciede2000(source_lab, candidate["lab"])
+    if candidate["name"] == "green":
+      distance *= EPAPER_GREEN_PENALTY
+    if distance < best_distance:
+      best = candidate
+      best_distance = distance
+  return best["rgb"]
+
+
 def _new_error_row(width: int) -> list[float]:
   return [0.0] * (width * 3)
 
@@ -1200,7 +1343,10 @@ def _pixel_list(image: Image.Image) -> list[tuple[int, int, int]]:
   return [pixels[x, y] for y in range(height) for x in range(width)]
 
 
-def _apply_bayer_dither(image: Image.Image) -> Image.Image:
+def _apply_bayer_dither(
+    image: Image.Image,
+    matcher: callable = _nearest_palette_color,
+) -> Image.Image:
   width, height = image.size
   source_pixels = _pixel_list(image)
   output: list[tuple[int, int, int]] = []
@@ -1216,14 +1362,18 @@ def _apply_bayer_dither(image: Image.Image) -> Image.Image:
           _clamp_channel(g0 + delta),
           _clamp_channel(b0 + delta),
       )
-      output.append(_nearest_palette_color(adjusted))
+      output.append(matcher(adjusted))
 
   rendered = Image.new("RGB", image.size)
   rendered.putdata(output)
   return rendered
 
 
-def _apply_error_diffusion(image: Image.Image, kernel: tuple[tuple[int, int, float], ...]) -> Image.Image:
+def _apply_error_diffusion(
+    image: Image.Image,
+    kernel: tuple[tuple[int, int, float], ...],
+    matcher: callable = _nearest_palette_color,
+) -> Image.Image:
   width, height = image.size
   source_pixels = _pixel_list(image)
   max_dy = max(dy for _, dy, _ in kernel)
@@ -1240,7 +1390,7 @@ def _apply_error_diffusion(image: Image.Image, kernel: tuple[tuple[int, int, flo
       r = _clamp_channel(source_r + current_errors[base])
       g = _clamp_channel(source_g + current_errors[base + 1])
       b = _clamp_channel(source_b + current_errors[base + 2])
-      quantized = _nearest_palette_color((r, g, b))
+      quantized = matcher((r, g, b))
       output[row_offset + x] = quantized
 
       err_r = r - quantized[0]
@@ -1280,7 +1430,9 @@ def _apply_override_dither(image: Image.Image, dither_algorithm: str) -> Image.I
     kernel = spec.get("kernel")
     if not isinstance(kernel, tuple):
       raise RuntimeError(f"kernel missing for dither algorithm: {normalized}")
-    return _apply_error_diffusion(image, kernel)
+    matcher_name = str(spec.get("matcher") or "rgb")
+    matcher = _nearest_palette_color_lab_ciede2000 if matcher_name == "lab-ciede2000" else _nearest_palette_color
+    return _apply_error_diffusion(image, kernel, matcher=matcher)
   raise RuntimeError(f"unsupported dither algorithm kind: {kind}")
 
 

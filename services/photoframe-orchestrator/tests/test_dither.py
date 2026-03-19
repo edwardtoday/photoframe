@@ -96,6 +96,7 @@ if SPEC is None or SPEC.loader is None:  # pragma: no cover
 ORCH = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ORCH)
 PALETTE = set(ORCH.PHOTOFRAME_PALETTE)
+EPAPER_PALETTE = {tuple(item["rgb"]) for item in ORCH.EPAPER_LAB_REFERENCE_PALETTE}
 HTTPException = ORCH.HTTPException
 UploadFile = ORCH.UploadFile
 
@@ -162,6 +163,16 @@ class DitherAlgorithmTests(unittest.TestCase):
         rendered = ORCH._apply_override_dither(image, algorithm)
         self.assertTrue(_pixel_set(rendered).issubset(PALETTE))
 
+  def test_lab_ciede2000_output_only_issue_palette(self) -> None:
+    image = _build_gradient_image()
+    rendered = ORCH._apply_override_dither(image, "lab-ciede2000")
+    self.assertTrue(_pixel_set(rendered).issubset(EPAPER_PALETTE))
+
+  def test_lab_ciede2000_uses_green_penalty(self) -> None:
+    muddy_green = (156, 176, 60)
+    picked = ORCH._nearest_palette_color_lab_ciede2000(muddy_green)
+    self.assertNotEqual(picked, (40, 140, 80))
+
   def test_upload_conversion_generates_distinct_assets_for_different_algorithms(self) -> None:
     source_image = _build_gradient_image(size=(64, 64))
     source_png = _encode_png(source_image)
@@ -198,8 +209,8 @@ class DitherAlgorithmTests(unittest.TestCase):
       ORCH.DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
       ORCH.urlopen = lambda *_args, **_kwargs: _DummyUrlopenResponse(source_jpeg.getvalue())
       try:
-        bmp_bytes = ORCH._render_daily_payload("https://example.com/daily.jpg", "bmp", "jarvis")
-        jpg_bytes = ORCH._render_daily_payload("https://example.com/daily.jpg", "jpg", "jarvis")
+        bmp_bytes = ORCH._render_daily_payload(1773910400, "https://example.com/daily.jpg", "bmp", "jarvis")
+        jpg_bytes = ORCH._render_daily_payload(1773910400, "https://example.com/daily.jpg", "jpg", "jarvis")
       finally:
         ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
         ORCH.urlopen = original_urlopen

@@ -7,7 +7,7 @@ services:
       - "8081:8081"
     environment:
       TZ: Asia/Shanghai
-      DAILY_IMAGE_URL_TEMPLATE: "http://192.168.58.113:8000/image/480x800?date=%DATE%"
+      DAILY_IMAGE_URL_TEMPLATE: "http://192.168.58.113:8000/image/480x800.jpg?date=%DATE%"
       PUBLIC_BASE_URL: "http://192.168.58.113:8081"
       DEFAULT_POLL_SECONDS: "3600"
       PHOTOFRAME_TOKEN: ""

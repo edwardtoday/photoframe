@@ -10,6 +10,7 @@ let previewBlobUrl = null;
 let deviceMap = new Map();
 let powerChartCache = null;
 let powerResizeTimer = null;
+let currentDailyDitherAlgorithm = 'sierra';
 
 const TOKEN_STORAGE_KEY = 'photoframe.console.token';
 const TOKEN_COOKIE_KEY = 'photoframe_console_token';
@@ -41,6 +42,7 @@ const DITHER_ALGORITHM_LABELS = {
   atkinson: 'Atkinson',
   sierra: 'Sierra',
 };
+const DAILY_DITHER_ALGORITHMS = ['bayer', 'floyd-steinberg', 'jarvis', 'stucki', 'atkinson', 'sierra'];
 
 function readCookie(name) {
   const encodedName = `${name}=`;
@@ -1038,6 +1040,31 @@ async function fetchJson(url, options = {}) {
   return data;
 }
 
+function selectedDailyDitherAlgorithm() {
+  const raw = document.getElementById('dailyDitherAlgorithm')?.value || currentDailyDitherAlgorithm;
+  if (DAILY_DITHER_ALGORITHMS.includes(raw)) {
+    return raw;
+  }
+  return currentDailyDitherAlgorithm;
+}
+
+function updateDailyDitherHint(savedAlgorithm = currentDailyDitherAlgorithm) {
+  const selected = selectedDailyDitherAlgorithm();
+  const savedText = ditherAlgorithmLabel(savedAlgorithm || currentDailyDitherAlgorithm);
+  const previewText = ditherAlgorithmLabel(selected);
+  document.getElementById('dailyDitherHint').textContent = `Daily Dither: 当前保存 ${savedText} · 预览使用 ${previewText}`;
+}
+
+async function loadDailyRenderConfig() {
+  const data = await fetchJson('/api/v1/daily-render-config');
+  currentDailyDitherAlgorithm = data.daily_dither_algorithm || currentDailyDitherAlgorithm;
+  const select = document.getElementById('dailyDitherAlgorithm');
+  if (select) {
+    select.value = currentDailyDitherAlgorithm;
+  }
+  updateDailyDitherHint(currentDailyDitherAlgorithm);
+}
+
 function renderStateTag(state) {
   if (state === 'active') return '<span class="tag active">active</span>';
   if (state === 'upcoming') return '<span class="tag upcoming">upcoming</span>';
@@ -1590,9 +1617,13 @@ async function loadCurrentPreview() {
   const img = document.getElementById('currentPreview');
 
   const headers = authHeaders();
-  const resp = await fetch(`/api/v1/preview/current.bmp?device_id=${encodeURIComponent(selectedDevice)}`, {
-    headers,
-  });
+  const dailyDitherAlgorithm = selectedDailyDitherAlgorithm();
+  const resp = await fetch(
+    `/api/v1/preview/current.bmp?device_id=${encodeURIComponent(selectedDevice)}&daily_dither_algorithm=${encodeURIComponent(dailyDitherAlgorithm)}`,
+    {
+      headers,
+    },
+  );
 
   if (!resp.ok) {
     const textBody = await resp.text();
@@ -1618,6 +1649,7 @@ async function loadCurrentPreview() {
   const dither = resp.headers.get('X-PhotoFrame-Dither') || '';
   const ditherText = dither ? ditherAlgorithmLabel(dither) : '上游/未预处理';
   meta.textContent = `设备 ${target} · 当前来源 ${source} · Dither ${ditherText} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
+  updateDailyDitherHint(currentDailyDitherAlgorithm);
 }
 
 function renderConfigHistoryItem(item) {
@@ -1719,6 +1751,7 @@ async function submitDeviceConfig(ev) {
 
 async function refreshAll() {
   await loadHealth();
+  await loadDailyRenderConfig();
   await loadDevices();
   await loadOverrides();
   await loadDeviceTokens();
@@ -1758,6 +1791,31 @@ document.getElementById('previewBtn').addEventListener('click', async () => {
     await loadCurrentPreview();
   } catch (err) {
     document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
+  }
+});
+
+document.getElementById('dailyDitherAlgorithm').addEventListener('change', async () => {
+  updateDailyDitherHint(currentDailyDitherAlgorithm);
+  try {
+    await loadCurrentPreview();
+  } catch (err) {
+    document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
+  }
+});
+
+document.getElementById('saveDailyDitherBtn').addEventListener('click', async () => {
+  try {
+    const data = await fetchJson('/api/v1/daily-render-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ daily_dither_algorithm: selectedDailyDitherAlgorithm() }),
+    });
+    currentDailyDitherAlgorithm = data.daily_dither_algorithm || currentDailyDitherAlgorithm;
+    document.getElementById('dailyDitherAlgorithm').value = currentDailyDitherAlgorithm;
+    updateDailyDitherHint(currentDailyDitherAlgorithm);
+    await loadCurrentPreview();
+  } catch (err) {
+    document.getElementById('dailyDitherHint').textContent = `Daily Dither 保存失败: ${err.message}`;
   }
 });
 

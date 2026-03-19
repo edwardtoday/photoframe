@@ -97,7 +97,7 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 
 ## 环境变量
 
-- `DAILY_IMAGE_URL_TEMPLATE`：无插播时的每日图片模板，支持 `%DATE%`
+- `DAILY_IMAGE_URL_TEMPLATE`：无插播时的每日图片模板，支持 `%DATE%`；推荐指向 `immich-featured-today` 的 `480x800.jpg`
 - `PUBLIC_BASE_URL`：返回给设备的资源 URL 前缀
 - `DEFAULT_POLL_SECONDS`：默认轮询周期（秒）
 - `PHOTOFRAME_TOKEN`：管理接口 token（Web 管理页、插播编辑、设备 token 审批等后台接口）
@@ -109,9 +109,11 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 - `DAILY_FETCH_TIMEOUT_SECONDS`：公网日图代理拉取上游超时（秒，默认 10）
 - `TZ`：服务端时区
 
-## 插播图片 Dither
+## 服务端 Dither（Daily + 插播）
 
-- 控制台“创建插播”支持选择服务端 dither 算法。
+- 控制台“当前下发预览”支持选择并保存 Daily Dither 算法；预览会即时试算，保存后 `/public/daily.*` 与 `/api/v1/preview/current.*` 会统一使用该算法。
+- Daily 链路现在默认从上游 JPG 抓图，服务端会统一裁剪到 `480x800`，再量化到设备 6 色调色板并生成 `.bmp` / `.jpg` 缓存。
+- 控制台“创建插播”也支持选择服务端 dither 算法。
 - `保持原图`：维持当前行为，只做裁剪缩放，不做服务端预抖动。
 - 其余选项会在 orchestrator 侧先量化到设备 6 色调色板，再生成 `.bmp` / `.jpg` 派生资源。
 - 当前实现覆盖文章里提到的主要算法族：`Bayer 4x4`、`Floyd-Steinberg`、`Jarvis (JJN)`、`Stucki`、`Atkinson`、`Sierra`。
@@ -125,7 +127,7 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 - 额外行为：当 `device_id` 非 `*` 时，会更新该设备的 `last_seen`（控制台 `last_checkin`），并用服务端已保存的最近电量值写入一条采样点（若无则跳过），用于判断设备是否仍在活跃拉图。
 - 行为：
   1. 优先返回该设备当前生效的插播图（若存在）
-  2. 否则回退到 `DAILY_IMAGE_URL_TEMPLATE` 的当日图（按扩展名输出 BMP/JPEG）
+  2. 否则抓取 `DAILY_IMAGE_URL_TEMPLATE` 的当日图（推荐 JPG），按当前 Daily Dither 算法生成并返回 BMP/JPEG
 - 设备下发策略补充：
   - 当 `PUBLIC_DAILY_BMP_TOKEN` 已配置时，`/api/v1/device/next` 的 daily 会下发 `/public/daily.*`（支持 `ETag/304`）。
   - 当 `PUBLIC_DAILY_BMP_TOKEN` 未配置时，daily 会按 `accept_formats` 下发 `/api/v1/preview/current.jpg` 或 `/api/v1/preview/current.bmp`（设备需携带 `X-PhotoFrame-Token`）。

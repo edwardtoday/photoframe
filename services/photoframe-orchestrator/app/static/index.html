@@ -904,8 +904,20 @@
           <h3>当前下发预览</h3>
           <p class="help">预览“顶部当前设备此刻来拉图”时服务会返回的 480x800 图。</p>
           <div class="inline-actions">
+            <label>Daily Dither
+              <select id="dailyDitherAlgorithm">
+                <option value="bayer">Bayer 4x4</option>
+                <option value="floyd-steinberg">Floyd-Steinberg</option>
+                <option value="jarvis">Jarvis (JJN)</option>
+                <option value="stucki">Stucki</option>
+                <option value="atkinson">Atkinson</option>
+                <option value="sierra">Sierra</option>
+              </select>
+            </label>
+            <button id="saveDailyDitherBtn" class="secondary" type="button">保存 Daily Dither</button>
             <button id="previewBtn" class="secondary" type="button">刷新当前预览</button>
           </div>
+          <p id="dailyDitherHint" class="muted">Daily Dither: -</p>
           <p id="previewMeta" class="muted">-</p>
           <div class="preview-box">
             <img id="currentPreview" alt="当前下发图片预览" />

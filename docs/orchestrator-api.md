@@ -54,7 +54,7 @@
 - 服务会在每次 `device/next` 响应后记录一条图片下发历史
 - `image_url` 可能是：
   - `.../api/v1/assets/<sha>.bmp` 或 `.../api/v1/assets/<sha>.jpg`（插播资源；取决于 `accept_formats` 与派生文件是否存在）
-  - `.../public/daily.bmp?device_id=...` / `.../public/daily.jpg?device_id=...`（日图；提供 `ETag/304`，避免设备每轮全量下载大图造成耗电）
+  - `.../public/daily.bmp?device_id=...` / `.../public/daily.jpg?device_id=...`（日图；由 orchestrator 从上游 JPG 抓图后按当前 Daily Dither 算法生成，并提供 `ETag/304`）
 
 ## 2) 设备上报心跳
 
@@ -249,6 +249,8 @@ Query:
 - `GET /api/v1/device-tokens?pending_only=1`：查看待审批设备 token 列表
 - `POST /api/v1/device-tokens/{device_id}/approve`：审批并信任设备 token
 - `DELETE /api/v1/device-tokens/{device_id}`：移除设备 token 记录（重新配对）
+- `GET /api/v1/daily-render-config`：查看当前 Daily Dither 算法与可选项
+- `POST /api/v1/daily-render-config`：更新当前 Daily Dither 算法
 
 `/api/v1/devices` 额外字段：
 
@@ -380,7 +382,7 @@ Header：
 
 1. 先判断 `device_id` 当前是否有 active override（设备专属优先，其次全局）。
 2. 若有插播，直接返回插播图（`daily.bmp` 输出 BMP，`daily.jpg` 输出 JPEG）。
-3. 若无插播，回退到 `DAILY_IMAGE_URL_TEMPLATE` 的当日图（同样按扩展名输出 BMP/JPEG）。
+3. 若无插播，抓取 `DAILY_IMAGE_URL_TEMPLATE` 的当日图（推荐上游 JPG），按当前 Daily Dither 算法生成并输出 BMP/JPEG。
 
 缓存与省电：
 

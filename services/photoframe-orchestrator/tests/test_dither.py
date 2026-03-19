@@ -126,6 +126,22 @@ def _pixel_set(image: Image.Image) -> set[tuple[int, int, int]]:
   return {pixels[x, y] for y in range(height) for x in range(width)}
 
 
+class _DummyUrlopenResponse:
+
+  def __init__(self, payload: bytes, status: int = 200) -> None:
+    self._payload = payload
+    self.status = status
+
+  def read(self) -> bytes:
+    return self._payload
+
+  def __enter__(self):
+    return self
+
+  def __exit__(self, exc_type, exc, tb) -> bool:
+    return False
+
+
 class DitherAlgorithmTests(unittest.TestCase):
 
   def test_preferred_output_format_prefers_bmp_when_device_supports_both(self) -> None:
@@ -169,6 +185,59 @@ class DitherAlgorithmTests(unittest.TestCase):
       with Image.open(Path(tmp_dir) / jarvis_asset) as rendered:
         palette_pixels = _pixel_set(rendered.convert("RGB"))
       self.assertTrue(palette_pixels.issubset(PALETTE))
+
+  def test_render_daily_payload_accepts_jpeg_upstream_and_returns_palette_bmp(self) -> None:
+    source_image = _build_gradient_image(size=(96, 96))
+    source_jpeg = io.BytesIO()
+    source_image.save(source_jpeg, format="JPEG", quality=92)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_urlopen = ORCH.urlopen
+      ORCH.DAILY_CACHE_DIR = Path(tmp_dir) / "daily-cache"
+      ORCH.DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+      ORCH.urlopen = lambda *_args, **_kwargs: _DummyUrlopenResponse(source_jpeg.getvalue())
+      try:
+        bmp_bytes = ORCH._render_daily_payload("https://example.com/daily.jpg", "bmp", "jarvis")
+        jpg_bytes = ORCH._render_daily_payload("https://example.com/daily.jpg", "jpg", "jarvis")
+      finally:
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.urlopen = original_urlopen
+
+      self.assertTrue(bmp_bytes.startswith(b"BM"))
+      with Image.open(io.BytesIO(bmp_bytes)) as rendered_bmp:
+        self.assertEqual(rendered_bmp.size, (480, 800))
+        self.assertTrue(_pixel_set(rendered_bmp.convert("RGB")).issubset(PALETTE))
+      with Image.open(io.BytesIO(jpg_bytes)) as rendered_jpg:
+        self.assertEqual(rendered_jpg.size, (480, 800))
+
+  def test_daily_dither_setting_roundtrip(self) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_root = Path(tmp_dir)
+      original_data_dir = ORCH.DATA_DIR
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_db_path = ORCH.DB_PATH
+      original_db = ORCH.DB
+
+      ORCH.DATA_DIR = tmp_root
+      ORCH.ASSET_DIR = tmp_root / "assets"
+      ORCH.DAILY_CACHE_DIR = ORCH.ASSET_DIR / "daily-cache"
+      ORCH.DB_PATH = tmp_root / "orchestrator.db"
+      ORCH.DB = None
+      try:
+        ORCH._init_db()
+        self.assertEqual(ORCH._get_daily_dither_algorithm(), ORCH._normalize_daily_dither_algorithm(ORCH.DAILY_DITHER_DEFAULT))
+        self.assertEqual(ORCH._set_daily_dither_algorithm("jarvis"), "jarvis")
+        self.assertEqual(ORCH._get_daily_dither_algorithm(), "jarvis")
+      finally:
+        if ORCH.DB is not None:
+          ORCH.DB.close()
+        ORCH.DATA_DIR = original_data_dir
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.DB_PATH = original_db_path
+        ORCH.DB = original_db
 
 
 if __name__ == "__main__":  # pragma: no cover

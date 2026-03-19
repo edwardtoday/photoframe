@@ -24,9 +24,10 @@ from pydantic import BaseModel, Field
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR.parent / "data"
 ASSET_DIR = DATA_DIR / "assets"
+DAILY_CACHE_DIR = ASSET_DIR / "daily-cache"
 DB_PATH = DATA_DIR / "orchestrator.db"
 
-DEFAULT_DAILY_TEMPLATE = "http://192.168.58.113:8000/image/480x800?date=%DATE%"
+DEFAULT_DAILY_TEMPLATE = "http://192.168.58.113:8000/image/480x800.jpg?date=%DATE%"
 DAILY_TEMPLATE = os.getenv("DAILY_IMAGE_URL_TEMPLATE", DEFAULT_DAILY_TEMPLATE)
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 DEFAULT_POLL_SECONDS = max(60, int(os.getenv("DEFAULT_POLL_SECONDS", "3600")))
@@ -68,6 +69,8 @@ DEVICE_CONFIG_ALLOWED_KEYS = {
 }
 DEVICE_CONFIG_SECRET_KEYS = {"orchestrator_token", "photo_token"}
 OVERRIDE_DITHER_DEFAULT = "none"
+DAILY_DITHER_SETTING_KEY = "daily_dither_algorithm"
+DAILY_DITHER_DEFAULT = os.getenv("DAILY_DITHER_ALGORITHM", "sierra").strip().lower() or "sierra"
 PHOTOFRAME_PALETTE: tuple[tuple[int, int, int], ...] = (
     (0, 0, 0),
     (255, 255, 255),
@@ -174,6 +177,9 @@ DITHER_ALGORITHM_SPECS: dict[str, dict[str, Any]] = {
         ),
     },
 }
+DAILY_DITHER_ALGORITHM_KEYS: tuple[str, ...] = tuple(
+    key for key in DITHER_ALGORITHM_SPECS.keys() if key != OVERRIDE_DITHER_DEFAULT
+)
 
 app = FastAPI(title="PhotoFrame Orchestrator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
@@ -228,11 +234,21 @@ def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
       )
       """
   )
+  conn.execute(
+      """
+      CREATE TABLE IF NOT EXISTS service_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT 0
+      )
+      """
+  )
 
 
 def _init_db() -> None:
   DATA_DIR.mkdir(parents=True, exist_ok=True)
   ASSET_DIR.mkdir(parents=True, exist_ok=True)
+  DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
   conn = _ensure_db()
   with DB_LOCK:
     conn.executescript(
@@ -331,6 +347,14 @@ def _init_db() -> None:
         """
     )
     _apply_schema_migrations(conn)
+    conn.execute(
+        """
+        INSERT INTO service_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO NOTHING
+        """,
+        (DAILY_DITHER_SETTING_KEY, DAILY_DITHER_DEFAULT, _now_epoch()),
+    )
     conn.commit()
 
 
@@ -693,6 +717,65 @@ def _require_public_daily_token(header_token: str | None, query_token: str | Non
     raise HTTPException(status_code=403, detail="public photo token required")
 
 
+def _normalize_daily_dither_algorithm(raw: str | None) -> str:
+  value = (raw or DAILY_DITHER_DEFAULT).strip().lower()
+  if value not in DAILY_DITHER_ALGORITHM_KEYS:
+    return DAILY_DITHER_DEFAULT if DAILY_DITHER_DEFAULT in DAILY_DITHER_ALGORITHM_KEYS else DAILY_DITHER_ALGORITHM_KEYS[0]
+  return value
+
+
+def _daily_dither_algorithm_specs() -> list[dict[str, str]]:
+  items: list[dict[str, str]] = []
+  for key in DAILY_DITHER_ALGORITHM_KEYS:
+    spec = DITHER_ALGORITHM_SPECS[key]
+    items.append(
+        {
+            "key": key,
+            "label": str(spec["label"]),
+            "description": str(spec["description"]),
+        }
+    )
+  return items
+
+
+def _get_service_setting(conn: sqlite3.Connection, key: str) -> str:
+  row = conn.execute("SELECT value FROM service_settings WHERE key = ?", (key,)).fetchone()
+  return "" if row is None else str(row["value"] or "")
+
+
+def _set_service_setting(conn: sqlite3.Connection, key: str, value: str) -> str:
+  now_ts = _now_epoch()
+  conn.execute(
+      """
+      INSERT INTO service_settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value,
+        updated_at = excluded.updated_at
+      """,
+      (key, value, now_ts),
+  )
+  conn.commit()
+  return value
+
+
+def _get_daily_dither_algorithm() -> str:
+  conn = _ensure_db()
+  value = _get_service_setting(conn, DAILY_DITHER_SETTING_KEY)
+  picked = _normalize_daily_dither_algorithm(value)
+  if picked != value:
+    with DB_LOCK:
+      _set_service_setting(conn, DAILY_DITHER_SETTING_KEY, picked)
+  return picked
+
+
+def _set_daily_dither_algorithm(value: str) -> str:
+  picked = _normalize_daily_dither_algorithm(value)
+  conn = _ensure_db()
+  with DB_LOCK:
+    return _set_service_setting(conn, DAILY_DITHER_SETTING_KEY, picked)
+
+
 def _daily_image_url(now_epoch: int) -> str:
   date_text = datetime.fromtimestamp(now_epoch, LOCAL_TZ).strftime("%Y-%m-%d")
   url = DAILY_TEMPLATE.replace("%DATE%", date_text)
@@ -702,7 +785,7 @@ def _daily_image_url(now_epoch: int) -> str:
   return url
 
 
-def _fetch_daily_bmp_bytes(url: str) -> bytes:
+def _fetch_daily_source_bytes(url: str) -> bytes:
   req = UrlRequest(url, headers={"User-Agent": f"photoframe-orchestrator/{APP_VERSION}"})
   try:
     with urlopen(req, timeout=DAILY_FETCH_TIMEOUT_SECONDS) as resp:
@@ -719,8 +802,6 @@ def _fetch_daily_bmp_bytes(url: str) -> bytes:
 
   if not payload:
     raise HTTPException(status_code=502, detail="daily upstream empty")
-  if not payload.startswith(b"BM"):
-    raise HTTPException(status_code=502, detail="daily upstream not bmp")
   return payload
 
 
@@ -970,17 +1051,27 @@ def _resolve_current_payload_for_device(
     conn: sqlite3.Connection,
     now_ts: int,
     target_device: str,
+    *,
+    output_format: str = "bmp",
+    daily_dither_algorithm: str | None = None,
 ) -> tuple[bytes, str, str]:
   active = _active_override_for_device(conn, now_ts, target_device)
   if active is not None:
-    path = ASSET_DIR / str(active["asset_name"])
+    asset_name = str(active["asset_name"])
+    if output_format == "jpg":
+      asset_sha256 = str(active["asset_sha256"] or "").strip()
+      candidate = f"{asset_sha256}.jpg"
+      if asset_sha256 and (ASSET_DIR / candidate).exists():
+        asset_name = candidate
+    path = ASSET_DIR / asset_name
     if not path.exists():
       raise HTTPException(status_code=502, detail="override asset missing")
     return path.read_bytes(), "override", _normalize_override_dither_algorithm(active["dither_algorithm"])
 
   upstream_url = _daily_image_url(now_ts)
-  payload = _fetch_daily_bmp_bytes(upstream_url)
-  return payload, "daily", ""
+  picked = _normalize_daily_dither_algorithm(daily_dither_algorithm or _get_daily_dither_algorithm())
+  payload = _render_daily_payload(upstream_url, output_format, picked)
+  return payload, "daily", picked
 
 
 def _public_base(request: Request) -> str:
@@ -1021,6 +1112,38 @@ def _preferred_output_format(accept_formats: str | None) -> str:
   if "jpeg" in accept or "jpg" in accept:
     return "jpg"
   return "bmp"
+
+
+def _fit_daily_source_image(source_bytes: bytes) -> Image.Image:
+  try:
+    with Image.open(io.BytesIO(source_bytes)) as image:
+      rgb = image.convert("RGB")
+      return ImageOps.fit(rgb, (480, 800), method=Image.Resampling.LANCZOS)
+  except Exception as exc:
+    raise HTTPException(status_code=502, detail="daily upstream cannot decode image") from exc
+
+
+def _daily_cache_paths(url: str, source_bytes: bytes, dither_algorithm: str) -> tuple[Path, Path]:
+  source_sha = hashlib.sha256(source_bytes).hexdigest()
+  cache_key = hashlib.sha256(f"{url}\n{source_sha}\n{dither_algorithm}".encode("utf-8")).hexdigest()
+  return DAILY_CACHE_DIR / f"{cache_key}.bmp", DAILY_CACHE_DIR / f"{cache_key}.jpg"
+
+
+def _render_daily_payload(url: str, output_format: str, dither_algorithm: str) -> bytes:
+  source_bytes = _fetch_daily_source_bytes(url)
+  bmp_path, jpg_path = _daily_cache_paths(url, source_bytes, dither_algorithm)
+  target_path = bmp_path if output_format == "bmp" else jpg_path
+  if target_path.exists():
+    return target_path.read_bytes()
+
+  fitted = _fit_daily_source_image(source_bytes)
+  bmp_data, jpg_data = _render_override_assets(fitted, dither_algorithm)
+  DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+  if not bmp_path.exists():
+    bmp_path.write_bytes(bmp_data)
+  if not jpg_path.exists():
+    jpg_path.write_bytes(jpg_data)
+  return bmp_data if output_format == "bmp" else jpg_data
 
 
 def _clamp_channel(value: float) -> int:
@@ -1282,6 +1405,10 @@ class DeviceConfigApplied(BaseModel):
   applied_epoch: int | None = None
 
 
+class DailyRenderConfigPayload(BaseModel):
+  daily_dither_algorithm: str = Field(min_length=1, max_length=64)
+
+
 @app.on_event("startup")
 def _startup() -> None:
   _init_db()
@@ -1294,7 +1421,35 @@ def index() -> str:
 
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
-  return {"ok": True, "now_epoch": _now_epoch(), "timezone": TZ_NAME, "app_version": APP_VERSION}
+  return {
+      "ok": True,
+      "now_epoch": _now_epoch(),
+      "timezone": TZ_NAME,
+      "app_version": APP_VERSION,
+      "daily_dither_algorithm": _get_daily_dither_algorithm(),
+  }
+
+
+@app.get("/api/v1/daily-render-config")
+def get_daily_render_config() -> dict[str, Any]:
+  return {
+      "daily_dither_algorithm": _get_daily_dither_algorithm(),
+      "algorithms": _daily_dither_algorithm_specs(),
+  }
+
+
+@app.post("/api/v1/daily-render-config")
+def set_daily_render_config(
+    payload: DailyRenderConfigPayload,
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  picked = _set_daily_dither_algorithm(payload.daily_dither_algorithm)
+  return {
+      "ok": True,
+      "daily_dither_algorithm": picked,
+      "algorithms": _daily_dither_algorithm_specs(),
+  }
 
 
 @app.get("/api/v1/device/debug-stage")
@@ -1351,7 +1506,12 @@ def public_daily_bmp(
   conn = _ensure_db()
 
   _record_public_daily_activity(conn, target_device, now_ts)
-  payload, source, dither_algorithm = _resolve_current_payload_for_device(conn, now_ts, target_device)
+  payload, source, dither_algorithm = _resolve_current_payload_for_device(
+      conn,
+      now_ts,
+      target_device,
+      output_format="bmp",
+  )
   etag_value = hashlib.sha256(payload).hexdigest()
   etag = f"\"{etag_value}\""
   headers = {
@@ -1393,15 +1553,12 @@ def public_daily_jpg(
   conn = _ensure_db()
 
   _record_public_daily_activity(conn, target_device, now_ts)
-  payload, source, dither_algorithm = _resolve_current_payload_for_device(conn, now_ts, target_device)
-  try:
-    with Image.open(io.BytesIO(payload)) as image:
-      rgb = image.convert("RGB")
-      out = io.BytesIO()
-      rgb.save(out, format="JPEG", quality=85, optimize=True, progressive=False)
-      jpg_bytes = out.getvalue()
-  except Exception as exc:
-    raise HTTPException(status_code=502, detail="cannot encode daily jpg") from exc
+  jpg_bytes, source, dither_algorithm = _resolve_current_payload_for_device(
+      conn,
+      now_ts,
+      target_device,
+      output_format="jpg",
+  )
 
   etag_value = hashlib.sha256(jpg_bytes).hexdigest()
   etag = f"\"{etag_value}\""
@@ -1434,6 +1591,7 @@ def public_daily_jpg(
 def preview_current_bmp(
     device_id: str = Query(default="*", min_length=1, max_length=64),
     now_epoch: int | None = Query(default=None),
+    daily_dither_algorithm: str | None = Query(default=None, max_length=64),
     x_photoframe_token: str | None = Header(default=None),
 ) -> Response:
   now_ts = _now_epoch() if now_epoch is None else now_epoch
@@ -1441,7 +1599,13 @@ def preview_current_bmp(
   _require_device_token(target_device, x_photoframe_token)
   conn = _ensure_db()
 
-  payload, source, dither_algorithm = _resolve_current_payload_for_device(conn, now_ts, target_device)
+  payload, source, dither_algorithm = _resolve_current_payload_for_device(
+      conn,
+      now_ts,
+      target_device,
+      output_format="bmp",
+      daily_dither_algorithm=daily_dither_algorithm,
+  )
   headers = {
       "Cache-Control": "no-store",
       "X-PhotoFrame-Source": source,
@@ -1460,6 +1624,7 @@ def preview_current_bmp(
 def preview_current_jpg(
     device_id: str = Query(default="*", min_length=1, max_length=64),
     now_epoch: int | None = Query(default=None),
+    daily_dither_algorithm: str | None = Query(default=None, max_length=64),
     x_photoframe_token: str | None = Header(default=None),
 ) -> Response:
   now_ts = _now_epoch() if now_epoch is None else now_epoch
@@ -1467,15 +1632,13 @@ def preview_current_jpg(
   _require_device_token(target_device, x_photoframe_token)
   conn = _ensure_db()
 
-  payload, source, dither_algorithm = _resolve_current_payload_for_device(conn, now_ts, target_device)
-  try:
-    with Image.open(io.BytesIO(payload)) as image:
-      rgb = image.convert("RGB")
-      out = io.BytesIO()
-      rgb.save(out, format="JPEG", quality=55, optimize=True, progressive=False)
-      jpg_bytes = out.getvalue()
-  except Exception as exc:
-    raise HTTPException(status_code=502, detail="cannot encode preview jpg") from exc
+  jpg_bytes, source, dither_algorithm = _resolve_current_payload_for_device(
+      conn,
+      now_ts,
+      target_device,
+      output_format="jpg",
+      daily_dither_algorithm=daily_dither_algorithm,
+  )
 
   headers = {
       "Cache-Control": "no-store",
@@ -1553,6 +1716,7 @@ def device_next(
 
   source = "daily"
   valid_until = now_ts + poll_sec
+  active_dither_algorithm = _get_daily_dither_algorithm()
   # 省电优先：优先下发服务端可控的 daily 代理 URL，避免设备直连上游日图导致格式不兼容与不可控缓存。
   # - 已配置 PUBLIC_DAILY_BMP_TOKEN：下发 /public/daily.*（支持 ETag/304）。
   # - 未配置 PUBLIC_DAILY_BMP_TOKEN：优先按设备能力下发 /api/v1/preview/current.jpg|bmp（设备 token 鉴权）。
@@ -1569,7 +1733,6 @@ def device_next(
   else:
     image_url = _daily_image_url(now_ts)
   active_override_id = None
-  active_dither_algorithm = ""
 
   if active is not None:
     source = "override"

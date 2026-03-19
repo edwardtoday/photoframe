@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-用法：scripts/deploy-orchestrator-offline-to-tvs675.sh [TAG]
+用法：scripts/deploy-orchestrator-offline-to-tvs675-lan.sh [TAG]
 
 离线投送 photoframe-orchestrator 到 QNAP/NAS，并通过 docker compose 重建容器。
 特点：不执行 pull；使用 `docker compose up -d --pull never --force-recreate` 绕过拉取部署。
@@ -15,7 +15,7 @@ usage() {
 4) 在 REMOTE_DIR 下执行 docker compose up -d（不 pull，强制重建）
 
 可选参数（环境变量）：
-  HOST=tvs675
+  HOST=tvs675-lan
   IMAGE_REPO=edwardtoday/photoframe-orchestrator
   PLATFORM=linux/amd64
   BUILDER_NAME=photoframe-offline
@@ -121,7 +121,7 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-HOST="${HOST:-tvs675}"
+HOST="${HOST:-tvs675-lan}"
 IMAGE_REPO="${IMAGE_REPO:-edwardtoday/photoframe-orchestrator}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 BUILDER_NAME="${BUILDER_NAME:-photoframe-offline}"

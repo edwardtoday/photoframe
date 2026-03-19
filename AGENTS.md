@@ -23,9 +23,9 @@
   - `device_clock_ok`：设备时钟是否可信。
   - `effective_epoch`：本次决策实际使用的时间（用于日图 date 与 override window）。
 
-## 部署约定（离线投送到 tvs675）
+## 部署约定（离线投送到 tvs675-lan）
 
-- 使用 `scripts/deploy-orchestrator-offline-to-tvs675.sh`：
+- 使用 `scripts/deploy-orchestrator-offline-to-tvs675-lan.sh`：
   - 本机构建镜像并导出 tar
   - scp 到 NAS
   - 远端 `docker load`

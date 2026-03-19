@@ -52,21 +52,21 @@ docker compose -f docker-compose.photoframe-orchestrator.prod.yml up -d
 适合 NAS 外网不稳定、或希望明确绕过 `docker compose pull` 的场景。
 
 ```bash
-# 默认目标：tvs675（ssh config）
+# 默认目标：tvs675-lan（ssh config）
 # 默认 tag：当前 git 短 SHA
-scripts/deploy-orchestrator-offline-to-tvs675.sh
+scripts/deploy-orchestrator-offline-to-tvs675-lan.sh
 
 # 指定 tag
-scripts/deploy-orchestrator-offline-to-tvs675.sh 0.1.0
+scripts/deploy-orchestrator-offline-to-tvs675-lan.sh 0.1.0
 
 # 只预演不执行
-DRY_RUN=1 scripts/deploy-orchestrator-offline-to-tvs675.sh
+DRY_RUN=1 scripts/deploy-orchestrator-offline-to-tvs675-lan.sh
 ```
 
 如遇 ssh-agent 不可用/签名失败，可显式指定私钥并强制仅使用该身份：
 
 ```bash
-SSH_IDENTITY_FILE=~/.ssh/id_rsa scripts/deploy-orchestrator-offline-to-tvs675.sh
+SSH_IDENTITY_FILE=~/.ssh/id_rsa scripts/deploy-orchestrator-offline-to-tvs675-lan.sh
 ```
 
 脚本关键行为：

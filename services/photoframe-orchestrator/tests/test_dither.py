@@ -158,7 +158,7 @@ class DitherAlgorithmTests(unittest.TestCase):
   def test_palette_dither_algorithms_output_only_device_palette(self) -> None:
     image = _build_gradient_image()
 
-    for algorithm in ("bayer", "floyd-steinberg", "jarvis", "stucki", "atkinson", "sierra"):
+    for algorithm in ("bayer", "floyd-steinberg", "jarvis", "stucki", "burkes", "sierra-lite", "atkinson", "sierra"):
       with self.subTest(algorithm=algorithm):
         rendered = ORCH._apply_override_dither(image, algorithm)
         self.assertTrue(_pixel_set(rendered).issubset(PALETTE))

@@ -39,11 +39,13 @@ const DITHER_ALGORITHM_LABELS = {
   'floyd-steinberg': 'Floyd-Steinberg',
   jarvis: 'Jarvis (JJN)',
   stucki: 'Stucki',
+  burkes: 'Burkes',
+  'sierra-lite': 'Sierra Lite (2-4A)',
   'lab-ciede2000': 'Lab + CIEDE2000',
   atkinson: 'Atkinson',
   sierra: 'Sierra',
 };
-const DAILY_DITHER_ALGORITHMS = ['bayer', 'floyd-steinberg', 'jarvis', 'stucki', 'lab-ciede2000', 'atkinson', 'sierra'];
+const DAILY_DITHER_ALGORITHMS = ['bayer', 'floyd-steinberg', 'jarvis', 'stucki', 'burkes', 'sierra-lite', 'lab-ciede2000', 'atkinson', 'sierra'];
 
 function readCookie(name) {
   const encodedName = `${name}=`;

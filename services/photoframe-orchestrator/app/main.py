@@ -155,6 +155,20 @@ DITHER_ALGORITHM_SPECS: dict[str, dict[str, Any]] = {
             (2, 2, 1 / 42),
         ),
     },
+    "burkes": {
+        "label": "Burkes",
+        "description": "扩散核更紧凑，细节稳定，适合照片与中等算力场景",
+        "kind": "diffusion",
+        "kernel": (
+            (1, 0, 8 / 32),
+            (2, 0, 4 / 32),
+            (-2, 1, 2 / 32),
+            (-1, 1, 4 / 32),
+            (0, 1, 8 / 32),
+            (1, 1, 4 / 32),
+            (2, 1, 2 / 32),
+        ),
+    },
     "atkinson": {
         "label": "Atkinson",
         "description": "对比更强，颗粒感明显",
@@ -183,6 +197,16 @@ DITHER_ALGORITHM_SPECS: dict[str, dict[str, Any]] = {
             (-1, 2, 2 / 32),
             (0, 2, 3 / 32),
             (1, 2, 2 / 32),
+        ),
+    },
+    "sierra-lite": {
+        "label": "Sierra Lite (2-4A)",
+        "description": "低成本扩散，速度快，适合快速预览与较轻颗粒感",
+        "kind": "diffusion",
+        "kernel": (
+            (1, 0, 2 / 4),
+            (-1, 1, 1 / 4),
+            (0, 1, 1 / 4),
         ),
     },
     "lab-ciede2000": {

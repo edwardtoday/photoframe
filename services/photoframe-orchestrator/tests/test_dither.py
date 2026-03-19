@@ -128,6 +128,12 @@ def _pixel_set(image: Image.Image) -> set[tuple[int, int, int]]:
 
 class DitherAlgorithmTests(unittest.TestCase):
 
+  def test_preferred_output_format_prefers_bmp_when_device_supports_both(self) -> None:
+    self.assertEqual(ORCH._preferred_output_format("jpeg,bmp"), "bmp")
+    self.assertEqual(ORCH._preferred_output_format("bmp,jpeg"), "bmp")
+    self.assertEqual(ORCH._preferred_output_format("jpeg"), "jpg")
+    self.assertEqual(ORCH._preferred_output_format(None), "bmp")
+
   def test_unknown_dither_algorithm_is_rejected(self) -> None:
     with self.assertRaises(HTTPException):
       ORCH._normalize_override_dither_algorithm("unknown")

@@ -1010,6 +1010,19 @@ def _normalize_override_dither_algorithm(raw: str | None) -> str:
   return value
 
 
+def _preferred_output_format(accept_formats: str | None) -> str:
+  accept = {
+      item.strip().lower()
+      for item in (accept_formats or "").split(",")
+      if item.strip() != ""
+  }
+  if "bmp" in accept or len(accept) == 0:
+    return "bmp"
+  if "jpeg" in accept or "jpg" in accept:
+    return "jpg"
+  return "bmp"
+
+
 def _clamp_channel(value: float) -> int:
   if value <= 0:
     return 0
@@ -1495,13 +1508,9 @@ def device_next(
   requested_now = server_now if now_epoch is None else int(now_epoch)
   now_ts, device_clock_ok = _coerce_device_epoch(requested_now, server_now)
   poll_sec = _clamp(default_poll_seconds, 60, 86400)
-  accept = {
-      item.strip().lower()
-      for item in (accept_formats or "").split(",")
-      if item.strip() != ""
-  }
-  prefer_jpeg = ("jpeg" in accept) or ("jpg" in accept)
-  prefer_bmp = ("bmp" in accept) or (len(accept) == 0)
+  preferred_output_format = _preferred_output_format(accept_formats)
+  prefer_bmp = preferred_output_format == "bmp"
+  prefer_jpeg = preferred_output_format == "jpg"
   conn = _ensure_db()
 
   with DB_LOCK:
@@ -1549,10 +1558,10 @@ def device_next(
   # - 未配置 PUBLIC_DAILY_BMP_TOKEN：优先按设备能力下发 /api/v1/preview/current.jpg|bmp（设备 token 鉴权）。
   # - 仅支持 JPEG 的老设备：回退到上游 DAILY_IMAGE_URL_TEMPLATE。
   if (PUBLIC_DAILY_BMP_TOKEN or "").strip():
-    if prefer_jpeg:
-      image_url = f"{_public_base(request)}/public/daily.jpg?device_id={device_id}"
-    else:
+    if prefer_bmp:
       image_url = f"{_public_base(request)}/public/daily.bmp?device_id={device_id}"
+    else:
+      image_url = f"{_public_base(request)}/public/daily.jpg?device_id={device_id}"
   elif prefer_jpeg:
     image_url = f"{_public_base(request)}/api/v1/preview/current.jpg?device_id={device_id}&now_epoch={now_ts}"
   elif prefer_bmp:

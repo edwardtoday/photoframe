@@ -311,6 +311,9 @@ fn main() {
 
     configure_button_gpio();
     let wake_source = current_wake_source();
+    if let Some(stage) = runtime_bridge::take_render_trace() {
+        println!("photoframe-rs: previous render trace={stage}");
+    }
     let long_press_action = detect_long_press_action();
 
     let mut storage = match EspIdfStorage::new() {
@@ -375,6 +378,15 @@ fn main() {
     }
 
     config.ensure_primary_wifi_in_profiles();
+
+    if crate::power::ensure_ready_for_render() {
+        match crate::panel::warmup_panel() {
+            Ok(()) => println!("photoframe-rs: panel warmup ok"),
+            Err(err) => println!("photoframe-rs: panel warmup failed: {err}"),
+        }
+    } else {
+        println!("photoframe-rs: panel warmup skipped: power not ready");
+    }
     println!("photoframe-rs: device_id={}", config.device_id);
 
     if config != previous_config

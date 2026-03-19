@@ -5,90 +5,36 @@ use photoframe_app::{DeviceRuntimeConfig, ImageArtifact, ImageFormat, PowerSampl
 #[cfg(target_os = "espidf")]
 use photoframe_domain::FailureKind;
 #[cfg(target_os = "espidf")]
-use std::{
-    sync::{OnceLock, mpsc},
-    thread,
-    time::Instant,
-};
+use std::time::Instant;
 
 #[cfg(target_os = "espidf")]
-const RENDER_WORKER_STACK_SIZE: usize = 64 * 1024;
+const TRACE_NONE: u32 = 0;
+#[cfg(target_os = "espidf")]
+const TRACE_BEFORE_POWER_READY: u32 = 1;
+#[cfg(target_os = "espidf")]
+const TRACE_AFTER_POWER_READY: u32 = 2;
+#[cfg(target_os = "espidf")]
+const TRACE_BEFORE_BMP_PACK: u32 = 3;
+#[cfg(target_os = "espidf")]
+const TRACE_AFTER_BMP_PACK: u32 = 4;
+#[cfg(target_os = "espidf")]
+const TRACE_BEFORE_PANEL_FLUSH: u32 = 5;
+#[cfg(target_os = "espidf")]
+const TRACE_AFTER_PANEL_FLUSH: u32 = 6;
+#[cfg(target_os = "espidf")]
+const TRACE_PANEL_INIT_ENTER: u32 = 20;
+#[cfg(target_os = "espidf")]
+const TRACE_PANEL_INIT_DONE: u32 = 21;
+#[cfg(target_os = "espidf")]
+const TRACE_PANEL_TURN_ON_04: u32 = 22;
+#[cfg(target_os = "espidf")]
+const TRACE_PANEL_TURN_ON_12: u32 = 23;
+#[cfg(target_os = "espidf")]
+const TRACE_PANEL_TURN_ON_02: u32 = 24;
 
 #[cfg(target_os = "espidf")]
-struct RenderRequest {
-    artifact: ImageArtifact,
-    config: DeviceRuntimeConfig,
-    result_tx: mpsc::SyncSender<Result<(), FailureKind>>,
-}
-
-#[cfg(target_os = "espidf")]
-struct RenderWorker {
-    tx: mpsc::Sender<RenderRequest>,
-}
-
-#[cfg(target_os = "espidf")]
-static RENDER_WORKER: OnceLock<RenderWorker> = OnceLock::new();
-
-#[cfg(target_os = "espidf")]
-fn render_worker() -> &'static RenderWorker {
-    RENDER_WORKER.get_or_init(|| RenderWorker::spawn().expect("render worker spawn failed"))
-}
-
-#[cfg(target_os = "espidf")]
-impl RenderWorker {
-    fn spawn() -> Result<Self, String> {
-        let (tx, rx) = mpsc::channel::<RenderRequest>();
-        thread::Builder::new()
-            .name("pf-render".into())
-            .stack_size(RENDER_WORKER_STACK_SIZE)
-            .spawn(move || {
-                while let Ok(first) = rx.recv() {
-                    let mut latest = first;
-                    let mut responders = vec![latest.result_tx.clone()];
-                    let mut merged = 0usize;
-                    while let Ok(next) = rx.try_recv() {
-                        responders.push(next.result_tx.clone());
-                        latest = next;
-                        merged += 1;
-                    }
-                    if merged > 0 {
-                        println!(
-                            "photoframe-rs/render: coalesced {} pending requests for device_id={}",
-                            merged, latest.config.device_id
-                        );
-                    }
-                    let result = render_image_direct(&latest.artifact, &latest.config);
-                    for responder in responders {
-                        let _ = responder.send(result);
-                    }
-                }
-            })
-            .map_err(|err| err.to_string())?;
-        Ok(Self { tx })
-    }
-
-    fn render(
-        &self,
-        artifact: ImageArtifact,
-        config: DeviceRuntimeConfig,
-    ) -> Result<(), FailureKind> {
-        let (result_tx, result_rx) = mpsc::sync_channel(1);
-        self.tx
-            .send(RenderRequest {
-                artifact,
-                config,
-                result_tx,
-            })
-            .map_err(|err| {
-                println!("photoframe-rs/render: enqueue failed: {err}");
-                FailureKind::GeneralFailure
-            })?;
-        result_rx.recv().map_err(|err| {
-            println!("photoframe-rs/render: await result failed: {err}");
-            FailureKind::GeneralFailure
-        })?
-    }
-}
+#[unsafe(link_section = ".rtc.data")]
+static mut LAST_RENDER_TRACE: u32 = TRACE_NONE;
 
 #[cfg(target_os = "espidf")]
 fn image_format_name(format: &ImageFormat) -> &'static str {
@@ -127,6 +73,36 @@ fn log_render_timing(
 }
 
 #[cfg(target_os = "espidf")]
+pub(crate) fn record_render_trace(stage: u32) {
+    unsafe {
+        LAST_RENDER_TRACE = stage;
+    }
+}
+
+#[cfg(target_os = "espidf")]
+pub(crate) fn take_render_trace() -> Option<&'static str> {
+    let stage = unsafe { LAST_RENDER_TRACE };
+    unsafe {
+        LAST_RENDER_TRACE = TRACE_NONE;
+    }
+    match stage {
+        TRACE_NONE => None,
+        TRACE_BEFORE_POWER_READY => Some("before_power_ready"),
+        TRACE_AFTER_POWER_READY => Some("after_power_ready"),
+        TRACE_BEFORE_BMP_PACK => Some("before_bmp_pack"),
+        TRACE_AFTER_BMP_PACK => Some("after_bmp_pack"),
+        TRACE_BEFORE_PANEL_FLUSH => Some("before_panel_flush"),
+        TRACE_AFTER_PANEL_FLUSH => Some("after_panel_flush"),
+        TRACE_PANEL_INIT_ENTER => Some("panel_init_enter"),
+        TRACE_PANEL_INIT_DONE => Some("panel_init_done"),
+        TRACE_PANEL_TURN_ON_04 => Some("panel_turn_on_04"),
+        TRACE_PANEL_TURN_ON_12 => Some("panel_turn_on_12"),
+        TRACE_PANEL_TURN_ON_02 => Some("panel_turn_on_02"),
+        _ => Some("unknown"),
+    }
+}
+
+#[cfg(target_os = "espidf")]
 fn render_image_direct(
     artifact: &ImageArtifact,
     config: &DeviceRuntimeConfig,
@@ -136,6 +112,7 @@ fn render_image_direct(
     let mut pack_ms = 0u128;
     let mut flush_ms = 0u128;
 
+    record_render_trace(TRACE_BEFORE_POWER_READY);
     let _ = photoframe_platform_espidf::send_debug_stage_beacon(config, "before_power_ready");
     let power_start = Instant::now();
     if !crate::power::ensure_ready_for_render() {
@@ -156,6 +133,7 @@ fn render_image_direct(
         return Err(FailureKind::PmicSoftFailure);
     }
     let power_ms = power_start.elapsed().as_millis();
+    record_render_trace(TRACE_AFTER_POWER_READY);
     let _ = photoframe_platform_espidf::send_debug_stage_beacon(config, "after_power_ready");
 
     let options = crate::render_core::RenderOptions {
@@ -166,6 +144,7 @@ fn render_image_direct(
     };
     let packed = match artifact.format {
         ImageFormat::Bmp => {
+            record_render_trace(TRACE_BEFORE_BMP_PACK);
             let _ = photoframe_platform_espidf::send_debug_stage_beacon(config, "before_bmp_pack");
             let pack_start = Instant::now();
             let packed = crate::render_core::render_bmp24_to_packed(&artifact.bytes, options)
@@ -186,6 +165,7 @@ fn render_image_direct(
                     FailureKind::GeneralFailure
                 })?;
             pack_ms = pack_start.elapsed().as_millis();
+            record_render_trace(TRACE_AFTER_BMP_PACK);
             let _ = photoframe_platform_espidf::send_debug_stage_beacon(config, "after_bmp_pack");
             packed
         }
@@ -291,6 +271,7 @@ fn render_image_direct(
             packed
         }
     };
+    record_render_trace(TRACE_BEFORE_PANEL_FLUSH);
     let _ = photoframe_platform_espidf::send_debug_stage_beacon(config, "before_panel_flush");
     let flush_start = Instant::now();
     if let Err(err) = crate::panel::flush_packed_image(&packed.bytes) {
@@ -312,6 +293,7 @@ fn render_image_direct(
         return Err(FailureKind::GeneralFailure);
     }
     flush_ms = flush_start.elapsed().as_millis();
+    record_render_trace(TRACE_AFTER_PANEL_FLUSH);
     let _ = photoframe_platform_espidf::send_debug_stage_beacon(config, "after_panel_flush");
     log_render_timing(
         "ok",
@@ -346,7 +328,7 @@ impl EspRuntimeBridge {
         artifact: &ImageArtifact,
         config: &DeviceRuntimeConfig,
     ) -> Result<(), FailureKind> {
-        render_worker().render(artifact.clone(), config.clone())
+        render_image_direct(artifact, config)
     }
 
     #[cfg(not(target_os = "espidf"))]

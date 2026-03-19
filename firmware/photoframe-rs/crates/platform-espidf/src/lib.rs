@@ -397,11 +397,12 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
             }
 
             let url = format!(
-                "{}/api/v1/device/config?device_id={}&now_epoch={}&current_version={}",
+                "{}/api/v1/device/config?device_id={}&now_epoch={}&current_version={}&reset_reason={}",
                 trim_trailing_slash(&config.orchestrator_base_url),
                 url_encode_component(&config.device_id),
                 now_epoch,
                 config.remote_config_version.max(0),
+                current_reset_reason_label(),
             );
             let response = http_get_json::<DeviceConfigResponse>(
                 &url,
@@ -440,12 +441,13 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
 
             let default_poll_seconds = preferred_poll_seconds.clamp(60, 86_400) as u32;
             let url = format!(
-                "{}/api/v1/device/next?device_id={}&now_epoch={}&default_poll_seconds={}&failure_count={}&accept_formats=jpeg,bmp",
+                "{}/api/v1/device/next?device_id={}&now_epoch={}&default_poll_seconds={}&failure_count={}&accept_formats=jpeg,bmp&reset_reason={}",
                 trim_trailing_slash(&config.orchestrator_base_url),
                 url_encode_component(&config.device_id),
                 now_epoch,
                 default_poll_seconds,
                 config.failure_count,
+                current_reset_reason_label(),
             );
 
             http_get_json::<DeviceNextResponse>(
@@ -644,6 +646,29 @@ fn resolve_redirect_url(current_url: &str, location: &str) -> Option<String> {
 #[cfg(target_os = "espidf")]
 fn is_redirect_status(status: i32) -> bool {
     matches!(status, 301 | 302 | 303 | 307 | 308)
+}
+
+#[cfg(target_os = "espidf")]
+fn current_reset_reason_label() -> &'static str {
+    match unsafe { sys::esp_reset_reason() } {
+        sys::esp_reset_reason_t_ESP_RST_UNKNOWN => "unknown",
+        sys::esp_reset_reason_t_ESP_RST_POWERON => "poweron",
+        sys::esp_reset_reason_t_ESP_RST_EXT => "ext",
+        sys::esp_reset_reason_t_ESP_RST_SW => "sw",
+        sys::esp_reset_reason_t_ESP_RST_PANIC => "panic",
+        sys::esp_reset_reason_t_ESP_RST_INT_WDT => "int_wdt",
+        sys::esp_reset_reason_t_ESP_RST_TASK_WDT => "task_wdt",
+        sys::esp_reset_reason_t_ESP_RST_WDT => "wdt",
+        sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP => "deepsleep",
+        sys::esp_reset_reason_t_ESP_RST_BROWNOUT => "brownout",
+        sys::esp_reset_reason_t_ESP_RST_SDIO => "sdio",
+        sys::esp_reset_reason_t_ESP_RST_USB => "usb",
+        sys::esp_reset_reason_t_ESP_RST_JTAG => "jtag",
+        sys::esp_reset_reason_t_ESP_RST_EFUSE => "efuse",
+        sys::esp_reset_reason_t_ESP_RST_PWR_GLITCH => "pwr_glitch",
+        sys::esp_reset_reason_t_ESP_RST_CPU_LOCKUP => "cpu_lockup",
+        _ => "other",
+    }
 }
 
 #[cfg(target_os = "espidf")]

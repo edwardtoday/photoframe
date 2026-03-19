@@ -34,6 +34,8 @@ const REG_STATUS1: u8 = 0x00;
 #[cfg(target_os = "espidf")]
 const REG_STATUS2: u8 = 0x01;
 #[cfg(target_os = "espidf")]
+const REG_EXTEN_CFG: u8 = 0x16;
+#[cfg(target_os = "espidf")]
 const REG_ADC_CHANNEL_CTRL: u8 = 0x30;
 #[cfg(target_os = "espidf")]
 const REG_ADC_BATT_H: u8 = 0x34;
@@ -42,9 +44,17 @@ const REG_ADC_BATT_L: u8 = 0x35;
 #[cfg(target_os = "espidf")]
 const REG_BATTERY_PERCENT: u8 = 0xA4;
 #[cfg(target_os = "espidf")]
+const REG_DCDC_ON_OFF_CTRL: u8 = 0x80;
+#[cfg(target_os = "espidf")]
+const REG_DCDC1_VOLT_CTRL: u8 = 0x82;
+#[cfg(target_os = "espidf")]
 const REG_BATT_DET_CTRL: u8 = 0x68;
 #[cfg(target_os = "espidf")]
 const REG_LDO_ON_OFF_CTRL0: u8 = 0x90;
+#[cfg(target_os = "espidf")]
+const REG_LDO_VOL0_CTRL: u8 = 0x92;
+#[cfg(target_os = "espidf")]
+const REG_LDO_VOL1_CTRL: u8 = 0x93;
 #[cfg(target_os = "espidf")]
 const REG_LDO_VOL2_CTRL: u8 = 0x94;
 #[cfg(target_os = "espidf")]
@@ -52,13 +62,7 @@ const REG_LDO_VOL3_CTRL: u8 = 0x95;
 #[cfg(target_os = "espidf")]
 const EXPECTED_CHIP_ID: u8 = 0x4A;
 #[cfg(target_os = "espidf")]
-const ALDO_TARGET_MV: i32 = 3300;
-#[cfg(target_os = "espidf")]
-const ALDO_STEP_MV: i32 = 100;
-#[cfg(target_os = "espidf")]
-const ALDO_MIN_MV: i32 = 500;
-#[cfg(target_os = "espidf")]
-const ALDO_CODE_3300: u8 = ((ALDO_TARGET_MV - ALDO_MIN_MV) / ALDO_STEP_MV) as u8;
+const LDO_CODE_3300: u8 = 0x1C;
 
 #[cfg(target_os = "espidf")]
 struct PowerRuntime {
@@ -328,8 +332,20 @@ fn disable_reg_bits(state: &mut PowerRuntime, reg: u8, bits: u8) -> bool {
 }
 
 #[cfg(target_os = "espidf")]
-fn configure_aldo_3300(state: &mut PowerRuntime, reg: u8) -> bool {
-    update_reg_bits(state, reg, 0x1F, ALDO_CODE_3300)
+fn configure_display_power_rails(state: &mut PowerRuntime) -> bool {
+    let ext_en_ok = update_reg_bits(state, REG_EXTEN_CFG, 0x07, 0x05);
+    let dcdc1_ok = update_reg_bits(state, REG_DCDC1_VOLT_CTRL, 0x3F, 0x12);
+    let ldo_ok = [
+        REG_LDO_VOL0_CTRL,
+        REG_LDO_VOL1_CTRL,
+        REG_LDO_VOL2_CTRL,
+        REG_LDO_VOL3_CTRL,
+    ]
+    .into_iter()
+    .all(|reg| update_reg_bits(state, reg, 0x1F, LDO_CODE_3300));
+    let rail_enable_ok = enable_reg_bits(state, REG_DCDC_ON_OFF_CTRL, 1u8 << 0)
+        && enable_reg_bits(state, REG_LDO_ON_OFF_CTRL0, 0x0F);
+    ext_en_ok && dcdc1_ok && ldo_ok && rail_enable_ok
 }
 
 #[cfg(target_os = "espidf")]
@@ -412,15 +428,21 @@ fn init_power() -> Result<(), String> {
         ));
     }
 
-    let ok = configure_aldo_3300(&mut state, REG_LDO_VOL2_CTRL)
-        && configure_aldo_3300(&mut state, REG_LDO_VOL3_CTRL)
-        && enable_reg_bits(&mut state, REG_LDO_ON_OFF_CTRL0, (1u8 << 2) | (1u8 << 3))
+    let ok = configure_display_power_rails(&mut state)
         && enable_reg_bits(&mut state, REG_ADC_CHANNEL_CTRL, 0x01)
         && enable_reg_bits(&mut state, REG_BATT_DET_CTRL, 0x01);
     if !ok {
         reset_i2c_bus(&mut state);
         return Err("pmic register init failed".into());
     }
+
+    let dcdc_on = read_reg(&mut state, REG_DCDC_ON_OFF_CTRL).unwrap_or_default();
+    let ldo_on = read_reg(&mut state, REG_LDO_ON_OFF_CTRL0).unwrap_or_default();
+    let dcdc1 = read_reg(&mut state, REG_DCDC1_VOLT_CTRL).unwrap_or_default();
+    log(&format!(
+        "render rails ready: dcdc_on=0x{dcdc_on:02x} ldo_on=0x{ldo_on:02x} dcdc1=0x{dcdc1:02x}"
+    ));
+    sleep_ms(200);
 
     state.ready = true;
     Ok(())

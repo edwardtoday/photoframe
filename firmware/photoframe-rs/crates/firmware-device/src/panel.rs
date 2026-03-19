@@ -30,11 +30,14 @@ const PIN_RST: i32 = 12;
 #[cfg(target_os = "espidf")]
 const PIN_BUSY: i32 = 13;
 #[cfg(target_os = "espidf")]
-const WHITE_PACKED: u8 = 0x11;
 #[cfg(target_os = "espidf")]
 const FLUSH_MAX_RETRIES: usize = 3;
 #[cfg(target_os = "espidf")]
 const FLUSH_RETRY_DELAY_MS: u64 = 500;
+#[cfg(target_os = "espidf")]
+const DEBUG_PANEL_WRITE_CHUNK_BYTES: usize = 64;
+#[cfg(target_os = "espidf")]
+const DEBUG_PANEL_WRITE_CHUNK_DELAY_MS: u64 = 50;
 
 #[cfg(target_os = "espidf")]
 struct PanelRuntime {
@@ -221,7 +224,7 @@ fn write_buffer(spi_handle: sys::spi_device_handle_t, data: &[u8]) -> Result<(),
     }
     let mut offset = 0usize;
     while offset < data.len() {
-        let chunk = (data.len() - offset).min(5000);
+        let chunk = (data.len() - offset).min(DEBUG_PANEL_WRITE_CHUNK_BYTES);
         let mut transaction = sys::spi_transaction_t {
             length: chunk * 8,
             __bindgen_anon_1: sys::spi_transaction_t__bindgen_ty_1 {
@@ -237,6 +240,9 @@ fn write_buffer(spi_handle: sys::spi_device_handle_t, data: &[u8]) -> Result<(),
             return Err(format!("spi tx buffer failed at offset={offset}: {err}"));
         }
         offset += chunk;
+        if offset < data.len() {
+            sleep_ms(DEBUG_PANEL_WRITE_CHUNK_DELAY_MS);
+        }
     }
     unsafe {
         let _ = sys::gpio_set_level(PIN_CS, 1);
@@ -246,6 +252,7 @@ fn write_buffer(spi_handle: sys::spi_device_handle_t, data: &[u8]) -> Result<(),
 
 #[cfg(target_os = "espidf")]
 fn turn_on_display(spi_handle: sys::spi_device_handle_t) -> Result<(), String> {
+    crate::runtime_bridge::record_render_trace(22);
     write_command(spi_handle, 0x04)?;
     wait_busy("turn_on/0x04", 45_000)?;
 
@@ -254,10 +261,12 @@ fn turn_on_display(spi_handle: sys::spi_device_handle_t) -> Result<(), String> {
         write_data(spi_handle, value)?;
     }
 
+    crate::runtime_bridge::record_render_trace(23);
     write_command(spi_handle, 0x12)?;
     write_data(spi_handle, 0x00)?;
     wait_busy("turn_on/0x12", 45_000)?;
 
+    crate::runtime_bridge::record_render_trace(24);
     write_command(spi_handle, 0x02)?;
     write_data(spi_handle, 0x00)?;
     wait_busy("turn_on/0x02", 45_000)
@@ -285,6 +294,7 @@ fn flush_raw(spi_handle: sys::spi_device_handle_t, data: &[u8]) -> Result<(), St
 
 #[cfg(target_os = "espidf")]
 fn apply_panel_init_sequence(spi_handle: sys::spi_device_handle_t) -> Result<(), String> {
+    crate::runtime_bridge::record_render_trace(20);
     reset();
     wait_busy("panel_init/reset", 45_000)?;
     sleep_ms(50);
@@ -331,11 +341,8 @@ fn apply_panel_init_sequence(spi_handle: sys::spi_device_handle_t) -> Result<(),
     write_data(spi_handle, 0x01)?;
     write_command(spi_handle, 0xE3)?;
     write_data(spi_handle, 0x2F)?;
-    write_command(spi_handle, 0x04)?;
-    wait_busy("panel_init/0x04", 45_000)?;
-
-    let white = vec![WHITE_PACKED; DISPLAY_LEN];
-    flush_raw(spi_handle, &white)
+    crate::runtime_bridge::record_render_trace(21);
+    Ok(())
 }
 
 #[cfg(target_os = "espidf")]
@@ -410,6 +417,20 @@ pub fn flush_packed_image(data: &[u8]) -> Result<(), String> {
     }
 
     Err(last_error)
+}
+
+#[cfg(target_os = "espidf")]
+pub fn warmup_panel() -> Result<(), String> {
+    let mutex = runtime();
+    let mut state = mutex
+        .lock()
+        .map_err(|_| "panel runtime mutex poisoned".to_string())?;
+    ensure_initialized_locked(&mut state)
+}
+
+#[cfg(not(target_os = "espidf"))]
+pub fn warmup_panel() -> Result<(), String> {
+    Err("panel only works on espidf target".into())
 }
 
 #[cfg(not(target_os = "espidf"))]

@@ -88,6 +88,9 @@ EPAPER_LAB_REFERENCE_PALETTE: tuple[dict[str, Any], ...] = (
     {"name": "green", "rgb": (40, 140, 80), "lab": (60.0, -45.0, 35.0)},
 )
 EPAPER_GREEN_PENALTY = 1.2
+EPAPER_TONE_BLACK_POINT = 0.08
+EPAPER_TONE_WHITE_POINT = 0.92
+EPAPER_TONE_CHROMA_BLEND = 0.08
 BAYER_4X4: tuple[tuple[int, ...], ...] = (
     (0, 8, 2, 10),
     (12, 4, 14, 6),
@@ -154,6 +157,26 @@ DITHER_ALGORITHM_SPECS: dict[str, dict[str, Any]] = {
             (1, 2, 2 / 42),
             (2, 2, 1 / 42),
         ),
+    },
+    "stucki-serpentine": {
+        "label": "Stucki Serpentine",
+        "description": "Stucki 核配合蛇形扫描，减少方向性条纹",
+        "kind": "diffusion",
+        "kernel": (
+            (1, 0, 8 / 42),
+            (2, 0, 4 / 42),
+            (-2, 1, 2 / 42),
+            (-1, 1, 4 / 42),
+            (0, 1, 8 / 42),
+            (1, 1, 4 / 42),
+            (2, 1, 2 / 42),
+            (-2, 2, 1 / 42),
+            (-1, 2, 2 / 42),
+            (0, 2, 4 / 42),
+            (1, 2, 2 / 42),
+            (2, 2, 1 / 42),
+        ),
+        "serpentine": True,
     },
     "burkes": {
         "label": "Burkes",
@@ -228,6 +251,27 @@ DITHER_ALGORITHM_SPECS: dict[str, dict[str, Any]] = {
             (2, 2, 1 / 42),
         ),
         "matcher": "lab-ciede2000",
+    },
+    "tone-lab-ciede2000": {
+        "label": "Tone + Lab CIEDE2000",
+        "description": "先做轻量明暗压缩，再按 Lab/ΔE00 选色，减少纸白极限下的层次丢失",
+        "kind": "diffusion",
+        "kernel": (
+            (1, 0, 8 / 42),
+            (2, 0, 4 / 42),
+            (-2, 1, 2 / 42),
+            (-1, 1, 4 / 42),
+            (0, 1, 8 / 42),
+            (1, 1, 4 / 42),
+            (2, 1, 2 / 42),
+            (-2, 2, 1 / 42),
+            (-1, 2, 2 / 42),
+            (0, 2, 4 / 42),
+            (1, 2, 2 / 42),
+            (2, 2, 1 / 42),
+        ),
+        "matcher": "lab-ciede2000",
+        "preprocess": "tone-compress",
     },
 }
 DAILY_DITHER_ALGORITHM_KEYS: tuple[str, ...] = tuple(
@@ -1393,10 +1437,37 @@ def _apply_bayer_dither(
   return rendered
 
 
+def _apply_tone_compression(image: Image.Image) -> Image.Image:
+  width, height = image.size
+  source_pixels = _pixel_list(image)
+  output: list[tuple[int, int, int]] = []
+
+  for r0, g0, b0 in source_pixels:
+    luma = (0.2126 * r0 + 0.7152 * g0 + 0.0722 * b0) / 255.0
+    target_luma = EPAPER_TONE_BLACK_POINT + (EPAPER_TONE_WHITE_POINT - EPAPER_TONE_BLACK_POINT) * luma
+    target_luma = max(0.0, min(1.0, target_luma))
+    gray = target_luma * 255.0
+    if luma > 1e-6:
+      gain = target_luma / luma
+      scaled = (r0 * gain, g0 * gain, b0 * gain)
+    else:
+      scaled = (0.0, 0.0, 0.0)
+    output.append((
+        _clamp_channel(scaled[0] * (1.0 - EPAPER_TONE_CHROMA_BLEND) + gray * EPAPER_TONE_CHROMA_BLEND),
+        _clamp_channel(scaled[1] * (1.0 - EPAPER_TONE_CHROMA_BLEND) + gray * EPAPER_TONE_CHROMA_BLEND),
+        _clamp_channel(scaled[2] * (1.0 - EPAPER_TONE_CHROMA_BLEND) + gray * EPAPER_TONE_CHROMA_BLEND),
+    ))
+
+  rendered = Image.new("RGB", (width, height))
+  rendered.putdata(output)
+  return rendered
+
+
 def _apply_error_diffusion(
     image: Image.Image,
     kernel: tuple[tuple[int, int, float], ...],
     matcher: callable = _nearest_palette_color,
+    serpentine: bool = False,
 ) -> Image.Image:
   width, height = image.size
   source_pixels = _pixel_list(image)
@@ -1408,7 +1479,9 @@ def _apply_error_diffusion(
   for y in range(height):
     row_offset = y * width
     current_errors = error_rows[0]
-    for x in range(width):
+    reverse = serpentine and (y % 2 == 1)
+    x_iter = range(width - 1, -1, -1) if reverse else range(width)
+    for x in x_iter:
       source_r, source_g, source_b = source_pixels[row_offset + x]
       base = x * 3
       r = _clamp_channel(source_r + current_errors[base])
@@ -1424,7 +1497,7 @@ def _apply_error_diffusion(
         continue
 
       for dx, dy, weight in kernel:
-        nx = x + dx
+        nx = x + (-dx if reverse else dx)
         if nx < 0 or nx >= width or y + dy >= height:
           continue
         target_row = error_rows[dy]
@@ -1445,6 +1518,9 @@ def _apply_override_dither(image: Image.Image, dither_algorithm: str) -> Image.I
   normalized = _normalize_override_dither_algorithm(dither_algorithm)
   spec = DITHER_ALGORITHM_SPECS[normalized]
   kind = str(spec["kind"])
+  preprocess = str(spec.get("preprocess") or "")
+  if preprocess == "tone-compress":
+    image = _apply_tone_compression(image)
 
   if kind == "passthrough":
     return image.copy()
@@ -1456,7 +1532,7 @@ def _apply_override_dither(image: Image.Image, dither_algorithm: str) -> Image.I
       raise RuntimeError(f"kernel missing for dither algorithm: {normalized}")
     matcher_name = str(spec.get("matcher") or "rgb")
     matcher = _nearest_palette_color_lab_ciede2000 if matcher_name == "lab-ciede2000" else _nearest_palette_color
-    return _apply_error_diffusion(image, kernel, matcher=matcher)
+    return _apply_error_diffusion(image, kernel, matcher=matcher, serpentine=bool(spec.get("serpentine")))
   raise RuntimeError(f"unsupported dither algorithm kind: {kind}")
 
 

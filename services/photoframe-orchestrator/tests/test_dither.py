@@ -158,7 +158,7 @@ class DitherAlgorithmTests(unittest.TestCase):
   def test_palette_dither_algorithms_output_only_device_palette(self) -> None:
     image = _build_gradient_image()
 
-    for algorithm in ("bayer", "floyd-steinberg", "jarvis", "stucki", "burkes", "sierra-lite", "atkinson", "sierra"):
+    for algorithm in ("bayer", "floyd-steinberg", "jarvis", "stucki", "stucki-serpentine", "burkes", "sierra-lite", "atkinson", "sierra"):
       with self.subTest(algorithm=algorithm):
         rendered = ORCH._apply_override_dither(image, algorithm)
         self.assertTrue(_pixel_set(rendered).issubset(PALETTE))
@@ -172,6 +172,17 @@ class DitherAlgorithmTests(unittest.TestCase):
     muddy_green = (156, 176, 60)
     picked = ORCH._nearest_palette_color_lab_ciede2000(muddy_green)
     self.assertNotEqual(picked, (40, 140, 80))
+
+  def test_tone_lab_ciede2000_output_only_issue_palette(self) -> None:
+    image = _build_gradient_image()
+    rendered = ORCH._apply_override_dither(image, "tone-lab-ciede2000")
+    self.assertTrue(_pixel_set(rendered).issubset(EPAPER_PALETTE))
+
+  def test_stucki_serpentine_changes_output(self) -> None:
+    image = _build_gradient_image()
+    normal = list(ORCH._apply_override_dither(image, "stucki").getdata())
+    serpentine = list(ORCH._apply_override_dither(image, "stucki-serpentine").getdata())
+    self.assertNotEqual(normal, serpentine)
 
   def test_upload_conversion_generates_distinct_assets_for_different_algorithms(self) -> None:
     source_image = _build_gradient_image(size=(64, 64))

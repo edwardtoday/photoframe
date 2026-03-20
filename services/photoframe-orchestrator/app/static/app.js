@@ -7,6 +7,7 @@ function authHeaders() {
 }
 
 const previewBlobUrls = { left: null, right: null };
+const previewResponseCache = new Map();
 let deviceMap = new Map();
 let powerChartCache = null;
 let powerResizeTimer = null;
@@ -1092,10 +1093,16 @@ function updateCompareSliderUi() {
   const slider = document.getElementById('compareSlider');
   const overlay = document.getElementById('compareOverlay');
   const divider = document.getElementById('compareDivider');
+  const stage = document.getElementById('compareStage');
+  const leftImg = document.getElementById('compareLeftPreview');
   if (!slider || !overlay || !divider) return;
   const value = Math.max(0, Math.min(100, Number(slider.value || 50)));
   overlay.style.width = `${value}%`;
   divider.style.left = `${value}%`;
+  if (stage && leftImg) {
+    leftImg.style.width = `${stage.clientWidth}px`;
+    leftImg.style.height = `${stage.clientHeight}px`;
+  }
 }
 
 function updateDailyDitherHint(savedAlgorithm = currentDailyDitherAlgorithm) {
@@ -1674,7 +1681,7 @@ async function loadPublishHistory() {
   document.getElementById('publishHistoryHint').textContent = `${scope} · 最近 ${items.length} 条`;
 }
 
-async function loadCurrentPreview() {
+async function loadCurrentPreview(force = false) {
   const selectedDevice = document.getElementById('deviceId').value || '*';
   const meta = document.getElementById('previewMeta');
   const leftImg = document.getElementById('compareLeftPreview');
@@ -1687,6 +1694,10 @@ async function loadCurrentPreview() {
   const rightAlgorithm = selectedCompareAlgorithm('compareRightAlgorithm', preferredCompareRightAlgorithm(leftAlgorithm));
 
   async function fetchPreview(algorithm) {
+    const cacheKey = `${selectedDevice}|${selectedPaletteProfile()}|${algorithm}`;
+    if (!force && previewResponseCache.has(cacheKey)) {
+      return previewResponseCache.get(cacheKey);
+    }
     const headers = authHeaders();
     const resp = await fetch(
       `/api/v1/preview/current.bmp?device_id=${encodeURIComponent(selectedDevice)}&daily_dither_algorithm=${encodeURIComponent(algorithm)}&palette_profile=${encodeURIComponent(selectedPaletteProfile())}`,
@@ -1707,31 +1718,24 @@ async function loadCurrentPreview() {
       throw new Error(detail || `HTTP ${resp.status}`);
     }
 
-    return {
-      blob: await resp.blob(),
+    const preview = {
+      blobUrl: URL.createObjectURL(await resp.blob()),
       source: resp.headers.get('X-PhotoFrame-Source') || 'daily',
       target: resp.headers.get('X-PhotoFrame-Device') || selectedDevice,
       dither: resp.headers.get('X-PhotoFrame-Dither') || algorithm,
     };
+    previewResponseCache.set(cacheKey, preview);
+    return preview;
   }
 
   const leftPromise = fetchPreview(leftAlgorithm);
   const rightPromise = leftAlgorithm === rightAlgorithm ? leftPromise : fetchPreview(rightAlgorithm);
   const [leftPreview, rightPreview] = await Promise.all([leftPromise, rightPromise]);
 
-  if (previewBlobUrls.left) {
-    URL.revokeObjectURL(previewBlobUrls.left);
-    previewBlobUrls.left = null;
-  }
-  if (previewBlobUrls.right && previewBlobUrls.right !== previewBlobUrls.left) {
-    URL.revokeObjectURL(previewBlobUrls.right);
-    previewBlobUrls.right = null;
-  }
-
-  previewBlobUrls.left = URL.createObjectURL(leftPreview.blob);
+  previewBlobUrls.left = leftPreview.blobUrl;
   previewBlobUrls.right = leftAlgorithm === rightAlgorithm
     ? previewBlobUrls.left
-    : URL.createObjectURL(rightPreview.blob);
+    : rightPreview.blobUrl;
   leftImg.src = previewBlobUrls.left;
   rightImg.src = previewBlobUrls.right;
   leftLabel.textContent = ditherAlgorithmLabel(leftPreview.dither || leftAlgorithm);
@@ -1878,7 +1882,8 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
 
 document.getElementById('previewBtn').addEventListener('click', async () => {
   try {
-    await loadCurrentPreview();
+    previewResponseCache.clear();
+    await loadCurrentPreview(true);
   } catch (err) {
     document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
   }
@@ -1921,7 +1926,8 @@ document.getElementById('saveDailyDitherBtn').addEventListener('click', async ()
     document.getElementById('compareLeftAlgorithm').value = currentDailyDitherAlgorithm;
     syncCompareSelectors();
     updateDailyDitherHint(currentDailyDitherAlgorithm);
-    await loadCurrentPreview();
+    previewResponseCache.clear();
+    await loadCurrentPreview(true);
   } catch (err) {
     document.getElementById('dailyDitherHint').textContent = `Daily Dither 保存失败: ${err.message}`;
   }

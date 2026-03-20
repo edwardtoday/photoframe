@@ -96,7 +96,7 @@ if SPEC is None or SPEC.loader is None:  # pragma: no cover
 ORCH = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ORCH)
 PALETTE = set(ORCH.PHOTOFRAME_PALETTE)
-EPAPER_PALETTE = {tuple(item["rgb"]) for item in ORCH.EPAPER_LAB_REFERENCE_PALETTE}
+EPAPER_PALETTE = {tuple(item["rgb"]) for item in ORCH.EPAPER_PALETTE_PROFILES["reference"]["colors"]}
 HTTPException = ORCH.HTTPException
 UploadFile = ORCH.UploadFile
 
@@ -262,6 +262,9 @@ class DitherAlgorithmTests(unittest.TestCase):
         self.assertEqual(ORCH._get_daily_dither_algorithm(), ORCH._normalize_daily_dither_algorithm(ORCH.DAILY_DITHER_DEFAULT))
         self.assertEqual(ORCH._set_daily_dither_algorithm("jarvis"), "jarvis")
         self.assertEqual(ORCH._get_daily_dither_algorithm(), "jarvis")
+        self.assertEqual(ORCH._get_palette_profile(), ORCH._normalize_palette_profile(ORCH.PALETTE_PROFILE_DEFAULT))
+        self.assertEqual(ORCH._set_palette_profile("reference"), "reference")
+        self.assertEqual(ORCH._get_palette_profile(), "reference")
       finally:
         if ORCH.DB is not None:
           ORCH.DB.close()

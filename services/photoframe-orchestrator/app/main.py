@@ -71,7 +71,9 @@ DEVICE_CONFIG_ALLOWED_KEYS = {
 DEVICE_CONFIG_SECRET_KEYS = {"orchestrator_token", "photo_token"}
 OVERRIDE_DITHER_DEFAULT = "none"
 DAILY_DITHER_SETTING_KEY = "daily_dither_algorithm"
+PALETTE_PROFILE_SETTING_KEY = "palette_profile"
 DAILY_DITHER_DEFAULT = os.getenv("DAILY_DITHER_ALGORITHM", "sierra").strip().lower() or "sierra"
+PALETTE_PROFILE_DEFAULT = os.getenv("EPAPER_PALETTE_PROFILE", "reference").strip().lower() or "reference"
 PHOTOFRAME_PALETTE: tuple[tuple[int, int, int], ...] = (
     (0, 0, 0),
     (255, 255, 255),
@@ -80,15 +82,21 @@ PHOTOFRAME_PALETTE: tuple[tuple[int, int, int], ...] = (
     (0, 0, 255),
     (0, 255, 0),
 )
-EPAPER_LAB_REFERENCE_PALETTE: tuple[dict[str, Any], ...] = (
-    {"name": "black", "rgb": (0, 0, 0), "lab": (5.0, 0.0, 0.0)},
-    {"name": "white", "rgb": (255, 255, 255), "lab": (95.0, 0.0, 0.0)},
-    {"name": "red", "rgb": (200, 40, 40), "lab": (50.0, 65.0, 50.0)},
-    {"name": "yellow", "rgb": (230, 200, 60), "lab": (85.0, -5.0, 70.0)},
-    {"name": "blue", "rgb": (40, 80, 160), "lab": (40.0, 5.0, -55.0)},
-    {"name": "green", "rgb": (40, 140, 80), "lab": (60.0, -45.0, 35.0)},
-)
-EPAPER_GREEN_PENALTY = 1.2
+EPAPER_PALETTE_PROFILES: dict[str, dict[str, Any]] = {
+    "reference": {
+        "label": "Reference Palette",
+        "description": "按 issue 10 的 6 色目标色表做匹配",
+        "green_penalty": 1.2,
+        "colors": (
+            {"name": "black", "rgb": (0, 0, 0), "lab": (5.0, 0.0, 0.0)},
+            {"name": "white", "rgb": (255, 255, 255), "lab": (95.0, 0.0, 0.0)},
+            {"name": "red", "rgb": (200, 40, 40), "lab": (50.0, 65.0, 50.0)},
+            {"name": "yellow", "rgb": (230, 200, 60), "lab": (85.0, -5.0, 70.0)},
+            {"name": "blue", "rgb": (40, 80, 160), "lab": (40.0, 5.0, -55.0)},
+            {"name": "green", "rgb": (40, 140, 80), "lab": (60.0, -45.0, 35.0)},
+        ),
+    },
+}
 EPAPER_TONE_BLACK_POINT = 0.08
 EPAPER_TONE_WHITE_POINT = 0.92
 EPAPER_TONE_CHROMA_BLEND = 0.08
@@ -905,6 +913,37 @@ def _set_daily_dither_algorithm(value: str) -> str:
     return _set_service_setting(conn, DAILY_DITHER_SETTING_KEY, picked)
 
 
+def _normalize_palette_profile(raw: str | None) -> str:
+  value = (raw or PALETTE_PROFILE_DEFAULT).strip().lower()
+  if value in EPAPER_PALETTE_PROFILES:
+    return value
+  return PALETTE_PROFILE_DEFAULT
+
+
+def _get_palette_profile() -> str:
+  conn = _ensure_db()
+  try:
+    value = _get_service_setting(conn, PALETTE_PROFILE_SETTING_KEY)
+  except sqlite3.OperationalError:
+    return PALETTE_PROFILE_DEFAULT
+  picked = _normalize_palette_profile(value)
+  if picked != value:
+    with DB_LOCK:
+        _set_service_setting(conn, PALETTE_PROFILE_SETTING_KEY, picked)
+  return picked
+
+
+def _set_palette_profile(value: str) -> str:
+  picked = _normalize_palette_profile(value)
+  conn = _ensure_db()
+  with DB_LOCK:
+    return _set_service_setting(conn, PALETTE_PROFILE_SETTING_KEY, picked)
+
+
+def _current_epaper_palette_profile() -> dict[str, Any]:
+  return EPAPER_PALETTE_PROFILES[_get_palette_profile()]
+
+
 def _daily_image_url(now_epoch: int) -> str:
   date_text = datetime.fromtimestamp(now_epoch, LOCAL_TZ).strftime("%Y-%m-%d")
   url = DAILY_TEMPLATE.replace("%DATE%", date_text)
@@ -1419,13 +1458,16 @@ def _ciede2000(lab1: tuple[float, float, float], lab2: tuple[float, float, float
 
 
 def _nearest_palette_color_lab_ciede2000(rgb: tuple[float, float, float]) -> tuple[int, int, int]:
+  profile = _current_epaper_palette_profile()
   source_lab = _rgb_to_lab(rgb)
-  best = EPAPER_LAB_REFERENCE_PALETTE[0]
+  palette = profile["colors"]
+  green_penalty = float(profile["green_penalty"])
+  best = palette[0]
   best_distance = math.inf
-  for candidate in EPAPER_LAB_REFERENCE_PALETTE:
+  for candidate in palette:
     distance = _ciede2000(source_lab, candidate["lab"])
     if candidate["name"] == "green":
-      distance *= EPAPER_GREEN_PENALTY
+      distance *= green_penalty
     if distance < best_distance:
       best = candidate
       best_distance = distance
@@ -1776,6 +1818,7 @@ class DeviceConfigApplied(BaseModel):
 
 class DailyRenderConfigPayload(BaseModel):
   daily_dither_algorithm: str = Field(min_length=1, max_length=64)
+  palette_profile: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 @app.on_event("startup")
@@ -1803,6 +1846,15 @@ def healthz() -> dict[str, Any]:
 def get_daily_render_config() -> dict[str, Any]:
   return {
       "daily_dither_algorithm": _get_daily_dither_algorithm(),
+      "palette_profile": _get_palette_profile(),
+      "palette_profiles": [
+          {
+              "key": key,
+              "label": spec["label"],
+              "description": spec["description"],
+          }
+          for key, spec in EPAPER_PALETTE_PROFILES.items()
+      ],
       "algorithms": _daily_dither_algorithm_specs(),
   }
 
@@ -1814,9 +1866,19 @@ def set_daily_render_config(
 ) -> dict[str, Any]:
   _require_token(x_photoframe_token)
   picked = _set_daily_dither_algorithm(payload.daily_dither_algorithm)
+  palette_profile = _get_palette_profile() if payload.palette_profile is None else _set_palette_profile(payload.palette_profile)
   return {
       "ok": True,
       "daily_dither_algorithm": picked,
+      "palette_profile": palette_profile,
+      "palette_profiles": [
+          {
+              "key": key,
+              "label": spec["label"],
+              "description": spec["description"],
+          }
+          for key, spec in EPAPER_PALETTE_PROFILES.items()
+      ],
       "algorithms": _daily_dither_algorithm_specs(),
   }
 

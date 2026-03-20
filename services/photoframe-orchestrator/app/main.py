@@ -96,6 +96,19 @@ EPAPER_PALETTE_PROFILES: dict[str, dict[str, Any]] = {
             {"name": "green", "rgb": (40, 140, 80), "lab": (60.0, -45.0, 35.0)},
         ),
     },
+    "measured": {
+        "label": "Measured Placeholder",
+        "description": "实测色表占位；当前为轻微偏移版，待后续用色卡实测数据替换",
+        "green_penalty": 1.15,
+        "colors": (
+            {"name": "black", "rgb": (12, 10, 10), "lab": (7.0, 0.5, 0.5)},
+            {"name": "white", "rgb": (245, 239, 228), "lab": (92.0, 0.5, 4.0)},
+            {"name": "red", "rgb": (190, 56, 48), "lab": (51.0, 58.0, 42.0)},
+            {"name": "yellow", "rgb": (217, 191, 78), "lab": (82.0, -2.0, 63.0)},
+            {"name": "blue", "rgb": (55, 92, 152), "lab": (43.0, 1.0, -46.0)},
+            {"name": "green", "rgb": (59, 128, 86), "lab": (56.0, -33.0, 21.0)},
+        ),
+    },
 }
 EPAPER_TONE_BLACK_POINT = 0.08
 EPAPER_TONE_WHITE_POINT = 0.92

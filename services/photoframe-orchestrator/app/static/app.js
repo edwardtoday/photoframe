@@ -11,6 +11,7 @@ let deviceMap = new Map();
 let powerChartCache = null;
 let powerResizeTimer = null;
 let currentDailyDitherAlgorithm = 'sierra';
+let currentPaletteProfile = 'reference';
 
 const TOKEN_STORAGE_KEY = 'photoframe.console.token';
 const TOKEN_COOKIE_KEY = 'photoframe_console_token';
@@ -1055,6 +1056,11 @@ function selectedDailyDitherAlgorithm() {
   return currentDailyDitherAlgorithm;
 }
 
+function selectedPaletteProfile() {
+  const raw = document.getElementById('paletteProfile')?.value || currentPaletteProfile;
+  return raw || currentPaletteProfile;
+}
+
 function preferredCompareRightAlgorithm(leftAlgorithm) {
   if (leftAlgorithm !== 'lab-ciede2000' && DAILY_DITHER_ALGORITHMS.includes('lab-ciede2000')) {
     return 'lab-ciede2000';
@@ -1096,15 +1102,23 @@ function updateDailyDitherHint(savedAlgorithm = currentDailyDitherAlgorithm) {
   const selected = selectedDailyDitherAlgorithm();
   const savedText = ditherAlgorithmLabel(savedAlgorithm || currentDailyDitherAlgorithm);
   const previewText = ditherAlgorithmLabel(selected);
-  document.getElementById('dailyDitherHint').textContent = `Daily Dither: 当前保存 ${savedText} · 预览使用 ${previewText}`;
+  document.getElementById('dailyDitherHint').textContent = `Daily Dither: 当前保存 ${savedText} · 预览使用 ${previewText} · Palette ${selectedPaletteProfile()}`;
 }
 
 async function loadDailyRenderConfig() {
   const data = await fetchJson('/api/v1/daily-render-config');
   currentDailyDitherAlgorithm = data.daily_dither_algorithm || currentDailyDitherAlgorithm;
+  currentPaletteProfile = data.palette_profile || currentPaletteProfile;
   const select = document.getElementById('dailyDitherAlgorithm');
   if (select) {
     select.value = currentDailyDitherAlgorithm;
+  }
+  const paletteSelect = document.getElementById('paletteProfile');
+  if (paletteSelect) {
+    const profiles = Array.isArray(data.palette_profiles) ? data.palette_profiles : [];
+    paletteSelect.innerHTML = profiles.map((item) => `<option value="${escapeHtml(item.key)}">${escapeHtml(item.label)}</option>`).join('')
+      || '<option value="reference">Reference Palette</option>';
+    paletteSelect.value = currentPaletteProfile;
   }
   const leftSelect = document.getElementById('compareLeftAlgorithm');
   if (leftSelect) {
@@ -1675,7 +1689,7 @@ async function loadCurrentPreview() {
   async function fetchPreview(algorithm) {
     const headers = authHeaders();
     const resp = await fetch(
-      `/api/v1/preview/current.bmp?device_id=${encodeURIComponent(selectedDevice)}&daily_dither_algorithm=${encodeURIComponent(algorithm)}`,
+      `/api/v1/preview/current.bmp?device_id=${encodeURIComponent(selectedDevice)}&daily_dither_algorithm=${encodeURIComponent(algorithm)}&palette_profile=${encodeURIComponent(selectedPaletteProfile())}`,
       {
         headers,
       },
@@ -1723,7 +1737,7 @@ async function loadCurrentPreview() {
   leftLabel.textContent = ditherAlgorithmLabel(leftPreview.dither || leftAlgorithm);
   rightLabel.textContent = ditherAlgorithmLabel(rightPreview.dither || rightAlgorithm);
 
-  meta.textContent = `设备 ${leftPreview.target} · 当前来源 ${leftPreview.source} · 左 ${ditherAlgorithmLabel(leftAlgorithm)} / 右 ${ditherAlgorithmLabel(rightAlgorithm)} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
+  meta.textContent = `设备 ${leftPreview.target} · 当前来源 ${leftPreview.source} · Palette ${selectedPaletteProfile()} · 左 ${ditherAlgorithmLabel(leftAlgorithm)} / 右 ${ditherAlgorithmLabel(rightAlgorithm)} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
   updateCompareSliderUi();
   updateDailyDitherHint(currentDailyDitherAlgorithm);
 }
@@ -1881,15 +1895,29 @@ document.getElementById('dailyDitherAlgorithm').addEventListener('change', async
   }
 });
 
+document.getElementById('paletteProfile').addEventListener('change', async () => {
+  currentPaletteProfile = selectedPaletteProfile();
+  try {
+    await loadCurrentPreview();
+  } catch (err) {
+    document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
+  }
+});
+
 document.getElementById('saveDailyDitherBtn').addEventListener('click', async () => {
   try {
     const data = await fetchJson('/api/v1/daily-render-config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ daily_dither_algorithm: selectedDailyDitherAlgorithm() }),
+      body: JSON.stringify({
+        daily_dither_algorithm: selectedDailyDitherAlgorithm(),
+        palette_profile: selectedPaletteProfile(),
+      }),
     });
     currentDailyDitherAlgorithm = data.daily_dither_algorithm || currentDailyDitherAlgorithm;
+    currentPaletteProfile = data.palette_profile || currentPaletteProfile;
     document.getElementById('dailyDitherAlgorithm').value = currentDailyDitherAlgorithm;
+    document.getElementById('paletteProfile').value = currentPaletteProfile;
     document.getElementById('compareLeftAlgorithm').value = currentDailyDitherAlgorithm;
     syncCompareSelectors();
     updateDailyDitherHint(currentDailyDitherAlgorithm);

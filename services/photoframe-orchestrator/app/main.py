@@ -940,8 +940,9 @@ def _set_palette_profile(value: str) -> str:
     return _set_service_setting(conn, PALETTE_PROFILE_SETTING_KEY, picked)
 
 
-def _current_epaper_palette_profile() -> dict[str, Any]:
-  return EPAPER_PALETTE_PROFILES[_get_palette_profile()]
+def _current_epaper_palette_profile(override_profile: str | None = None) -> dict[str, Any]:
+  picked = _normalize_palette_profile(override_profile) if override_profile is not None else _get_palette_profile()
+  return EPAPER_PALETTE_PROFILES[picked]
 
 
 def _daily_image_url(now_epoch: int) -> str:
@@ -1222,6 +1223,7 @@ def _resolve_current_payload_for_device(
     *,
     output_format: str = "bmp",
     daily_dither_algorithm: str | None = None,
+    palette_profile: str | None = None,
 ) -> tuple[bytes, str, str]:
   active = _active_override_for_device(conn, now_ts, target_device)
   if active is not None:
@@ -1238,7 +1240,7 @@ def _resolve_current_payload_for_device(
 
   upstream_url = _daily_image_url(now_ts)
   picked = _normalize_daily_dither_algorithm(daily_dither_algorithm or _get_daily_dither_algorithm())
-  payload = _render_daily_payload(now_ts, upstream_url, output_format, picked)
+  payload = _render_daily_payload(now_ts, upstream_url, output_format, picked, palette_profile=palette_profile)
   return payload, "daily", picked
 
 
@@ -1300,8 +1302,15 @@ def _daily_asset_names(now_ts: int, dither_algorithm: str) -> tuple[str, str]:
   )
 
 
-def _ensure_daily_assets(now_ts: int, url: str, dither_algorithm: str) -> tuple[str, str]:
-  bmp_name, jpg_name = _daily_asset_names(now_ts, dither_algorithm)
+def _ensure_daily_assets(
+    now_ts: int,
+    url: str,
+    dither_algorithm: str,
+    *,
+    palette_profile: str | None = None,
+) -> tuple[str, str]:
+  profile_key = _normalize_palette_profile(palette_profile)
+  bmp_name, jpg_name = _daily_asset_names(now_ts, f"{dither_algorithm}-{profile_key}")
   bmp_path = ASSET_DIR / bmp_name
   jpg_path = ASSET_DIR / jpg_name
   if bmp_path.exists() and jpg_path.exists():
@@ -1313,7 +1322,7 @@ def _ensure_daily_assets(now_ts: int, url: str, dither_algorithm: str) -> tuple[
 
     source_bytes = _fetch_daily_source_bytes(url)
     fitted = _fit_daily_source_image(source_bytes)
-    bmp_data, jpg_data = _render_override_assets(fitted, dither_algorithm)
+    bmp_data, jpg_data = _render_override_assets(fitted, dither_algorithm, palette_profile=profile_key)
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
     bmp_path.write_bytes(bmp_data)
     jpg_path.write_bytes(jpg_data)
@@ -1321,14 +1330,21 @@ def _ensure_daily_assets(now_ts: int, url: str, dither_algorithm: str) -> tuple[
         "daily asset refreshed: bmp=%s jpg=%s dither=%s source=%s",
         bmp_name,
         jpg_name,
-        dither_algorithm,
+        f"{dither_algorithm}/{profile_key}",
         url,
     )
   return bmp_name, jpg_name
 
 
-def _render_daily_payload(now_ts: int, url: str, output_format: str, dither_algorithm: str) -> bytes:
-  bmp_name, jpg_name = _ensure_daily_assets(now_ts, url, dither_algorithm)
+def _render_daily_payload(
+    now_ts: int,
+    url: str,
+    output_format: str,
+    dither_algorithm: str,
+    *,
+    palette_profile: str | None = None,
+) -> bytes:
+  bmp_name, jpg_name = _ensure_daily_assets(now_ts, url, dither_algorithm, palette_profile=palette_profile)
   target_name = bmp_name if output_format == "bmp" else jpg_name
   return (ASSET_DIR / target_name).read_bytes()
 
@@ -1457,8 +1473,11 @@ def _ciede2000(lab1: tuple[float, float, float], lab2: tuple[float, float, float
   )
 
 
-def _nearest_palette_color_lab_ciede2000(rgb: tuple[float, float, float]) -> tuple[int, int, int]:
-  profile = _current_epaper_palette_profile()
+def _nearest_palette_color_lab_ciede2000(
+    rgb: tuple[float, float, float],
+    palette_profile: str | None = None,
+) -> tuple[int, int, int]:
+  profile = _current_epaper_palette_profile(palette_profile)
   source_lab = _rgb_to_lab(rgb)
   palette = profile["colors"]
   green_penalty = float(profile["green_penalty"])
@@ -1647,7 +1666,12 @@ def _apply_error_diffusion(
   return rendered
 
 
-def _apply_override_dither(image: Image.Image, dither_algorithm: str) -> Image.Image:
+def _apply_override_dither(
+    image: Image.Image,
+    dither_algorithm: str,
+    *,
+    palette_profile: str | None = None,
+) -> Image.Image:
   normalized = _normalize_override_dither_algorithm(dither_algorithm)
   spec = DITHER_ALGORITHM_SPECS[normalized]
   kind = str(spec["kind"])
@@ -1661,7 +1685,11 @@ def _apply_override_dither(image: Image.Image, dither_algorithm: str) -> Image.I
     return image.copy()
   if kind == "ordered":
     matcher_name = str(spec.get("matcher") or "rgb")
-    matcher = _nearest_palette_color_lab_ciede2000 if matcher_name == "lab-ciede2000" else _nearest_palette_color
+    matcher = (
+        (lambda rgb: _nearest_palette_color_lab_ciede2000(rgb, palette_profile=palette_profile))
+        if matcher_name == "lab-ciede2000"
+        else _nearest_palette_color
+    )
     threshold_map_name = str(spec.get("threshold_map") or "bayer-4x4")
     threshold_map = BLUE_NOISE_8X8 if threshold_map_name == "blue-noise-8x8" else BAYER_4X4
     return _apply_bayer_dither(image, matcher=matcher, threshold_map=threshold_map)
@@ -1670,13 +1698,22 @@ def _apply_override_dither(image: Image.Image, dither_algorithm: str) -> Image.I
     if not isinstance(kernel, tuple):
       raise RuntimeError(f"kernel missing for dither algorithm: {normalized}")
     matcher_name = str(spec.get("matcher") or "rgb")
-    matcher = _nearest_palette_color_lab_ciede2000 if matcher_name == "lab-ciede2000" else _nearest_palette_color
+    matcher = (
+        (lambda rgb: _nearest_palette_color_lab_ciede2000(rgb, palette_profile=palette_profile))
+        if matcher_name == "lab-ciede2000"
+        else _nearest_palette_color
+    )
     return _apply_error_diffusion(image, kernel, matcher=matcher, serpentine=bool(spec.get("serpentine")))
   raise RuntimeError(f"unsupported dither algorithm kind: {kind}")
 
 
-def _render_override_assets(image: Image.Image, dither_algorithm: str) -> tuple[bytes, bytes]:
-  rendered = _apply_override_dither(image, dither_algorithm)
+def _render_override_assets(
+    image: Image.Image,
+    dither_algorithm: str,
+    *,
+    palette_profile: str | None = None,
+) -> tuple[bytes, bytes]:
+  rendered = _apply_override_dither(image, dither_algorithm, palette_profile=palette_profile)
 
   out_bmp = io.BytesIO()
   rendered.save(out_bmp, format="BMP")
@@ -2023,6 +2060,7 @@ def preview_current_bmp(
     device_id: str = Query(default="*", min_length=1, max_length=64),
     now_epoch: int | None = Query(default=None),
     daily_dither_algorithm: str | None = Query(default=None, max_length=64),
+    palette_profile: str | None = Query(default=None, max_length=64),
     x_photoframe_token: str | None = Header(default=None),
 ) -> Response:
   now_ts = _now_epoch() if now_epoch is None else now_epoch
@@ -2036,6 +2074,7 @@ def preview_current_bmp(
       target_device,
       output_format="bmp",
       daily_dither_algorithm=daily_dither_algorithm,
+      palette_profile=palette_profile,
   )
   headers = {
       "Cache-Control": "no-store",
@@ -2056,6 +2095,7 @@ def preview_current_jpg(
     device_id: str = Query(default="*", min_length=1, max_length=64),
     now_epoch: int | None = Query(default=None),
     daily_dither_algorithm: str | None = Query(default=None, max_length=64),
+    palette_profile: str | None = Query(default=None, max_length=64),
     x_photoframe_token: str | None = Header(default=None),
 ) -> Response:
   now_ts = _now_epoch() if now_epoch is None else now_epoch
@@ -2069,6 +2109,7 @@ def preview_current_jpg(
       target_device,
       output_format="jpg",
       daily_dither_algorithm=daily_dither_algorithm,
+      palette_profile=palette_profile,
   )
 
   headers = {

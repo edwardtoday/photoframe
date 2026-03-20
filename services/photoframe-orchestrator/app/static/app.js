@@ -36,6 +36,7 @@ const WORKSPACE_HINTS = {
 const DITHER_ALGORITHM_LABELS = {
   none: '保持原图',
   bayer: 'Bayer 4x4',
+  'blue-noise-lab-ciede2000': 'Blue Noise + Lab CIEDE2000',
   'floyd-steinberg': 'Floyd-Steinberg',
   jarvis: 'Jarvis (JJN)',
   stucki: 'Stucki',
@@ -44,10 +45,11 @@ const DITHER_ALGORITHM_LABELS = {
   'sierra-lite': 'Sierra Lite (2-4A)',
   'lab-ciede2000': 'Lab + CIEDE2000',
   'tone-lab-ciede2000': 'Tone + Lab CIEDE2000',
+  'paperwhite-lab-ciede2000': 'Paper White + Lab CIEDE2000',
   atkinson: 'Atkinson',
   sierra: 'Sierra',
 };
-const DAILY_DITHER_ALGORITHMS = ['bayer', 'floyd-steinberg', 'jarvis', 'stucki', 'stucki-serpentine', 'burkes', 'sierra-lite', 'lab-ciede2000', 'tone-lab-ciede2000', 'atkinson', 'sierra'];
+const DAILY_DITHER_ALGORITHMS = ['bayer', 'blue-noise-lab-ciede2000', 'floyd-steinberg', 'jarvis', 'stucki', 'stucki-serpentine', 'burkes', 'sierra-lite', 'lab-ciede2000', 'tone-lab-ciede2000', 'paperwhite-lab-ciede2000', 'atkinson', 'sierra'];
 
 function readCookie(name) {
   const encodedName = `${name}=`;

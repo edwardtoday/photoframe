@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+import random
 import sqlite3
 import threading
 import time
@@ -91,6 +92,8 @@ EPAPER_GREEN_PENALTY = 1.2
 EPAPER_TONE_BLACK_POINT = 0.08
 EPAPER_TONE_WHITE_POINT = 0.92
 EPAPER_TONE_CHROMA_BLEND = 0.08
+EPAPER_PAPER_WHITE_RGB = (250, 246, 235)
+EPAPER_PAPER_WHITE_HIGHLIGHT_STRENGTH = 0.22
 BAYER_4X4: tuple[tuple[int, ...], ...] = (
     (0, 8, 2, 10),
     (12, 4, 14, 6),
@@ -108,6 +111,13 @@ DITHER_ALGORITHM_SPECS: dict[str, dict[str, Any]] = {
         "label": "Bayer 4x4",
         "description": "有序抖动，颗粒规整，生成速度最快",
         "kind": "ordered",
+    },
+    "blue-noise-lab-ciede2000": {
+        "label": "Blue Noise + Lab CIEDE2000",
+        "description": "蓝噪声阈值图配合 Lab/ΔE00 选色，颗粒更随机、方向性更弱",
+        "kind": "ordered",
+        "matcher": "lab-ciede2000",
+        "threshold_map": "blue-noise-8x8",
     },
     "floyd-steinberg": {
         "label": "Floyd-Steinberg",
@@ -272,6 +282,27 @@ DITHER_ALGORITHM_SPECS: dict[str, dict[str, Any]] = {
         ),
         "matcher": "lab-ciede2000",
         "preprocess": "tone-compress",
+    },
+    "paperwhite-lab-ciede2000": {
+        "label": "Paper White + Lab CIEDE2000",
+        "description": "对高光做纸白补偿后再按 Lab/ΔE00 选色，模拟彩墨屏底色与反射白",
+        "kind": "diffusion",
+        "kernel": (
+            (1, 0, 8 / 42),
+            (2, 0, 4 / 42),
+            (-2, 1, 2 / 42),
+            (-1, 1, 4 / 42),
+            (0, 1, 8 / 42),
+            (1, 1, 4 / 42),
+            (2, 1, 2 / 42),
+            (-2, 2, 1 / 42),
+            (-1, 2, 2 / 42),
+            (0, 2, 4 / 42),
+            (1, 2, 2 / 42),
+            (2, 2, 1 / 42),
+        ),
+        "matcher": "lab-ciede2000",
+        "preprocess": "paper-white",
     },
 }
 DAILY_DITHER_ALGORITHM_KEYS: tuple[str, ...] = tuple(
@@ -1405,6 +1436,41 @@ def _new_error_row(width: int) -> list[float]:
   return [0.0] * (width * 3)
 
 
+def _generate_blue_noise_order(size: int) -> tuple[tuple[int, ...], ...]:
+  rng = random.Random(0xE1A6)
+  all_positions = [(x, y) for y in range(size) for x in range(size)]
+  chosen: list[tuple[int, int]] = [rng.choice(all_positions)]
+  remaining = {pos for pos in all_positions if pos != chosen[0]}
+
+  def toroidal_distance_sq(p1: tuple[int, int], p2: tuple[int, int]) -> int:
+    dx = abs(p1[0] - p2[0])
+    dy = abs(p1[1] - p2[1])
+    dx = min(dx, size - dx)
+    dy = min(dy, size - dy)
+    return dx * dx + dy * dy
+
+  while remaining:
+    candidate_count = min(48, len(remaining))
+    candidates = rng.sample(list(remaining), candidate_count)
+    best = candidates[0]
+    best_score = -1
+    for candidate in candidates:
+      score = min(toroidal_distance_sq(candidate, point) for point in chosen)
+      if score > best_score:
+        best = candidate
+        best_score = score
+    chosen.append(best)
+    remaining.remove(best)
+
+  mask = [[0 for _ in range(size)] for _ in range(size)]
+  for index, (x, y) in enumerate(chosen):
+    mask[y][x] = index
+  return tuple(tuple(row) for row in mask)
+
+
+BLUE_NOISE_8X8 = _generate_blue_noise_order(8)
+
+
 def _pixel_list(image: Image.Image) -> list[tuple[int, int, int]]:
   width, height = image.size
   pixels = image.load()
@@ -1414,17 +1480,22 @@ def _pixel_list(image: Image.Image) -> list[tuple[int, int, int]]:
 def _apply_bayer_dither(
     image: Image.Image,
     matcher: callable = _nearest_palette_color,
+    threshold_map: tuple[tuple[int, ...], ...] = BAYER_4X4,
+    strength: float = BAYER_STRENGTH,
 ) -> Image.Image:
   width, height = image.size
   source_pixels = _pixel_list(image)
   output: list[tuple[int, int, int]] = []
+  map_height = len(threshold_map)
+  map_width = len(threshold_map[0])
+  mid = (map_width * map_height) / 2
 
   for y in range(height):
     row_offset = y * width
     for x in range(width):
       r0, g0, b0 = source_pixels[row_offset + x]
-      threshold = BAYER_4X4[y & 0x3][x & 0x3] - 8
-      delta = threshold * BAYER_STRENGTH
+      threshold = threshold_map[y % map_height][x % map_width] - mid
+      delta = threshold * strength
       adjusted = (
           _clamp_channel(r0 + delta),
           _clamp_channel(g0 + delta),
@@ -1456,6 +1527,26 @@ def _apply_tone_compression(image: Image.Image) -> Image.Image:
         _clamp_channel(scaled[0] * (1.0 - EPAPER_TONE_CHROMA_BLEND) + gray * EPAPER_TONE_CHROMA_BLEND),
         _clamp_channel(scaled[1] * (1.0 - EPAPER_TONE_CHROMA_BLEND) + gray * EPAPER_TONE_CHROMA_BLEND),
         _clamp_channel(scaled[2] * (1.0 - EPAPER_TONE_CHROMA_BLEND) + gray * EPAPER_TONE_CHROMA_BLEND),
+    ))
+
+  rendered = Image.new("RGB", (width, height))
+  rendered.putdata(output)
+  return rendered
+
+
+def _apply_paper_white_compensation(image: Image.Image) -> Image.Image:
+  width, height = image.size
+  source_pixels = _pixel_list(image)
+  output: list[tuple[int, int, int]] = []
+  paper_r, paper_g, paper_b = EPAPER_PAPER_WHITE_RGB
+
+  for r0, g0, b0 in source_pixels:
+    luma = (0.2126 * r0 + 0.7152 * g0 + 0.0722 * b0) / 255.0
+    highlight_weight = (max(0.0, luma) ** 1.8) * EPAPER_PAPER_WHITE_HIGHLIGHT_STRENGTH
+    output.append((
+        _clamp_channel(r0 * (1.0 - highlight_weight) + paper_r * highlight_weight),
+        _clamp_channel(g0 * (1.0 - highlight_weight) + paper_g * highlight_weight),
+        _clamp_channel(b0 * (1.0 - highlight_weight) + paper_b * highlight_weight),
     ))
 
   rendered = Image.new("RGB", (width, height))
@@ -1521,11 +1612,17 @@ def _apply_override_dither(image: Image.Image, dither_algorithm: str) -> Image.I
   preprocess = str(spec.get("preprocess") or "")
   if preprocess == "tone-compress":
     image = _apply_tone_compression(image)
+  elif preprocess == "paper-white":
+    image = _apply_paper_white_compensation(image)
 
   if kind == "passthrough":
     return image.copy()
   if kind == "ordered":
-    return _apply_bayer_dither(image)
+    matcher_name = str(spec.get("matcher") or "rgb")
+    matcher = _nearest_palette_color_lab_ciede2000 if matcher_name == "lab-ciede2000" else _nearest_palette_color
+    threshold_map_name = str(spec.get("threshold_map") or "bayer-4x4")
+    threshold_map = BLUE_NOISE_8X8 if threshold_map_name == "blue-noise-8x8" else BAYER_4X4
+    return _apply_bayer_dither(image, matcher=matcher, threshold_map=threshold_map)
   if kind == "diffusion":
     kernel = spec.get("kernel")
     if not isinstance(kernel, tuple):

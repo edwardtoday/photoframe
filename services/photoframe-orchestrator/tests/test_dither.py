@@ -163,6 +163,11 @@ class DitherAlgorithmTests(unittest.TestCase):
         rendered = ORCH._apply_override_dither(image, algorithm)
         self.assertTrue(_pixel_set(rendered).issubset(PALETTE))
 
+  def test_blue_noise_lab_ciede2000_output_only_issue_palette(self) -> None:
+    image = _build_gradient_image()
+    rendered = ORCH._apply_override_dither(image, "blue-noise-lab-ciede2000")
+    self.assertTrue(_pixel_set(rendered).issubset(EPAPER_PALETTE))
+
   def test_lab_ciede2000_output_only_issue_palette(self) -> None:
     image = _build_gradient_image()
     rendered = ORCH._apply_override_dither(image, "lab-ciede2000")
@@ -176,6 +181,11 @@ class DitherAlgorithmTests(unittest.TestCase):
   def test_tone_lab_ciede2000_output_only_issue_palette(self) -> None:
     image = _build_gradient_image()
     rendered = ORCH._apply_override_dither(image, "tone-lab-ciede2000")
+    self.assertTrue(_pixel_set(rendered).issubset(EPAPER_PALETTE))
+
+  def test_paperwhite_lab_ciede2000_output_only_issue_palette(self) -> None:
+    image = _build_gradient_image()
+    rendered = ORCH._apply_override_dither(image, "paperwhite-lab-ciede2000")
     self.assertTrue(_pixel_set(rendered).issubset(EPAPER_PALETTE))
 
   def test_stucki_serpentine_changes_output(self) -> None:

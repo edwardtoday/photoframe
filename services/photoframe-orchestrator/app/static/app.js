@@ -1078,6 +1078,17 @@ function setText(id, text) {
   }
 }
 
+function setImageBlob(id, blobUrl) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const previous = el.dataset.blobUrl || '';
+  if (previous && previous !== blobUrl) {
+    revokeBlobUrl(previous);
+  }
+  el.src = blobUrl;
+  el.dataset.blobUrl = blobUrl;
+}
+
 function setTableMessage(bodyId, colspan, text) {
   const el = document.getElementById(bodyId);
   if (el) {
@@ -1197,19 +1208,45 @@ function updateDailyDitherHint(savedAlgorithm = currentDailyDitherAlgorithm) {
   document.getElementById('dailyDitherHint').textContent = `Daily Dither: 当前保存 ${savedText} · 预览使用 ${previewText} · Palette ${selectedPaletteProfile()}`;
 }
 
-function currentPreviewCacheKey(selectedDevice, paletteProfile, algorithm) {
-  return `${selectedDevice}|${paletteProfile}|${algorithm}`;
+function currentPreviewCacheKey(selectedDevice, paletteProfile, algorithm, nowEpoch = '', fresh = false) {
+  return `${selectedDevice}|${paletteProfile}|${algorithm}|${nowEpoch}|${fresh ? 'fresh' : 'cached'}`;
 }
 
-async function fetchCurrentPreviewForAlgorithm(selectedDevice, algorithm, paletteProfile, force = false) {
-  const cacheKey = currentPreviewCacheKey(selectedDevice, paletteProfile, algorithm);
-  if (!force && previewResponseCache.has(cacheKey)) {
+async function fetchCurrentPreviewForAlgorithm(
+  selectedDevice,
+  algorithm,
+  paletteProfile,
+  {
+    force = false,
+    nowEpoch = null,
+    freshDailySource = false,
+  } = {},
+) {
+  const cacheKey = currentPreviewCacheKey(
+    selectedDevice,
+    paletteProfile,
+    algorithm,
+    nowEpoch == null ? '' : String(nowEpoch),
+    freshDailySource,
+  );
+  if (!force && !freshDailySource && previewResponseCache.has(cacheKey)) {
     return previewResponseCache.get(cacheKey);
   }
 
   const headers = authHeaders();
+  const query = new URLSearchParams({
+    device_id: selectedDevice,
+    daily_dither_algorithm: algorithm,
+    palette_profile: paletteProfile,
+  });
+  if (nowEpoch != null) {
+    query.set('now_epoch', String(nowEpoch));
+  }
+  if (freshDailySource) {
+    query.set('fresh_daily_source', '1');
+  }
   const resp = await fetch(
-    `/api/v1/preview/current.bmp?device_id=${encodeURIComponent(selectedDevice)}&daily_dither_algorithm=${encodeURIComponent(algorithm)}&palette_profile=${encodeURIComponent(paletteProfile)}`,
+    `/api/v1/preview/current.bmp?${query.toString()}`,
     { headers },
   );
 
@@ -1231,7 +1268,9 @@ async function fetchCurrentPreviewForAlgorithm(selectedDevice, algorithm, palett
     target: resp.headers.get('X-PhotoFrame-Device') || selectedDevice,
     dither: resp.headers.get('X-PhotoFrame-Dither') || algorithm,
   };
-  setPreviewCacheEntry(cacheKey, preview);
+  if (!freshDailySource) {
+    setPreviewCacheEntry(cacheKey, preview);
+  }
   return preview;
 }
 
@@ -1825,35 +1864,41 @@ async function loadPublishHistory() {
 async function loadOverviewPreview(force = false) {
   const selectedDevice = document.getElementById('deviceId').value || '*';
   const meta = document.getElementById('overviewPreviewMeta');
-  const img = document.getElementById('overviewPreviewImage');
   const algorithm = currentDailyDitherAlgorithm;
   const paletteProfile = currentPaletteProfile;
-  const preview = await fetchCurrentPreviewForAlgorithm(selectedDevice, algorithm, paletteProfile, force);
+  const preview = await fetchCurrentPreviewForAlgorithm(selectedDevice, algorithm, paletteProfile, { force });
 
-  img.src = preview.blobUrl;
+  setImageBlob('overviewPreviewImage', preview.blobUrl);
   meta.textContent = `设备 ${preview.target} · 当前来源 ${preview.source} · 当前算法 ${ditherAlgorithmLabel(preview.dither || algorithm)} · Palette ${paletteProfile} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
 }
 
 async function loadPublishPreview(force = false) {
   const selectedDevice = document.getElementById('deviceId').value || '*';
   const meta = document.getElementById('publishPreviewMeta');
-  const leftImg = document.getElementById('compareLeftPreview');
-  const rightImg = document.getElementById('compareRightPreview');
   const leftLabel = document.getElementById('compareLeftLabel');
   const rightLabel = document.getElementById('compareRightLabel');
   const paletteProfile = selectedPaletteProfile();
+  const previewNowEpoch = Math.floor(Date.now() / 1000);
 
   syncCompareSelectors();
   const leftAlgorithm = selectedCompareAlgorithm('compareLeftAlgorithm', selectedDailyDitherAlgorithm());
   const rightAlgorithm = selectedCompareAlgorithm('compareRightAlgorithm', preferredCompareRightAlgorithm(leftAlgorithm));
-  const leftPromise = fetchCurrentPreviewForAlgorithm(selectedDevice, leftAlgorithm, paletteProfile, force);
+  const leftPromise = fetchCurrentPreviewForAlgorithm(selectedDevice, leftAlgorithm, paletteProfile, {
+    force,
+    nowEpoch: previewNowEpoch,
+    freshDailySource: true,
+  });
   const rightPromise = leftAlgorithm === rightAlgorithm
     ? leftPromise
-    : fetchCurrentPreviewForAlgorithm(selectedDevice, rightAlgorithm, paletteProfile, force);
+    : fetchCurrentPreviewForAlgorithm(selectedDevice, rightAlgorithm, paletteProfile, {
+      force,
+      nowEpoch: previewNowEpoch,
+      freshDailySource: true,
+    });
   const [leftPreview, rightPreview] = await Promise.all([leftPromise, rightPromise]);
 
-  leftImg.src = leftPreview.blobUrl;
-  rightImg.src = leftAlgorithm === rightAlgorithm ? leftPreview.blobUrl : rightPreview.blobUrl;
+  setImageBlob('compareLeftPreview', leftPreview.blobUrl);
+  setImageBlob('compareRightPreview', leftAlgorithm === rightAlgorithm ? leftPreview.blobUrl : rightPreview.blobUrl);
   leftLabel.textContent = ditherAlgorithmLabel(leftPreview.dither || leftAlgorithm);
   rightLabel.textContent = ditherAlgorithmLabel(rightPreview.dither || rightAlgorithm);
 
@@ -2041,7 +2086,7 @@ document.getElementById('dailyDitherAlgorithm').addEventListener('change', async
   syncCompareSelectors();
   updateDailyDitherHint(currentDailyDitherAlgorithm);
   try {
-    await loadPublishPreview();
+    await loadPublishPreview(true);
   } catch (err) {
     document.getElementById('publishPreviewMeta').textContent = `预览失败: ${err.message}`;
   }
@@ -2049,7 +2094,7 @@ document.getElementById('dailyDitherAlgorithm').addEventListener('change', async
 
 document.getElementById('paletteProfile').addEventListener('change', async () => {
   try {
-    await loadPublishPreview();
+    await loadPublishPreview(true);
   } catch (err) {
     document.getElementById('publishPreviewMeta').textContent = `预览失败: ${err.message}`;
   }
@@ -2194,7 +2239,7 @@ document.getElementById('token').addEventListener('blur', () => {
 document.getElementById('compareLeftAlgorithm').addEventListener('change', async () => {
   syncCompareSelectors();
   try {
-    await loadPublishPreview();
+    await loadPublishPreview(true);
   } catch (err) {
     document.getElementById('publishPreviewMeta').textContent = `预览失败: ${err.message}`;
   }
@@ -2203,7 +2248,7 @@ document.getElementById('compareLeftAlgorithm').addEventListener('change', async
 document.getElementById('compareRightAlgorithm').addEventListener('change', async () => {
   syncCompareSelectors();
   try {
-    await loadPublishPreview();
+    await loadPublishPreview(true);
   } catch (err) {
     document.getElementById('publishPreviewMeta').textContent = `预览失败: ${err.message}`;
   }

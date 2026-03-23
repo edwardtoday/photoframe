@@ -1292,6 +1292,7 @@ def _resolve_current_payload_for_device(
     output_format: str = "bmp",
     daily_dither_algorithm: str | None = None,
     palette_profile: str | None = None,
+    fresh_daily_source: bool = False,
 ) -> tuple[bytes, str, str]:
   active = _active_override_for_device(conn, now_ts, target_device)
   if active is not None:
@@ -1306,7 +1307,10 @@ def _resolve_current_payload_for_device(
 
   upstream_url = _daily_image_url(now_ts)
   picked = _normalize_daily_dither_algorithm(daily_dither_algorithm or _get_daily_dither_algorithm())
-  payload = _render_daily_payload(now_ts, upstream_url, output_format, picked, palette_profile=palette_profile)
+  if fresh_daily_source:
+    payload = _render_daily_payload_fresh(now_ts, upstream_url, output_format, picked, palette_profile=palette_profile)
+  else:
+    payload = _render_daily_payload(now_ts, upstream_url, output_format, picked, palette_profile=palette_profile)
   return payload, "daily", picked
 
 
@@ -1510,6 +1514,25 @@ def _render_daily_payload(
   bmp_name, jpg_name = _ensure_daily_assets(now_ts, url, dither_algorithm, palette_profile=palette_profile)
   target_name = bmp_name if output_format == "bmp" else jpg_name
   return _locate_asset_path(target_name).read_bytes()
+
+
+def _render_daily_payload_fresh(
+    now_ts: int,
+    url: str,
+    output_format: str,
+    dither_algorithm: str,
+    *,
+    palette_profile: str | None = None,
+) -> bytes:
+  del now_ts  # 仅用于与缓存版签名对齐；fresh 路径直接基于当前上游字节渲染。
+  source_bytes = _fetch_daily_source_bytes(url)
+  fitted = _fit_daily_source_image(source_bytes)
+  bmp_data, jpg_data = _render_override_assets(
+      fitted,
+      dither_algorithm,
+      palette_profile=_resolve_palette_profile(palette_profile),
+  )
+  return bmp_data if output_format == "bmp" else jpg_data
 
 
 def _clamp_channel(value: float) -> int:
@@ -2244,6 +2267,7 @@ def preview_current_bmp(
     now_epoch: int | None = Query(default=None),
     daily_dither_algorithm: str | None = Query(default=None, max_length=64),
     palette_profile: str | None = Query(default=None, max_length=64),
+    fresh_daily_source: bool = Query(default=False),
     x_photoframe_token: str | None = Header(default=None),
 ) -> Response:
   now_ts = _now_epoch() if now_epoch is None else now_epoch
@@ -2258,6 +2282,7 @@ def preview_current_bmp(
       output_format="bmp",
       daily_dither_algorithm=daily_dither_algorithm,
       palette_profile=palette_profile,
+      fresh_daily_source=fresh_daily_source,
   )
   headers = {
       "Cache-Control": "no-store",
@@ -2279,6 +2304,7 @@ def preview_current_jpg(
     now_epoch: int | None = Query(default=None),
     daily_dither_algorithm: str | None = Query(default=None, max_length=64),
     palette_profile: str | None = Query(default=None, max_length=64),
+    fresh_daily_source: bool = Query(default=False),
     x_photoframe_token: str | None = Header(default=None),
 ) -> Response:
   now_ts = _now_epoch() if now_epoch is None else now_epoch
@@ -2293,6 +2319,7 @@ def preview_current_jpg(
       output_format="jpg",
       daily_dither_algorithm=daily_dither_algorithm,
       palette_profile=palette_profile,
+      fresh_daily_source=fresh_daily_source,
   )
 
   headers = {

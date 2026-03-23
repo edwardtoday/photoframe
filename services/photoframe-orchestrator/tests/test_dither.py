@@ -401,6 +401,37 @@ class DitherAlgorithmTests(unittest.TestCase):
       self.assertNotEqual(default_bytes, reference_bytes)
       self.assertTrue((tmp_root / "daily-cache" / "daily-2026-03-19-lab-ciede2000-measured.bmp").exists())
 
+  def test_render_daily_payload_fresh_bypasses_existing_daily_cache(self) -> None:
+    first_source = Image.new("RGB", (96, 96), (255, 0, 0))
+    second_source = Image.new("RGB", (96, 96), (0, 0, 255))
+    first_jpeg = io.BytesIO()
+    second_jpeg = io.BytesIO()
+    first_source.save(first_jpeg, format="JPEG", quality=92)
+    second_source.save(second_jpeg, format="JPEG", quality=92)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_urlopen = ORCH.urlopen
+      ORCH.DAILY_CACHE_DIR = Path(tmp_dir) / "daily-cache"
+      ORCH.DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+      try:
+        ORCH.urlopen = lambda *_args, **_kwargs: _DummyUrlopenResponse(first_jpeg.getvalue())
+        cached_bytes = ORCH._render_daily_payload(1773910400, "https://example.com/daily.jpg", "bmp", "jarvis")
+
+        ORCH.urlopen = lambda *_args, **_kwargs: _DummyUrlopenResponse(second_jpeg.getvalue())
+        cached_again = ORCH._render_daily_payload(1773910400, "https://example.com/daily.jpg", "bmp", "jarvis")
+        fresh_bytes = ORCH._render_daily_payload_fresh(1773910400, "https://example.com/daily.jpg", "bmp", "jarvis")
+      finally:
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.urlopen = original_urlopen
+
+      self.assertEqual(cached_again, cached_bytes)
+      self.assertNotEqual(fresh_bytes, cached_bytes)
+      with Image.open(io.BytesIO(cached_bytes)) as cached_image:
+        self.assertEqual(cached_image.getpixel((0, 0)), (255, 0, 0))
+      with Image.open(io.BytesIO(fresh_bytes)) as fresh_image:
+        self.assertEqual(fresh_image.getpixel((0, 0)), (0, 0, 255))
+
   def test_upload_conversion_uses_saved_palette_profile_when_omitted(self) -> None:
     source_image = _build_gradient_image(size=(64, 64))
     source_png = _encode_png(source_image)

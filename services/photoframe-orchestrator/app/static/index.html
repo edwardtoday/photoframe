@@ -487,6 +487,25 @@
       text-align: center;
     }
 
+    .single-preview-stage {
+      width: min(100%, 720px);
+      margin: 0 auto;
+      aspect-ratio: 3 / 5;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fff;
+      box-shadow: inset 0 0 0 1px rgba(53, 88, 229, 0.04);
+    }
+
+    .single-preview-image {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #fff;
+    }
+
     .compare-toolbar {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -985,9 +1004,23 @@
       </div>
 
       <aside id="secondaryStack" class="stack">
-        <div class="card" data-workspace="overview,publish">
+        <div class="card" data-workspace="overview">
           <h3>当前下发预览</h3>
-          <p class="help">预览“顶部当前设备此刻来拉图”时服务会返回的 480x800 图，并支持两种算法做大图对比。</p>
+          <p class="help">预览“顶部当前设备此刻来拉图”时服务实际返回的 480x800 图。</p>
+          <div class="inline-actions">
+            <button id="overviewPreviewBtn" class="secondary" type="button">刷新当前预览</button>
+          </div>
+          <p id="overviewPreviewMeta" class="muted">-</p>
+          <div class="preview-box">
+            <div class="single-preview-stage">
+              <img id="overviewPreviewImage" class="single-preview-image" alt="当前下发预览" />
+            </div>
+          </div>
+        </div>
+
+        <div class="card" data-workspace="publish">
+          <h3>下发预览与算法比较</h3>
+          <p class="help">发布页保留算法对比能力，用来比较两种 Daily Dither 在同一张 480x800 图上的差异。</p>
           <div class="inline-actions">
             <label>Daily Dither
               <select id="dailyDitherAlgorithm">
@@ -1012,10 +1045,10 @@
               </select>
             </label>
             <button id="saveDailyDitherBtn" class="secondary" type="button">保存 Daily Dither</button>
-            <button id="previewBtn" class="secondary" type="button">刷新当前预览</button>
+            <button id="publishPreviewBtn" class="secondary" type="button">刷新算法比较</button>
           </div>
           <p id="dailyDitherHint" class="muted">Daily Dither: -</p>
-          <p id="previewMeta" class="muted">-</p>
+          <p id="publishPreviewMeta" class="muted">-</p>
           <div class="compare-toolbar">
             <label>左侧算法
               <select id="compareLeftAlgorithm">

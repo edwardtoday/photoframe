@@ -35,6 +35,14 @@ function clearPreviewResponseCache() {
   replacePreviewCache(new Map());
 }
 
+function setPreviewCacheEntry(cacheKey, preview) {
+  const previous = previewResponseCache.get(cacheKey);
+  if (previous?.blobUrl && previous.blobUrl !== preview.blobUrl) {
+    revokeBlobUrl(previous.blobUrl);
+  }
+  previewResponseCache.set(cacheKey, preview);
+}
+
 function authorizedAssetUrl(rawUrl) {
   if (!rawUrl) return '';
   try {
@@ -52,7 +60,6 @@ function authorizedAssetUrl(rawUrl) {
   }
 }
 
-const previewBlobUrls = { left: null, right: null };
 const previewResponseCache = new Map();
 let deviceMap = new Map();
 let powerChartCache = null;
@@ -1190,6 +1197,44 @@ function updateDailyDitherHint(savedAlgorithm = currentDailyDitherAlgorithm) {
   document.getElementById('dailyDitherHint').textContent = `Daily Dither: 当前保存 ${savedText} · 预览使用 ${previewText} · Palette ${selectedPaletteProfile()}`;
 }
 
+function currentPreviewCacheKey(selectedDevice, paletteProfile, algorithm) {
+  return `${selectedDevice}|${paletteProfile}|${algorithm}`;
+}
+
+async function fetchCurrentPreviewForAlgorithm(selectedDevice, algorithm, paletteProfile, force = false) {
+  const cacheKey = currentPreviewCacheKey(selectedDevice, paletteProfile, algorithm);
+  if (!force && previewResponseCache.has(cacheKey)) {
+    return previewResponseCache.get(cacheKey);
+  }
+
+  const headers = authHeaders();
+  const resp = await fetch(
+    `/api/v1/preview/current.bmp?device_id=${encodeURIComponent(selectedDevice)}&daily_dither_algorithm=${encodeURIComponent(algorithm)}&palette_profile=${encodeURIComponent(paletteProfile)}`,
+    { headers },
+  );
+
+  if (!resp.ok) {
+    const textBody = await resp.text();
+    let detail = textBody;
+    try {
+      const data = JSON.parse(textBody);
+      detail = data.detail || data.error || textBody;
+    } catch (_) {
+      // keep raw text
+    }
+    throw new Error(detail || `HTTP ${resp.status}`);
+  }
+
+  const preview = {
+    blobUrl: URL.createObjectURL(await resp.blob()),
+    source: resp.headers.get('X-PhotoFrame-Source') || 'daily',
+    target: resp.headers.get('X-PhotoFrame-Device') || selectedDevice,
+    dither: resp.headers.get('X-PhotoFrame-Dither') || algorithm,
+  };
+  setPreviewCacheEntry(cacheKey, preview);
+  return preview;
+}
+
 async function loadDailyRenderConfig() {
   const data = await fetchJson('/api/v1/daily-render-config');
   currentDailyDitherAlgorithm = data.daily_dither_algorithm || currentDailyDitherAlgorithm;
@@ -1777,76 +1822,42 @@ async function loadPublishHistory() {
   document.getElementById('publishHistoryHint').textContent = `${scope} · 最近 ${items.length} 条`;
 }
 
-async function loadCurrentPreview(force = false) {
+async function loadOverviewPreview(force = false) {
   const selectedDevice = document.getElementById('deviceId').value || '*';
-  const meta = document.getElementById('previewMeta');
+  const meta = document.getElementById('overviewPreviewMeta');
+  const img = document.getElementById('overviewPreviewImage');
+  const algorithm = currentDailyDitherAlgorithm;
+  const paletteProfile = currentPaletteProfile;
+  const preview = await fetchCurrentPreviewForAlgorithm(selectedDevice, algorithm, paletteProfile, force);
+
+  img.src = preview.blobUrl;
+  meta.textContent = `设备 ${preview.target} · 当前来源 ${preview.source} · 当前算法 ${ditherAlgorithmLabel(preview.dither || algorithm)} · Palette ${paletteProfile} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
+}
+
+async function loadPublishPreview(force = false) {
+  const selectedDevice = document.getElementById('deviceId').value || '*';
+  const meta = document.getElementById('publishPreviewMeta');
   const leftImg = document.getElementById('compareLeftPreview');
   const rightImg = document.getElementById('compareRightPreview');
   const leftLabel = document.getElementById('compareLeftLabel');
   const rightLabel = document.getElementById('compareRightLabel');
+  const paletteProfile = selectedPaletteProfile();
 
   syncCompareSelectors();
   const leftAlgorithm = selectedCompareAlgorithm('compareLeftAlgorithm', selectedDailyDitherAlgorithm());
   const rightAlgorithm = selectedCompareAlgorithm('compareRightAlgorithm', preferredCompareRightAlgorithm(leftAlgorithm));
-  const leftCacheKey = `${selectedDevice}|${selectedPaletteProfile()}|${leftAlgorithm}`;
-  const rightCacheKey = `${selectedDevice}|${selectedPaletteProfile()}|${rightAlgorithm}`;
-
-  async function fetchPreview(algorithm, cacheKey) {
-    if (!force && previewResponseCache.has(cacheKey)) {
-      return previewResponseCache.get(cacheKey);
-    }
-    const headers = authHeaders();
-    const resp = await fetch(
-      `/api/v1/preview/current.bmp?device_id=${encodeURIComponent(selectedDevice)}&daily_dither_algorithm=${encodeURIComponent(algorithm)}&palette_profile=${encodeURIComponent(selectedPaletteProfile())}`,
-      {
-        headers,
-      },
-    );
-
-    if (!resp.ok) {
-      const textBody = await resp.text();
-      let detail = textBody;
-      try {
-        const data = JSON.parse(textBody);
-        detail = data.detail || data.error || textBody;
-      } catch (_) {
-        // keep raw text
-      }
-      throw new Error(detail || `HTTP ${resp.status}`);
-    }
-
-    const preview = {
-      blobUrl: URL.createObjectURL(await resp.blob()),
-      source: resp.headers.get('X-PhotoFrame-Source') || 'daily',
-      target: resp.headers.get('X-PhotoFrame-Device') || selectedDevice,
-      dither: resp.headers.get('X-PhotoFrame-Dither') || algorithm,
-    };
-    previewResponseCache.set(cacheKey, preview);
-    return preview;
-  }
-
-  const leftPromise = fetchPreview(leftAlgorithm, leftCacheKey);
-  const rightPromise = leftAlgorithm === rightAlgorithm ? leftPromise : fetchPreview(rightAlgorithm, rightCacheKey);
+  const leftPromise = fetchCurrentPreviewForAlgorithm(selectedDevice, leftAlgorithm, paletteProfile, force);
+  const rightPromise = leftAlgorithm === rightAlgorithm
+    ? leftPromise
+    : fetchCurrentPreviewForAlgorithm(selectedDevice, rightAlgorithm, paletteProfile, force);
   const [leftPreview, rightPreview] = await Promise.all([leftPromise, rightPromise]);
 
-  previewBlobUrls.left = leftPreview.blobUrl;
-  previewBlobUrls.right = leftAlgorithm === rightAlgorithm
-    ? previewBlobUrls.left
-    : rightPreview.blobUrl;
-  leftImg.src = previewBlobUrls.left;
-  rightImg.src = previewBlobUrls.right;
+  leftImg.src = leftPreview.blobUrl;
+  rightImg.src = leftAlgorithm === rightAlgorithm ? leftPreview.blobUrl : rightPreview.blobUrl;
   leftLabel.textContent = ditherAlgorithmLabel(leftPreview.dither || leftAlgorithm);
   rightLabel.textContent = ditherAlgorithmLabel(rightPreview.dither || rightAlgorithm);
 
-  if (force) {
-    const nextEntries = new Map([[leftCacheKey, leftPreview]]);
-    if (rightCacheKey !== leftCacheKey) {
-      nextEntries.set(rightCacheKey, rightPreview);
-    }
-    replacePreviewCache(nextEntries);
-  }
-
-  meta.textContent = `设备 ${leftPreview.target} · 当前来源 ${leftPreview.source} · Palette ${selectedPaletteProfile()} · 左 ${ditherAlgorithmLabel(leftAlgorithm)} / 右 ${ditherAlgorithmLabel(rightAlgorithm)} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
+  meta.textContent = `设备 ${leftPreview.target} · 当前来源 ${leftPreview.source} · Palette ${paletteProfile} · 左 ${ditherAlgorithmLabel(leftAlgorithm)} / 右 ${ditherAlgorithmLabel(rightAlgorithm)} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
   updateCompareSliderUi();
   updateDailyDitherHint(currentDailyDitherAlgorithm);
 }
@@ -1970,8 +1981,11 @@ async function refreshAll() {
     setTimelineMessage('publishHistoryBody', `发布历史加载失败: ${message}`);
     setText('publishHistoryHint', `发布历史加载失败: ${message}`);
   });
-  await runSection(() => loadCurrentPreview(true), (err) => {
-    setText('previewMeta', `预览失败: ${explainAdminLoadError(err)}`);
+  await runSection(() => loadOverviewPreview(true), (err) => {
+    setText('overviewPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);
+  });
+  await runSection(() => loadPublishPreview(true), (err) => {
+    setText('publishPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);
   });
   await runSection(loadDeviceConfigs, (err) => {
     const message = explainAdminLoadError(err);
@@ -2006,11 +2020,19 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
   }
 });
 
-document.getElementById('previewBtn').addEventListener('click', async () => {
+document.getElementById('overviewPreviewBtn').addEventListener('click', async () => {
   try {
-    await loadCurrentPreview(true);
+    await loadOverviewPreview(true);
   } catch (err) {
-    document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
+    document.getElementById('overviewPreviewMeta').textContent = `预览失败: ${err.message}`;
+  }
+});
+
+document.getElementById('publishPreviewBtn').addEventListener('click', async () => {
+  try {
+    await loadPublishPreview(true);
+  } catch (err) {
+    document.getElementById('publishPreviewMeta').textContent = `预览失败: ${err.message}`;
   }
 });
 
@@ -2019,18 +2041,17 @@ document.getElementById('dailyDitherAlgorithm').addEventListener('change', async
   syncCompareSelectors();
   updateDailyDitherHint(currentDailyDitherAlgorithm);
   try {
-    await loadCurrentPreview();
+    await loadPublishPreview();
   } catch (err) {
-    document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
+    document.getElementById('publishPreviewMeta').textContent = `预览失败: ${err.message}`;
   }
 });
 
 document.getElementById('paletteProfile').addEventListener('change', async () => {
-  currentPaletteProfile = selectedPaletteProfile();
   try {
-    await loadCurrentPreview();
+    await loadPublishPreview();
   } catch (err) {
-    document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
+    document.getElementById('publishPreviewMeta').textContent = `预览失败: ${err.message}`;
   }
 });
 
@@ -2051,7 +2072,8 @@ document.getElementById('saveDailyDitherBtn').addEventListener('click', async ()
     document.getElementById('compareLeftAlgorithm').value = currentDailyDitherAlgorithm;
     syncCompareSelectors();
     updateDailyDitherHint(currentDailyDitherAlgorithm);
-    await loadCurrentPreview(true);
+    await loadOverviewPreview(true);
+    await loadPublishPreview(true);
   } catch (err) {
     document.getElementById('dailyDitherHint').textContent = `Daily Dither 保存失败: ${err.message}`;
   }
@@ -2110,8 +2132,11 @@ document.getElementById('deviceId').addEventListener('change', async () => {
     setTimelineMessage('publishHistoryBody', `发布历史加载失败: ${message}`);
     setText('publishHistoryHint', `发布历史加载失败: ${message}`);
   });
-  await runSection(() => loadCurrentPreview(true), (err) => {
-    setText('previewMeta', `预览失败: ${explainAdminLoadError(err)}`);
+  await runSection(() => loadOverviewPreview(true), (err) => {
+    setText('overviewPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);
+  });
+  await runSection(() => loadPublishPreview(true), (err) => {
+    setText('publishPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);
   });
   await runSection(loadDeviceConfigs, (err) => {
     const message = explainAdminLoadError(err);
@@ -2169,18 +2194,18 @@ document.getElementById('token').addEventListener('blur', () => {
 document.getElementById('compareLeftAlgorithm').addEventListener('change', async () => {
   syncCompareSelectors();
   try {
-    await loadCurrentPreview();
+    await loadPublishPreview();
   } catch (err) {
-    document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
+    document.getElementById('publishPreviewMeta').textContent = `预览失败: ${err.message}`;
   }
 });
 
 document.getElementById('compareRightAlgorithm').addEventListener('change', async () => {
   syncCompareSelectors();
   try {
-    await loadCurrentPreview();
+    await loadPublishPreview();
   } catch (err) {
-    document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
+    document.getElementById('publishPreviewMeta').textContent = `预览失败: ${err.message}`;
   }
 });
 

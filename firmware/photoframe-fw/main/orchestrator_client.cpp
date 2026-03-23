@@ -267,6 +267,7 @@ void AddReportedConfig(cJSON* root, const AppConfig& cfg) {
     return;
   }
 
+  cJSON_AddStringToObject(reported, "firmware_version", PHOTOFRAME_FW_VERSION);
   cJSON_AddNumberToObject(reported, "orchestrator_enabled", cfg.orchestrator_enabled ? 1 : 0);
   cJSON_AddStringToObject(reported, "orchestrator_base_url", cfg.orchestrator_base_url.c_str());
   cJSON_AddStringToObject(reported, "orchestrator_token", cfg.orchestrator_token.c_str());

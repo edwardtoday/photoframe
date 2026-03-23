@@ -76,6 +76,9 @@ DEVICE_CONFIG_ALLOWED_KEYS = {
     "timezone",
 }
 DEVICE_CONFIG_SECRET_KEYS = {"orchestrator_token", "photo_token"}
+REPORTED_DEVICE_STRING_FIELDS = {
+    "firmware_version": 128,
+}
 OVERRIDE_DITHER_DEFAULT = "none"
 DAILY_DITHER_SETTING_KEY = "daily_dither_algorithm"
 PALETTE_PROFILE_SETTING_KEY = "palette_profile"
@@ -1130,6 +1133,15 @@ def _sanitize_reported_device_config(raw: Any) -> dict[str, Any]:
     except HTTPException:
       continue
     sanitized.update(partial)
+
+  for key, max_len in REPORTED_DEVICE_STRING_FIELDS.items():
+    value = raw.get(key)
+    if not isinstance(value, str):
+      continue
+    text_val = value.strip()
+    if text_val == "":
+      continue
+    sanitized[key] = text_val[:max_len]
   return sanitized
 
 
@@ -2824,10 +2836,12 @@ def devices(
     target_version = 0 if latest_plan is None else int(latest_plan["id"])
 
     reported_config = _decode_config_json(str(row["reported_config_json"]))
+    firmware_version = str(reported_config.get("firmware_version") or "").strip()
     last_power = last_power_map.get(device_id)
     items.append(
         {
             "device_id": device_id,
+            "firmware_version": firmware_version,
             "last_checkin_epoch": last_seen,
             "last_seen_epoch": last_seen,
             "last_device_checkin_epoch": last_device_checkin,

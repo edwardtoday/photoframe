@@ -261,6 +261,7 @@ Query:
 
 `/api/v1/devices` 额外字段：
 
+- `firmware_version`：设备最近一次 `checkin.reported_config.firmware_version`
 - `config_target_version`
 - `config_seen_version`
 - `config_last_query_epoch`

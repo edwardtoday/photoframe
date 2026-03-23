@@ -88,3 +88,12 @@ fn remote_patch_empty_wifi_profiles_clears_wifi_credentials() {
     assert!(config.primary_wifi_password.is_empty());
     assert_eq!(config.last_connected_wifi_index, None);
 }
+
+#[test]
+fn reported_config_includes_non_empty_firmware_version() {
+    let config = DeviceRuntimeConfig::default();
+
+    let reported = config.to_reported_config();
+
+    assert!(!reported.firmware_version.trim().is_empty());
+}

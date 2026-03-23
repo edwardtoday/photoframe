@@ -172,6 +172,10 @@ pub struct DeviceRuntimeConfig {
 
 const DEFAULT_IMAGE_URL_TEMPLATE: &str = "https://picsum.photos/480/800?date=%DATE%";
 const DEFAULT_ORCHESTRATOR_BASE_URL: &str = "http://192.168.233.11:8081";
+const FIRMWARE_BUILD_VERSION: &str = match option_env!("PHOTOFRAME_FIRMWARE_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 impl Default for DeviceRuntimeConfig {
     fn default() -> Self {
@@ -209,6 +213,10 @@ impl Default for DeviceRuntimeConfig {
 
 impl DeviceRuntimeConfig {
     pub const MAX_WIFI_PROFILES: usize = 8;
+
+    pub fn firmware_version(&self) -> &'static str {
+        FIRMWARE_BUILD_VERSION
+    }
 
     pub fn should_apply_bootstrap_recovery(&self) -> bool {
         if self.remote_config_version > 0 {
@@ -546,6 +554,7 @@ impl DeviceRuntimeConfig {
 
     pub fn to_reported_config(&self) -> ReportedConfig {
         ReportedConfig {
+            firmware_version: self.firmware_version().to_string(),
             orchestrator_enabled: i32::from(self.orchestrator_enabled),
             orchestrator_base_url: self.orchestrator_base_url.clone(),
             orchestrator_token: self.orchestrator_token.clone(),

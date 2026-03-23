@@ -76,6 +76,7 @@ pub struct ReportedWifiProfile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportedConfig {
+    pub firmware_version: String,
     pub orchestrator_enabled: i32,
     pub orchestrator_base_url: String,
     pub orchestrator_token: String,

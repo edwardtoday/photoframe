@@ -1273,6 +1273,19 @@ function normalizeReported(device) {
   return device.reported_config;
 }
 
+function firmwareVersionForDevice(device) {
+  if (!device || typeof device !== 'object') {
+    return '-';
+  }
+  const direct = typeof device.firmware_version === 'string' ? device.firmware_version.trim() : '';
+  if (direct) {
+    return direct;
+  }
+  const reported = normalizeReported(device);
+  const reportedValue = typeof reported.firmware_version === 'string' ? reported.firmware_version.trim() : '';
+  return reportedValue || '-';
+}
+
 function getReportedWifiProfiles(device) {
   const reported = normalizeReported(device);
   if (!Array.isArray(reported.wifi_profiles)) {
@@ -1332,8 +1345,9 @@ function updateDeviceContextBanner() {
   const battery = batteryStatusText(device);
   const nextWakeup = fmtEpoch(device.next_wakeup_epoch);
   const wifi = formatReportedWifiProfiles(device, '-');
+  const firmware = firmwareVersionForDevice(device);
   titleEl.textContent = `当前设备：${selectedDevice}`;
-  metaEl.textContent = `IP ${ip} · 电量 ${battery} · 下次唤醒 ${nextWakeup} · Wi‑Fi ${wifi}`;
+  metaEl.textContent = `固件 ${firmware} · IP ${ip} · 电量 ${battery} · 下次唤醒 ${nextWakeup} · Wi‑Fi ${wifi}`;
 }
 
 function fillWifiEditorFromDevice(device) {
@@ -1561,9 +1575,11 @@ async function loadDevices() {
     const cfgVersion = `${d.config_target_version || 0}/${d.config_seen_version || 0}/${d.config_applied_version || 0}`;
     const cfgQuery = fmtEpoch(d.config_last_query_epoch);
     const wifiSummary = formatReportedWifiProfiles(d, '-');
+    const firmwareVersion = firmwareVersionForDevice(d);
 
     tr.innerHTML = `
       <td><span class="tag">${escapeHtml(d.device_id)}</span></td>
+      <td title="${escapeHtml(firmwareVersion)}">${escapeHtml(shorten(firmwareVersion, 28))}</td>
       <td>${fmtEpoch(d.last_checkin_epoch)}</td>
       <td>${fmtEpoch(d.next_wakeup_epoch)}</td>
       <td>${fmtDuration(d.eta_seconds)}</td>
@@ -1936,7 +1952,7 @@ async function refreshAll() {
     setText('dailyDitherHint', `Daily Dither 加载失败: ${explainAdminLoadError(err)}`);
   });
   await runSection(loadDevices, (err) => {
-    setTableMessage('devicesBody', 15, `设备状态加载失败: ${explainAdminLoadError(err)}`);
+    setTableMessage('devicesBody', 17, `设备状态加载失败: ${explainAdminLoadError(err)}`);
     setText('powerSummary', `电池曲线加载失败: ${explainAdminLoadError(err)}`);
   });
   await runSection(loadOverrides, (err) => {

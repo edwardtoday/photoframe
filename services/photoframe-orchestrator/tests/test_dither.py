@@ -189,6 +189,60 @@ class DitherAlgorithmTests(unittest.TestCase):
       ORCH._DEVICE_TOKEN_MAP_PARSED = original_device_map
       ORCH._resolve_current_payload_for_device = original_render
 
+  def test_device_checkin_keeps_reported_firmware_version(self) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_root = Path(tmp_dir)
+      original_data_dir = ORCH.DATA_DIR
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_db_path = ORCH.DB_PATH
+      original_db = ORCH.DB
+
+      ORCH.DATA_DIR = tmp_root
+      ORCH.ASSET_DIR = tmp_root / "assets"
+      ORCH.DAILY_CACHE_DIR = ORCH.ASSET_DIR / "daily-cache"
+      ORCH.DB_PATH = tmp_root / "orchestrator.db"
+      ORCH.DB = None
+      try:
+        ORCH._init_db()
+        payload = ORCH.DeviceCheckin(
+            device_id="pf-demo",
+            checkin_epoch=1774200000,
+            next_wakeup_epoch=1774203600,
+            sleep_seconds=3600,
+            poll_interval_seconds=3600,
+            failure_count=0,
+            last_http_status=200,
+            fetch_ok=True,
+            image_changed=False,
+            image_source="daily",
+            last_error="",
+            sta_ip="192.168.1.8",
+            battery_mv=4100,
+            battery_percent=80,
+            charging=0,
+            vbus_good=0,
+            reported_config={
+                "orchestrator_enabled": 1,
+                "firmware_version": "0.1.0+abcdef12",
+            },
+        )
+        ORCH.device_checkin(payload)
+        data = ORCH.devices()
+      finally:
+        if ORCH.DB is not None:
+          ORCH.DB.close()
+          ORCH.DB = None
+        ORCH.DATA_DIR = original_data_dir
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.DB_PATH = original_db_path
+        ORCH.DB = original_db
+
+      self.assertEqual(len(data["devices"]), 1)
+      self.assertEqual(data["devices"][0]["firmware_version"], "0.1.0+abcdef12")
+      self.assertEqual(data["devices"][0]["reported_config"]["firmware_version"], "0.1.0+abcdef12")
+
   def test_preferred_output_format_prefers_bmp_when_device_supports_both(self) -> None:
     self.assertEqual(ORCH._preferred_output_format("jpeg,bmp"), "bmp")
     self.assertEqual(ORCH._preferred_output_format("bmp,jpeg"), "bmp")

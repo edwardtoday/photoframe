@@ -21,6 +21,7 @@
   - 管理页可直接使用 `PHOTOFRAME_TOKEN` 预览，不要求再填设备 token
 - 公网日图代理：`GET /public/daily.bmp` / `GET /public/daily.jpg`（token 保护，且优先返回当前生效插播）
 - Web 管理页：`GET /`（含图片发布历史 + 设备配置发布历史 + 当前下发预览 + 设备 token 审批）
+- 设备状态页会直接显示设备最近一次 checkin 上报的 `firmware_version`
 - 设备配置“填空式表单”：不再手写 JSON，灰字提示来自设备最近上报配置
 - 设备配置页提供 daily.bmp/daily.jpg URL 快捷填入（当前服务 / 公网示例）
 - 创建插播后给出“预计生效时间/可能过期”可读提示，便于和设备唤醒周期对齐

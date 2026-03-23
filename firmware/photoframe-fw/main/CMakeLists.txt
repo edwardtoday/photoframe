@@ -21,3 +21,5 @@ idf_component_register(
     lwip
     photopainter_epd
 )
+
+target_compile_definitions(${COMPONENT_LIB} PRIVATE PHOTOFRAME_FW_VERSION="${PHOTOFRAME_FW_VERSION}")

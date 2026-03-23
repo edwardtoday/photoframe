@@ -20,6 +20,7 @@ fn serializes_device_checkin_with_reported_config() {
         charging: 0,
         vbus_good: 0,
         reported_config: ReportedConfig {
+            firmware_version: "0.1.0+abcdef12".into(),
             orchestrator_enabled: 1,
             orchestrator_base_url: "http://192.168.1.10:18081".into(),
             orchestrator_token: "devtoken".into(),
@@ -44,6 +45,10 @@ fn serializes_device_checkin_with_reported_config() {
     let json = serde_json::to_value(payload).unwrap();
 
     assert_eq!(json["device_id"], "pf-a1b2c3d4");
+    assert_eq!(
+        json["reported_config"]["firmware_version"],
+        "0.1.0+abcdef12"
+    );
     assert_eq!(json["reported_config"]["interval_minutes"], 60);
     assert_eq!(
         json["reported_config"]["wifi_profiles"][0]["ssid"],

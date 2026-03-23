@@ -1552,7 +1552,9 @@ function collectDeviceConfigPatch() {
 async function loadHealth() {
   const data = await fetchJson('/healthz');
   const version = data.app_version || '-';
+  const gitSha = data.app_git_sha || '-';
   setText('appVersion', version);
+  setText('appGitSha', gitSha);
 }
 
 async function loadDevices() {

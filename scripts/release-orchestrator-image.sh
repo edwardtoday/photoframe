@@ -6,8 +6,13 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 IMAGE_REPO="${IMAGE_REPO:-edwardtoday/photoframe-orchestrator}"
 TAG="${1:-}"
+APP_VERSION="${PHOTOFRAME_ORCHESTRATOR_VERSION:-0.2.8}"
 if [[ -z "${TAG}" ]]; then
   TAG="$(git -C "${REPO_ROOT}" rev-parse --short HEAD)"
+fi
+APP_GIT_SHA="$(git -C "${REPO_ROOT}" rev-parse --short=8 HEAD)"
+if ! git -C "${REPO_ROOT}" diff --quiet --exit-code; then
+  APP_GIT_SHA="${APP_GIT_SHA}-dirty"
 fi
 
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
@@ -29,6 +34,8 @@ run_main_build() {
     --platform "${PLATFORMS}" \
     -t "${IMAGE_REPO}:${TAG}" \
     -t "${IMAGE_REPO}:latest" \
+    --build-arg "PHOTOFRAME_ORCHESTRATOR_VERSION=${APP_VERSION}" \
+    --build-arg "PHOTOFRAME_ORCHESTRATOR_GIT_SHA=${APP_GIT_SHA}" \
     --push \
     "${CONTEXT_DIR}"
 }
@@ -40,6 +47,10 @@ run_rebase_build() {
 
   cat >"${tmp_dockerfile}" <<DOCKERFILE
 FROM ${IMAGE_REPO}:latest
+ARG PHOTOFRAME_ORCHESTRATOR_VERSION=0.2.8
+ARG PHOTOFRAME_ORCHESTRATOR_GIT_SHA=nogit
+ENV PHOTOFRAME_ORCHESTRATOR_VERSION=\${PHOTOFRAME_ORCHESTRATOR_VERSION} \\
+    PHOTOFRAME_ORCHESTRATOR_GIT_SHA=\${PHOTOFRAME_ORCHESTRATOR_GIT_SHA}
 COPY services/photoframe-orchestrator/app /app/app
 COPY services/photoframe-orchestrator/data /app/data
 DOCKERFILE
@@ -50,11 +61,15 @@ DOCKERFILE
     -f "${tmp_dockerfile}" \
     -t "${IMAGE_REPO}:${TAG}" \
     -t "${IMAGE_REPO}:latest" \
+    --build-arg "PHOTOFRAME_ORCHESTRATOR_VERSION=${APP_VERSION}" \
+    --build-arg "PHOTOFRAME_ORCHESTRATOR_GIT_SHA=${APP_GIT_SHA}" \
     --push \
     "${REPO_ROOT}"
 }
 
 echo "[info] build and push: ${IMAGE_REPO}:${TAG} (plus latest)"
+echo "[info] app version: ${APP_VERSION}"
+echo "[info] app git sha: ${APP_GIT_SHA}"
 if run_main_build; then
   echo "[info] primary build path succeeded"
 else

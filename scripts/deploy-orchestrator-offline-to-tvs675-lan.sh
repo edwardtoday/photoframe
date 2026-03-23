@@ -126,6 +126,11 @@ IMAGE_REPO="${IMAGE_REPO:-edwardtoday/photoframe-orchestrator}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 BUILDER_NAME="${BUILDER_NAME:-photoframe-offline}"
 REMOTE_DIR="${REMOTE_DIR:-/share/ZFS19_DATA/Container/docker/photoframe-orchestrator}"
+APP_VERSION="${PHOTOFRAME_ORCHESTRATOR_VERSION:-0.2.8}"
+APP_GIT_SHA="$(git -C "${REPO_ROOT}" rev-parse --short=8 HEAD)"
+if ! git -C "${REPO_ROOT}" diff --quiet --exit-code; then
+  APP_GIT_SHA="${APP_GIT_SHA}-dirty"
+fi
 
 SSH_ARGS=()
 SCP_ARGS=()
@@ -157,6 +162,8 @@ log "tag=${TAG}"
 log "host=${HOST}"
 log "platform=${PLATFORM}"
 log "image=${IMAGE_REPO}:${TAG} (plus latest)"
+log "app_version=${APP_VERSION}"
+log "app_git_sha=${APP_GIT_SHA}"
 log "local_tar=${LOCAL_TAR}"
 log "remote_tar=${REMOTE_TAR}"
 
@@ -178,6 +185,8 @@ run docker buildx build \
   --platform "${PLATFORM}" \
   -t "${IMAGE_REPO}:${TAG}" \
   -t "${IMAGE_REPO}:latest" \
+  --build-arg "PHOTOFRAME_ORCHESTRATOR_VERSION=${APP_VERSION}" \
+  --build-arg "PHOTOFRAME_ORCHESTRATOR_GIT_SHA=${APP_GIT_SHA}" \
   --output "type=docker,dest=${LOCAL_TAR}" \
   "${REPO_ROOT}/services/photoframe-orchestrator"
 

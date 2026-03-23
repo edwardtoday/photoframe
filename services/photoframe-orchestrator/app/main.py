@@ -7,6 +7,7 @@ import os
 import random
 import re
 import sqlite3
+import subprocess
 import threading
 import time
 import math
@@ -45,6 +46,32 @@ except Exception:
 TZ_NAME = os.getenv("TZ", "Asia/Shanghai")
 LOCAL_TZ = ZoneInfo(TZ_NAME)
 APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.8")
+
+
+def _detect_app_git_sha() -> str:
+  explicit = os.getenv("PHOTOFRAME_ORCHESTRATOR_GIT_SHA", "").strip()
+  if explicit:
+    return explicit
+  try:
+    sha = subprocess.check_output(
+        ["git", "-C", str(APP_DIR), "rev-parse", "--short=8", "HEAD"],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    ).strip()
+    if not sha:
+      return "nogit"
+    dirty = subprocess.run(
+        ["git", "-C", str(APP_DIR), "diff", "--quiet", "--exit-code"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return f"{sha}-dirty" if dirty.returncode == 1 else sha
+  except Exception:
+    return "nogit"
+
+
+APP_GIT_SHA = _detect_app_git_sha()
 DEVICE_CONFIG_MAX_HISTORY = 200
 POWER_SAMPLE_DEFAULT_DAYS = 30
 POWER_SAMPLE_RETENTION_DAYS = 365
@@ -2023,6 +2050,7 @@ def healthz() -> dict[str, Any]:
       "now_epoch": _now_epoch(),
       "timezone": TZ_NAME,
       "app_version": APP_VERSION,
+      "app_git_sha": APP_GIT_SHA,
       "daily_dither_algorithm": _get_daily_dither_algorithm(),
   }
 

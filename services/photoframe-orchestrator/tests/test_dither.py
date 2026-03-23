@@ -189,6 +189,13 @@ class DitherAlgorithmTests(unittest.TestCase):
       ORCH._DEVICE_TOKEN_MAP_PARSED = original_device_map
       ORCH._resolve_current_payload_for_device = original_render
 
+  def test_healthz_exposes_app_git_sha(self) -> None:
+    data = ORCH.healthz()
+
+    self.assertEqual(data["app_version"], ORCH.APP_VERSION)
+    self.assertEqual(data["app_git_sha"], ORCH.APP_GIT_SHA)
+    self.assertTrue(str(data["app_git_sha"]).strip())
+
   def test_device_checkin_keeps_reported_firmware_version(self) -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
       tmp_root = Path(tmp_dir)

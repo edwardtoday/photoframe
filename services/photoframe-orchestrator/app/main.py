@@ -5,13 +5,15 @@ import json
 import logging
 import os
 import random
+import re
 import sqlite3
 import threading
 import time
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from urllib.error import HTTPError, URLError
 from urllib.request import Request as UrlRequest, urlopen
 from zoneinfo import ZoneInfo
@@ -47,6 +49,11 @@ DEVICE_CONFIG_MAX_HISTORY = 200
 POWER_SAMPLE_DEFAULT_DAYS = 30
 POWER_SAMPLE_RETENTION_DAYS = 365
 POWER_SAMPLE_RETENTION_SECONDS = POWER_SAMPLE_RETENTION_DAYS * 24 * 3600
+try:
+  DAILY_ASSET_RETENTION_DAYS = max(1, int(os.getenv("DAILY_ASSET_RETENTION_DAYS", "14")))
+except Exception:
+  DAILY_ASSET_RETENTION_DAYS = 14
+DAILY_ASSET_NAME_RE = re.compile(r"^daily-(\d{4}-\d{2}-\d{2})-.*\.(bmp|jpg)$", re.IGNORECASE)
 # 设备在未校时/时钟漂移严重时可能上报 1970 或未来时间，服务端需要兜底。
 MIN_VALID_DEVICE_EPOCH = int(os.getenv("MIN_VALID_DEVICE_EPOCH", "1609459200"))  # 2021-01-01 UTC
 MAX_FUTURE_DEVICE_SKEW_SECONDS = int(os.getenv("MAX_FUTURE_DEVICE_SKEW_SECONDS", str(7 * 24 * 3600)))
@@ -933,6 +940,12 @@ def _normalize_palette_profile(raw: str | None) -> str:
   return PALETTE_PROFILE_DEFAULT
 
 
+def _resolve_palette_profile(raw: str | None) -> str:
+  if raw is None:
+    return _get_palette_profile()
+  return _normalize_palette_profile(raw)
+
+
 def _get_palette_profile() -> str:
   conn = _ensure_db()
   try:
@@ -953,9 +966,12 @@ def _set_palette_profile(value: str) -> str:
     return _set_service_setting(conn, PALETTE_PROFILE_SETTING_KEY, picked)
 
 
+def _palette_profile_spec(override_profile: str | None = None) -> dict[str, Any]:
+  return EPAPER_PALETTE_PROFILES[_resolve_palette_profile(override_profile)]
+
+
 def _current_epaper_palette_profile(override_profile: str | None = None) -> dict[str, Any]:
-  picked = _normalize_palette_profile(override_profile) if override_profile is not None else _get_palette_profile()
-  return EPAPER_PALETTE_PROFILES[picked]
+  return _palette_profile_spec(override_profile)
 
 
 def _daily_image_url(now_epoch: int) -> str:
@@ -1244,11 +1260,9 @@ def _resolve_current_payload_for_device(
     if output_format == "jpg":
       asset_sha256 = str(active["asset_sha256"] or "").strip()
       candidate = f"{asset_sha256}.jpg"
-      if asset_sha256 and (ASSET_DIR / candidate).exists():
+      if asset_sha256 and _asset_path_candidates(candidate)[1].exists():
         asset_name = candidate
-    path = ASSET_DIR / asset_name
-    if not path.exists():
-      raise HTTPException(status_code=502, detail="override asset missing")
+    path = _locate_asset_path(asset_name)
     return path.read_bytes(), "override", _normalize_override_dither_algorithm(active["dither_algorithm"])
 
   upstream_url = _daily_image_url(now_ts)
@@ -1297,6 +1311,102 @@ def _preferred_output_format(accept_formats: str | None) -> str:
   return "bmp"
 
 
+def _asset_path_candidates(asset_name: str) -> tuple[Path, ...]:
+  safe_name = os.path.basename(asset_name)
+  return (
+      DAILY_CACHE_DIR / safe_name,
+      ASSET_DIR / safe_name,
+  )
+
+
+def _locate_asset_path(asset_name: str) -> Path:
+  for candidate in _asset_path_candidates(asset_name):
+    if candidate.exists():
+      return candidate
+  raise HTTPException(status_code=404, detail="asset not found")
+
+
+def _cleanup_daily_assets(now_ts: int) -> None:
+  keep_from = datetime.fromtimestamp(now_ts, LOCAL_TZ).date() - timedelta(days=DAILY_ASSET_RETENTION_DAYS - 1)
+  removed = 0
+
+  for root in (DAILY_CACHE_DIR, ASSET_DIR):
+    if not root.exists():
+      continue
+    for path in root.iterdir():
+      if not path.is_file():
+        continue
+      match = DAILY_ASSET_NAME_RE.match(path.name)
+      if match is None:
+        continue
+      try:
+        asset_date = datetime.strptime(match.group(1), "%Y-%m-%d").date()
+      except ValueError:
+        continue
+      if asset_date >= keep_from:
+        continue
+      try:
+        path.unlink()
+        removed += 1
+      except FileNotFoundError:
+        continue
+
+  if removed > 0:
+    LOGGER.info(
+        "daily asset cleanup: removed=%s keep_from=%s retention_days=%s",
+        removed,
+        keep_from.isoformat(),
+        DAILY_ASSET_RETENTION_DAYS,
+    )
+
+
+def _asset_query(device_id: str | None = None, token: str | None = None) -> str:
+  parts: list[str] = []
+  normalized_device = _normalize_device_id(device_id) if device_id is not None else "*"
+  if normalized_device != "*":
+    parts.append(f"device_id={quote(normalized_device, safe='')}")
+
+  token_text = (token or "").strip()
+  if token_text:
+    parts.append(f"token={quote(token_text, safe='')}")
+
+  if not parts:
+    return ""
+  return f"?{'&'.join(parts)}"
+
+
+def _require_asset_access(
+    device_id: str | None,
+    header_token: str | None,
+    query_token: str | None,
+) -> None:
+  provided_header = (header_token or "").strip()
+  provided_query = (query_token or "").strip()
+  provided_any = provided_header or provided_query
+  admin_token = (TOKEN or "").strip()
+  if admin_token and _secure_equal(provided_any, admin_token):
+    return
+
+  normalized_device = _normalize_device_id(device_id)
+  if not admin_token and normalized_device == "*" and not provided_any:
+    return
+  if normalized_device != "*" and provided_any:
+    _require_device_token(normalized_device, provided_any)
+    return
+
+  if admin_token:
+    raise HTTPException(status_code=401, detail="invalid token")
+  raise HTTPException(status_code=401, detail="asset token required")
+
+
+def _require_admin_or_device_token(device_id: str, header_token: str | None) -> None:
+  provided = (header_token or "").strip()
+  admin_token = (TOKEN or "").strip()
+  if admin_token and _secure_equal(provided, admin_token):
+    return
+  _require_device_token(device_id, header_token)
+
+
 def _fit_daily_source_image(source_bytes: bytes) -> Image.Image:
   try:
     with Image.open(io.BytesIO(source_bytes)) as image:
@@ -1322,10 +1432,10 @@ def _ensure_daily_assets(
     *,
     palette_profile: str | None = None,
 ) -> tuple[str, str]:
-  profile_key = _normalize_palette_profile(palette_profile)
+  profile_key = _resolve_palette_profile(palette_profile)
   bmp_name, jpg_name = _daily_asset_names(now_ts, f"{dither_algorithm}-{profile_key}")
-  bmp_path = ASSET_DIR / bmp_name
-  jpg_path = ASSET_DIR / jpg_name
+  bmp_path = DAILY_CACHE_DIR / bmp_name
+  jpg_path = DAILY_CACHE_DIR / jpg_name
   if bmp_path.exists() and jpg_path.exists():
     return bmp_name, jpg_name
 
@@ -1336,9 +1446,10 @@ def _ensure_daily_assets(
     source_bytes = _fetch_daily_source_bytes(url)
     fitted = _fit_daily_source_image(source_bytes)
     bmp_data, jpg_data = _render_override_assets(fitted, dither_algorithm, palette_profile=profile_key)
-    ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     bmp_path.write_bytes(bmp_data)
     jpg_path.write_bytes(jpg_data)
+    _cleanup_daily_assets(now_ts)
     LOGGER.info(
         "daily asset refreshed: bmp=%s jpg=%s dither=%s source=%s",
         bmp_name,
@@ -1359,7 +1470,7 @@ def _render_daily_payload(
 ) -> bytes:
   bmp_name, jpg_name = _ensure_daily_assets(now_ts, url, dither_algorithm, palette_profile=palette_profile)
   target_name = bmp_name if output_format == "bmp" else jpg_name
-  return (ASSET_DIR / target_name).read_bytes()
+  return _locate_asset_path(target_name).read_bytes()
 
 
 def _clamp_channel(value: float) -> int:
@@ -1489,11 +1600,13 @@ def _ciede2000(lab1: tuple[float, float, float], lab2: tuple[float, float, float
 def _nearest_palette_color_lab_ciede2000(
     rgb: tuple[float, float, float],
     palette_profile: str | None = None,
+    *,
+    profile: dict[str, Any] | None = None,
 ) -> tuple[int, int, int]:
-  profile = _current_epaper_palette_profile(palette_profile)
+  profile_spec = _palette_profile_spec(palette_profile) if profile is None else profile
   source_lab = _rgb_to_lab(rgb)
-  palette = profile["colors"]
-  green_penalty = float(profile["green_penalty"])
+  palette = profile_spec["colors"]
+  green_penalty = float(profile_spec["green_penalty"])
   best = palette[0]
   best_distance = math.inf
   for candidate in palette:
@@ -1694,12 +1807,14 @@ def _apply_override_dither(
   elif preprocess == "paper-white":
     image = _apply_paper_white_compensation(image)
 
+  matcher_name = str(spec.get("matcher") or "rgb")
+  palette_profile_spec = _palette_profile_spec(palette_profile) if matcher_name == "lab-ciede2000" else None
+
   if kind == "passthrough":
     return image.copy()
   if kind == "ordered":
-    matcher_name = str(spec.get("matcher") or "rgb")
     matcher = (
-        (lambda rgb: _nearest_palette_color_lab_ciede2000(rgb, palette_profile=palette_profile))
+        (lambda rgb: _nearest_palette_color_lab_ciede2000(rgb, profile=palette_profile_spec))
         if matcher_name == "lab-ciede2000"
         else _nearest_palette_color
     )
@@ -1710,9 +1825,8 @@ def _apply_override_dither(
     kernel = spec.get("kernel")
     if not isinstance(kernel, tuple):
       raise RuntimeError(f"kernel missing for dither algorithm: {normalized}")
-    matcher_name = str(spec.get("matcher") or "rgb")
     matcher = (
-        (lambda rgb: _nearest_palette_color_lab_ciede2000(rgb, palette_profile=palette_profile))
+        (lambda rgb: _nearest_palette_color_lab_ciede2000(rgb, profile=palette_profile_spec))
         if matcher_name == "lab-ciede2000"
         else _nearest_palette_color
     )
@@ -1744,7 +1858,12 @@ def _render_override_assets(
   return bmp_data, out_jpg.getvalue()
 
 
-def _read_and_convert_bmp(upload: UploadFile, dither_algorithm: str) -> tuple[str, str]:
+def _read_and_convert_bmp(
+    upload: UploadFile,
+    dither_algorithm: str,
+    *,
+    palette_profile: str | None = None,
+) -> tuple[str, str]:
   raw = upload.file.read()
   if not raw:
     raise HTTPException(status_code=400, detail="empty upload file")
@@ -1754,7 +1873,11 @@ def _read_and_convert_bmp(upload: UploadFile, dither_algorithm: str) -> tuple[st
       rgb = image.convert("RGB")
       # 固件侧以 480x800 为基准渲染（另一方向由固件旋转）。服务端统一做裁剪缩放保证设备可直接显示。
       fitted = ImageOps.fit(rgb, (480, 800), method=Image.Resampling.LANCZOS)
-      bmp_data, jpg_data = _render_override_assets(fitted, dither_algorithm)
+      bmp_data, jpg_data = _render_override_assets(
+          fitted,
+          dither_algorithm,
+          palette_profile=_resolve_palette_profile(palette_profile),
+      )
   except Exception as exc:  # pragma: no cover
     raise HTTPException(status_code=400, detail="cannot decode image") from exc
 
@@ -1893,7 +2016,10 @@ def healthz() -> dict[str, Any]:
 
 
 @app.get("/api/v1/daily-render-config")
-def get_daily_render_config() -> dict[str, Any]:
+def get_daily_render_config(
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
   return {
       "daily_dither_algorithm": _get_daily_dither_algorithm(),
       "palette_profile": _get_palette_profile(),
@@ -1951,11 +2077,15 @@ def device_debug_stage(
 
 
 @app.get("/api/v1/assets/{asset_name}")
-def asset(asset_name: str) -> FileResponse:
+def asset(
+    asset_name: str,
+    device_id: str | None = Query(default=None, min_length=1, max_length=64),
+    token: str | None = Query(default=None),
+    x_photoframe_token: str | None = Header(default=None),
+) -> FileResponse:
+  _require_asset_access(device_id, x_photoframe_token, token)
   safe_name = os.path.basename(asset_name)
-  path = ASSET_DIR / safe_name
-  if not path.exists():
-    raise HTTPException(status_code=404, detail="asset not found")
+  path = _locate_asset_path(safe_name)
   ext = path.suffix.lower()
   if ext == ".bmp":
     media_type = "image/bmp"
@@ -2078,7 +2208,7 @@ def preview_current_bmp(
 ) -> Response:
   now_ts = _now_epoch() if now_epoch is None else now_epoch
   target_device = _normalize_device_id(device_id)
-  _require_device_token(target_device, x_photoframe_token)
+  _require_admin_or_device_token(target_device, x_photoframe_token)
   conn = _ensure_db()
 
   payload, source, dither_algorithm = _resolve_current_payload_for_device(
@@ -2113,7 +2243,7 @@ def preview_current_jpg(
 ) -> Response:
   now_ts = _now_epoch() if now_epoch is None else now_epoch
   target_device = _normalize_device_id(device_id)
-  _require_device_token(target_device, x_photoframe_token)
+  _require_admin_or_device_token(target_device, x_photoframe_token)
   conn = _ensure_db()
 
   jpg_bytes, source, dither_algorithm = _resolve_current_payload_for_device(
@@ -2202,18 +2332,20 @@ def device_next(
   source = "daily"
   valid_until = now_ts + poll_sec
   active_dither_algorithm = _get_daily_dither_algorithm()
+  active_palette_profile = _get_palette_profile()
   daily_bmp_name, daily_jpg_name = _ensure_daily_assets(
       now_ts,
       _daily_image_url(now_ts),
       active_dither_algorithm,
+      palette_profile=active_palette_profile,
   )
   # 省电优先：daily 先在服务端固化成静态 asset，设备直接拉静态文件，避免每次唤醒都命中动态日图端点。
   if prefer_bmp:
-    image_url = f"{_public_base(request)}/api/v1/assets/{daily_bmp_name}"
+    image_url = f"{_public_base(request)}/api/v1/assets/{daily_bmp_name}{_asset_query(device_id=device_id)}"
   elif prefer_jpeg:
-    image_url = f"{_public_base(request)}/api/v1/assets/{daily_jpg_name}"
+    image_url = f"{_public_base(request)}/api/v1/assets/{daily_jpg_name}{_asset_query(device_id=device_id)}"
   else:
-    image_url = f"{_public_base(request)}/api/v1/assets/{daily_bmp_name}"
+    image_url = f"{_public_base(request)}/api/v1/assets/{daily_bmp_name}{_asset_query(device_id=device_id)}"
   active_override_id = None
 
   if active is not None:
@@ -2226,9 +2358,9 @@ def device_next(
     chosen = asset_name
     if prefer_jpeg:
       candidate = f"{asset_sha256}.jpg"
-      if (ASSET_DIR / candidate).exists():
+      if _asset_path_candidates(candidate)[1].exists():
         chosen = candidate
-    image_url = f"{_public_base(request)}/api/v1/assets/{chosen}"
+    image_url = f"{_public_base(request)}/api/v1/assets/{chosen}{_asset_query(device_id=device_id)}"
     remain = max(1, valid_until - now_ts)
     poll_sec = min(poll_sec, _clamp(remain, 60, 86400))
 
@@ -2636,7 +2768,10 @@ def delete_device_token(
 
 
 @app.get("/api/v1/devices")
-def devices() -> dict[str, Any]:
+def devices(
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
   conn = _ensure_db()
   now_ts = _now_epoch()
   rows = conn.execute(
@@ -2896,7 +3031,11 @@ def publish_history(
 
 
 @app.get("/api/v1/overrides")
-def overrides(now_epoch: int | None = Query(default=None)) -> dict[str, Any]:
+def overrides(
+    now_epoch: int | None = Query(default=None),
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
   now_ts = _now_epoch() if now_epoch is None else now_epoch
   conn = _ensure_db()
   rows = conn.execute(
@@ -2969,7 +3108,11 @@ def override_upload(
   end_epoch = start_epoch + duration_minutes * 60
 
   normalized_dither_algorithm = _normalize_override_dither_algorithm(dither_algorithm)
-  asset_name, sha256 = _read_and_convert_bmp(file, normalized_dither_algorithm)
+  asset_name, sha256 = _read_and_convert_bmp(
+      file,
+      normalized_dither_algorithm,
+      palette_profile=_get_palette_profile(),
+  )
   now_ts = _now_epoch()
   conn = _ensure_db()
 
@@ -3000,7 +3143,7 @@ def override_upload(
   will_expire_before_effective = (
       expected_effective_epoch is not None and expected_effective_epoch >= end_epoch
   )
-  image_url = f"{_public_base(request)}/api/v1/assets/{asset_name}"
+  image_url = f"{_public_base(request)}/api/v1/assets/{asset_name}{_asset_query(device_id=target_device)}"
 
   return {
       "ok": True,

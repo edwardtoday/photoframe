@@ -6,6 +6,52 @@ function authHeaders() {
   return { 'X-PhotoFrame-Token': token };
 }
 
+function currentConsoleToken() {
+  return document.getElementById('token')?.value.trim() || '';
+}
+
+function revokeBlobUrl(url) {
+  if (typeof url !== 'string' || !url.startsWith('blob:')) {
+    return;
+  }
+  URL.revokeObjectURL(url);
+}
+
+function replacePreviewCache(nextEntries) {
+  const keepUrls = new Set(Array.from(nextEntries.values()).map((item) => item?.blobUrl).filter(Boolean));
+  for (const cached of previewResponseCache.values()) {
+    const blobUrl = cached?.blobUrl;
+    if (blobUrl && !keepUrls.has(blobUrl)) {
+      revokeBlobUrl(blobUrl);
+    }
+  }
+  previewResponseCache.clear();
+  for (const [key, value] of nextEntries.entries()) {
+    previewResponseCache.set(key, value);
+  }
+}
+
+function clearPreviewResponseCache() {
+  replacePreviewCache(new Map());
+}
+
+function authorizedAssetUrl(rawUrl) {
+  if (!rawUrl) return '';
+  try {
+    const url = new URL(rawUrl, window.location.origin);
+    if (!url.pathname.startsWith('/api/v1/assets/')) {
+      return url.toString();
+    }
+    const token = currentConsoleToken();
+    if (token) {
+      url.searchParams.set('token', token);
+    }
+    return url.toString();
+  } catch (_) {
+    return rawUrl;
+  }
+}
+
 const previewBlobUrls = { left: null, right: null };
 const previewResponseCache = new Map();
 let deviceMap = new Map();
@@ -1025,6 +1071,20 @@ function setText(id, text) {
   }
 }
 
+function setTableMessage(bodyId, colspan, text) {
+  const el = document.getElementById(bodyId);
+  if (el) {
+    el.innerHTML = `<tr><td colspan="${colspan}" class="muted">${escapeHtml(text)}</td></tr>`;
+  }
+}
+
+function setTimelineMessage(bodyId, text) {
+  const el = document.getElementById(bodyId);
+  if (el) {
+    el.innerHTML = `<p class="muted">${escapeHtml(text)}</p>`;
+  }
+}
+
 function setPlaceholder(id, text) {
   const el = document.getElementById(id);
   if (el) {
@@ -1047,6 +1107,24 @@ async function fetchJson(url, options = {}) {
     throw new Error(msg);
   }
   return data;
+}
+
+function explainAdminLoadError(err) {
+  const message = String(err?.message || err || '').trim();
+  if (message === 'invalid token' || message === 'asset token required') {
+    return '请先填写正确的管理端 Token';
+  }
+  return message || 'unknown error';
+}
+
+async function runSection(loader, onError) {
+  try {
+    await loader();
+    return true;
+  } catch (err) {
+    onError(err);
+    return false;
+  }
 }
 
 function selectedDailyDitherAlgorithm() {
@@ -1638,7 +1716,7 @@ function renderPublishHistoryItem(item) {
     ? '<span class="tag active">override</span>'
     : '<span class="tag">daily</span>';
   const overrideText = item.override_id == null ? '-' : `#${item.override_id}`;
-  const safeUrl = escapeHtml(item.image_url || '');
+  const safeUrl = escapeHtml(authorizedAssetUrl(item.image_url || ''));
   const shortUrl = escapeHtml(shorten(item.image_url || '', 78));
   const ditherText = item.dither_algorithm
     ? ditherAlgorithmLabel(item.dither_algorithm)
@@ -1692,9 +1770,10 @@ async function loadCurrentPreview(force = false) {
   syncCompareSelectors();
   const leftAlgorithm = selectedCompareAlgorithm('compareLeftAlgorithm', selectedDailyDitherAlgorithm());
   const rightAlgorithm = selectedCompareAlgorithm('compareRightAlgorithm', preferredCompareRightAlgorithm(leftAlgorithm));
+  const leftCacheKey = `${selectedDevice}|${selectedPaletteProfile()}|${leftAlgorithm}`;
+  const rightCacheKey = `${selectedDevice}|${selectedPaletteProfile()}|${rightAlgorithm}`;
 
-  async function fetchPreview(algorithm) {
-    const cacheKey = `${selectedDevice}|${selectedPaletteProfile()}|${algorithm}`;
+  async function fetchPreview(algorithm, cacheKey) {
     if (!force && previewResponseCache.has(cacheKey)) {
       return previewResponseCache.get(cacheKey);
     }
@@ -1728,8 +1807,8 @@ async function loadCurrentPreview(force = false) {
     return preview;
   }
 
-  const leftPromise = fetchPreview(leftAlgorithm);
-  const rightPromise = leftAlgorithm === rightAlgorithm ? leftPromise : fetchPreview(rightAlgorithm);
+  const leftPromise = fetchPreview(leftAlgorithm, leftCacheKey);
+  const rightPromise = leftAlgorithm === rightAlgorithm ? leftPromise : fetchPreview(rightAlgorithm, rightCacheKey);
   const [leftPreview, rightPreview] = await Promise.all([leftPromise, rightPromise]);
 
   previewBlobUrls.left = leftPreview.blobUrl;
@@ -1740,6 +1819,14 @@ async function loadCurrentPreview(force = false) {
   rightImg.src = previewBlobUrls.right;
   leftLabel.textContent = ditherAlgorithmLabel(leftPreview.dither || leftAlgorithm);
   rightLabel.textContent = ditherAlgorithmLabel(rightPreview.dither || rightAlgorithm);
+
+  if (force) {
+    const nextEntries = new Map([[leftCacheKey, leftPreview]]);
+    if (rightCacheKey !== leftCacheKey) {
+      nextEntries.set(rightCacheKey, rightPreview);
+    }
+    replacePreviewCache(nextEntries);
+  }
 
   meta.textContent = `设备 ${leftPreview.target} · 当前来源 ${leftPreview.source} · Palette ${selectedPaletteProfile()} · 左 ${ditherAlgorithmLabel(leftAlgorithm)} / 右 ${ditherAlgorithmLabel(rightAlgorithm)} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
   updateCompareSliderUi();
@@ -1845,13 +1932,34 @@ async function submitDeviceConfig(ev) {
 
 async function refreshAll() {
   await loadHealth();
-  await loadDailyRenderConfig();
-  await loadDevices();
-  await loadOverrides();
-  await loadDeviceTokens();
-  await loadPublishHistory();
-  await loadCurrentPreview();
-  await loadDeviceConfigs();
+  await runSection(loadDailyRenderConfig, (err) => {
+    setText('dailyDitherHint', `Daily Dither 加载失败: ${explainAdminLoadError(err)}`);
+  });
+  await runSection(loadDevices, (err) => {
+    setTableMessage('devicesBody', 15, `设备状态加载失败: ${explainAdminLoadError(err)}`);
+    setText('powerSummary', `电池曲线加载失败: ${explainAdminLoadError(err)}`);
+  });
+  await runSection(loadOverrides, (err) => {
+    setTableMessage('overridesBody', 9, `插播列表加载失败: ${explainAdminLoadError(err)}`);
+  });
+  await runSection(loadDeviceTokens, (err) => {
+    const message = explainAdminLoadError(err);
+    setTableMessage('deviceTokensBody', 5, `待审批设备加载失败: ${message}`);
+    setText('deviceTokensHint', `待审批设备加载失败: ${message}`);
+  });
+  await runSection(loadPublishHistory, (err) => {
+    const message = explainAdminLoadError(err);
+    setTimelineMessage('publishHistoryBody', `发布历史加载失败: ${message}`);
+    setText('publishHistoryHint', `发布历史加载失败: ${message}`);
+  });
+  await runSection(() => loadCurrentPreview(true), (err) => {
+    setText('previewMeta', `预览失败: ${explainAdminLoadError(err)}`);
+  });
+  await runSection(loadDeviceConfigs, (err) => {
+    const message = explainAdminLoadError(err);
+    setTimelineMessage('configHistoryBody', `配置历史加载失败: ${message}`);
+    setText('configHistoryHint', `配置历史加载失败: ${message}`);
+  });
   document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString();
 }
 
@@ -1882,7 +1990,6 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
 
 document.getElementById('previewBtn').addEventListener('click', async () => {
   try {
-    previewResponseCache.clear();
     await loadCurrentPreview(true);
   } catch (err) {
     document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
@@ -1926,7 +2033,6 @@ document.getElementById('saveDailyDitherBtn').addEventListener('click', async ()
     document.getElementById('compareLeftAlgorithm').value = currentDailyDitherAlgorithm;
     syncCompareSelectors();
     updateDailyDitherHint(currentDailyDitherAlgorithm);
-    previewResponseCache.clear();
     await loadCurrentPreview(true);
   } catch (err) {
     document.getElementById('dailyDitherHint').textContent = `Daily Dither 保存失败: ${err.message}`;
@@ -1976,21 +2082,25 @@ window.addEventListener('resize', () => {
 });
 
 document.getElementById('deviceId').addEventListener('change', async () => {
-  try {
-    persistPowerPrefs();
-    updateDeviceContextBanner();
-    clearConfigPatchInputs();
-    fillWifiEditorFromDevice(deviceMap.get(document.getElementById('deviceId').value || '*'));
-    updateConfigHints();
-    await loadPublishHistory();
-    await loadCurrentPreview();
-    await loadDeviceConfigs();
-    await loadPowerSamplesSafe();
-  } catch (err) {
-    document.getElementById('publishHistoryHint').textContent = `加载历史失败: ${err.message}`;
-    document.getElementById('previewMeta').textContent = `预览失败: ${err.message}`;
-    document.getElementById('configHistoryHint').textContent = `加载配置历史失败: ${err.message}`;
-  }
+  persistPowerPrefs();
+  updateDeviceContextBanner();
+  clearConfigPatchInputs();
+  fillWifiEditorFromDevice(deviceMap.get(document.getElementById('deviceId').value || '*'));
+  updateConfigHints();
+  await runSection(loadPublishHistory, (err) => {
+    const message = explainAdminLoadError(err);
+    setTimelineMessage('publishHistoryBody', `发布历史加载失败: ${message}`);
+    setText('publishHistoryHint', `发布历史加载失败: ${message}`);
+  });
+  await runSection(() => loadCurrentPreview(true), (err) => {
+    setText('previewMeta', `预览失败: ${explainAdminLoadError(err)}`);
+  });
+  await runSection(loadDeviceConfigs, (err) => {
+    const message = explainAdminLoadError(err);
+    setTimelineMessage('configHistoryBody', `配置历史加载失败: ${message}`);
+    setText('configHistoryHint', `配置历史加载失败: ${message}`);
+  });
+  await loadPowerSamplesSafe();
 });
 
 for (let i = 1; i <= 3; i++) {
@@ -2068,6 +2178,10 @@ initWorkspaceTabs();
 setInterval(() => {
   refreshAll().catch(() => {});
 }, 30000);
+
+window.addEventListener('beforeunload', () => {
+  clearPreviewResponseCache();
+});
 
 refreshAll().catch((err) => {
   document.getElementById('createResult').textContent = `初始化失败: ${err.message}`;

@@ -18,6 +18,7 @@
 - 管理插播列表：`GET /api/v1/overrides`、`DELETE /api/v1/overrides/{id}`
 - 图片下发历史：`GET /api/v1/publish-history`
 - 管理页预览当前下发图：`GET /api/v1/preview/current.bmp`
+  - 管理页可直接使用 `PHOTOFRAME_TOKEN` 预览，不要求再填设备 token
 - 公网日图代理：`GET /public/daily.bmp` / `GET /public/daily.jpg`（token 保护，且优先返回当前生效插播）
 - Web 管理页：`GET /`（含图片发布历史 + 设备配置发布历史 + 当前下发预览 + 设备 token 审批）
 - 设备配置“填空式表单”：不再手写 JSON，灰字提示来自设备最近上报配置
@@ -107,6 +108,7 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 - `PUBLIC_DAILY_BMP_TOKEN`：公网日图接口口令（`/public/daily.bmp`，为空则禁用）
 - `PHOTOFRAME_ASSET_JPEG_QUALITY`：插播上传时生成 `.jpg` 派生资源的质量参数（40-95，默认 85）
 - `DAILY_FETCH_TIMEOUT_SECONDS`：公网日图代理拉取上游超时（秒，默认 10）
+- `DAILY_ASSET_RETENTION_DAYS`：Daily 静态缓存保留天数（默认 14；仅清理 `daily-*.bmp/.jpg`）
 - `TZ`：服务端时区
 
 ## 服务端 Dither（Daily + 插播）
@@ -130,9 +132,9 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
   1. 优先返回该设备当前生效的插播图（若存在）
   2. 否则抓取 `DAILY_IMAGE_URL_TEMPLATE` 的当日图（推荐 JPG），按当前 Daily Dither 算法生成并返回 BMP/JPEG
 - 设备下发策略补充：
-  - 当 `PUBLIC_DAILY_BMP_TOKEN` 已配置时，`/api/v1/device/next` 的 daily 会下发 `/public/daily.*`（支持 `ETag/304`）。
-  - 当 `PUBLIC_DAILY_BMP_TOKEN` 未配置时，daily 会按 `accept_formats` 下发 `/api/v1/preview/current.jpg` 或 `/api/v1/preview/current.bmp`（设备需携带 `X-PhotoFrame-Token`）。
-  - 仅当设备不支持 BMP 时，daily 才回退到 `DAILY_IMAGE_URL_TEMPLATE` 的上游 URL。
+  - `/api/v1/device/next` 现在统一下发静态 `/api/v1/assets/daily-...` 资源；URL 会带 `device_id`，设备继续使用自己的 `X-PhotoFrame-Token` 拉取即可。
+  - Daily 静态缓存会按“日期 + 算法 + palette profile”分桶写入 `data/assets/daily-cache/`，并自动清理超出保留天数的旧日图缓存。
+  - 仅当设备不支持 BMP 时，daily 才回退到 JPEG 派生资源。
 
 更多字段与示例见 `docs/orchestrator-api.md`。
 
@@ -161,7 +163,7 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 
 其中 `/api/v1/device/*` 通过 `X-PhotoFrame-Token` 做设备身份校验（优先按 `DEVICE_TOKEN_MAP_JSON` / `DEVICE_TOKEN_MAP`，否则走“首次请求待审批”模式）。
 
-若你需要公网侧直接走 `/api/v1/device/next` 指令流，还需额外放行 `/api/v1/assets/*`。
+若你需要公网侧直接走 `/api/v1/device/next` 指令流，还需额外放行 `/api/v1/assets/*`，并保留设备请求头里的 `X-PhotoFrame-Token`。
 
 ## 插播开始时间规则
 

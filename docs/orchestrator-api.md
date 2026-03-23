@@ -10,6 +10,9 @@
 
 - 管理接口使用 `PHOTOFRAME_TOKEN`（请求头 `X-PhotoFrame-Token`）。
 - 设备接口（`/api/v1/device/*`）优先使用设备 token 映射（`DEVICE_TOKEN_MAP_JSON` / `DEVICE_TOKEN_MAP`）校验 `X-PhotoFrame-Token`，并绑定 `device_id`。
+- 静态资源接口 `GET /api/v1/assets/{asset_name}` 不再匿名开放：
+  - 管理端可用 `X-PhotoFrame-Token: <PHOTOFRAME_TOKEN>` 或 query `?token=<PHOTOFRAME_TOKEN>`
+  - 设备端可带 `device_id=...`，并继续使用自己的 `X-PhotoFrame-Token`
 - 若未配置设备 token 映射：
   - 设备首次携带新 token 请求时会进入“待审批”；
   - 管理端通过 `POST /api/v1/device-tokens/{device_id}/approve` 信任后放行；
@@ -38,7 +41,7 @@
   "device_id": "pf-a1b2c3d4",
   "server_epoch": 1760000000,
   "source": "override",
-  "image_url": "http://192.168.58.113:18081/api/v1/assets/xxxx.bmp",
+  "image_url": "http://192.168.58.113:18081/api/v1/assets/xxxx.bmp?device_id=pf-a1b2c3d4",
   "valid_until_epoch": 1760001800,
   "poll_after_seconds": 900,
   "default_poll_seconds": 3600,
@@ -53,8 +56,8 @@
 - `poll_after_seconds`：服务建议下次唤醒间隔（用于平衡省电和插播时效）
 - 服务会在每次 `device/next` 响应后记录一条图片下发历史
 - `image_url` 可能是：
-  - `.../api/v1/assets/<sha>.bmp` 或 `.../api/v1/assets/<sha>.jpg`（插播资源；取决于 `accept_formats` 与派生文件是否存在）
-  - `.../public/daily.bmp?device_id=...` / `.../public/daily.jpg?device_id=...`（日图；由 orchestrator 从上游 JPG 抓图后按当前 Daily Dither 算法生成，并提供 `ETag/304`）
+  - `.../api/v1/assets/<sha>.bmp?device_id=...` 或 `.../api/v1/assets/<sha>.jpg?device_id=...`（插播资源；取决于 `accept_formats` 与派生文件是否存在）
+  - `.../api/v1/assets/daily-<date>-<algorithm>-<profile>.bmp?device_id=...` 或对应 `.jpg`（日图；由 orchestrator 从上游 JPG 抓图后按当前 Daily Dither 算法与 palette profile 生成的静态缓存）
 
 ## 2) 设备上报心跳
 
@@ -224,7 +227,7 @@ Query:
   "duration_minutes": 30,
   "start_policy": "next_wakeup",
   "will_expire_before_effective": false,
-  "image_url": "http://192.168.58.113:18081/api/v1/assets/xxxx.bmp",
+  "image_url": "http://192.168.58.113:18081/api/v1/assets/xxxx.bmp?device_id=pf-a1b2c3d4",
   "asset_sha256": "...",
   "expected_effective_epoch": 1760003600
 }
@@ -251,6 +254,10 @@ Query:
 - `DELETE /api/v1/device-tokens/{device_id}`：移除设备 token 记录（重新配对）
 - `GET /api/v1/daily-render-config`：查看当前 Daily Dither 算法与可选项
 - `POST /api/v1/daily-render-config`：更新当前 Daily Dither 算法
+
+以上管理接口都使用：
+
+- `X-PhotoFrame-Token`：管理端 token（当 `PHOTOFRAME_TOKEN` 已配置时必填）
 
 `/api/v1/devices` 额外字段：
 
@@ -321,7 +328,9 @@ Query：
 
 Header：
 
-- `X-PhotoFrame-Token`（当 `PHOTOFRAME_TOKEN` 已配置时必填）
+- `X-PhotoFrame-Token`
+  - 管理页/管理端调试：可直接传 `PHOTOFRAME_TOKEN`
+  - 设备侧调试：也可传已绑定该 `device_id` 的设备 token
 
 响应头：
 
@@ -349,7 +358,7 @@ Header：
       "device_id": "pf-a1b2c3d4",
       "issued_epoch": 1760000500,
       "source": "override",
-      "image_url": "http://192.168.58.113:18081/api/v1/assets/xxxx.bmp",
+      "image_url": "http://192.168.58.113:18081/api/v1/assets/xxxx.bmp?device_id=pf-a1b2c3d4",
       "override_id": 12,
       "poll_after_seconds": 900,
       "valid_until_epoch": 1760001800

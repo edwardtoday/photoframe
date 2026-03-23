@@ -3,4 +3,6 @@ data/orchestrator.db-journal
 data/orchestrator.db-shm
 data/orchestrator.db-wal
 data/assets/*.bmp
+data/assets/*.jpg
+data/assets/daily-cache/
 !data/assets/.gitkeep

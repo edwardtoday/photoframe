@@ -145,6 +145,50 @@ class _DummyUrlopenResponse:
 
 class DitherAlgorithmTests(unittest.TestCase):
 
+  def test_admin_routes_require_token_when_configured(self) -> None:
+    original_token = ORCH.TOKEN
+    ORCH.TOKEN = "admin-secret"
+    try:
+      with self.assertRaises(HTTPException):
+        ORCH.get_daily_render_config()
+      with self.assertRaises(HTTPException):
+        ORCH.devices()
+      with self.assertRaises(HTTPException):
+        ORCH.overrides()
+    finally:
+      ORCH.TOKEN = original_token
+
+  def test_asset_route_requires_token_when_configured(self) -> None:
+    original_token = ORCH.TOKEN
+    ORCH.TOKEN = "admin-secret"
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      original_asset_dir = ORCH.ASSET_DIR
+      ORCH.ASSET_DIR = Path(tmp_dir)
+      sample_path = ORCH.ASSET_DIR / "sample.bmp"
+      sample_path.write_bytes(b"BMstub")
+      try:
+        with self.assertRaises(HTTPException):
+          ORCH.asset("sample.bmp")
+        ORCH.asset("sample.bmp", token="admin-secret")
+      finally:
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.TOKEN = original_token
+
+  def test_preview_route_accepts_admin_token_when_device_map_exists(self) -> None:
+    original_token = ORCH.TOKEN
+    original_device_map = ORCH._DEVICE_TOKEN_MAP_PARSED
+    original_render = ORCH._resolve_current_payload_for_device
+    ORCH.TOKEN = "admin-secret"
+    ORCH._DEVICE_TOKEN_MAP_PARSED = {"pf-demo": "device-secret"}
+    ORCH._resolve_current_payload_for_device = lambda *_args, **_kwargs: (b"BMstub", "daily", "jarvis")
+    try:
+      response = ORCH.preview_current_bmp(device_id="pf-demo", x_photoframe_token="admin-secret")
+      self.assertIsNotNone(response)
+    finally:
+      ORCH.TOKEN = original_token
+      ORCH._DEVICE_TOKEN_MAP_PARSED = original_device_map
+      ORCH._resolve_current_payload_for_device = original_render
+
   def test_preferred_output_format_prefers_bmp_when_device_supports_both(self) -> None:
     self.assertEqual(ORCH._preferred_output_format("jpeg,bmp"), "bmp")
     self.assertEqual(ORCH._preferred_output_format("bmp,jpeg"), "bmp")
@@ -190,8 +234,8 @@ class DitherAlgorithmTests(unittest.TestCase):
 
   def test_stucki_serpentine_changes_output(self) -> None:
     image = _build_gradient_image()
-    normal = list(ORCH._apply_override_dither(image, "stucki").getdata())
-    serpentine = list(ORCH._apply_override_dither(image, "stucki-serpentine").getdata())
+    normal = ORCH._apply_override_dither(image, "stucki").tobytes()
+    serpentine = ORCH._apply_override_dither(image, "stucki-serpentine").tobytes()
     self.assertNotEqual(normal, serpentine)
 
   def test_upload_conversion_generates_distinct_assets_for_different_algorithms(self) -> None:
@@ -243,6 +287,108 @@ class DitherAlgorithmTests(unittest.TestCase):
       with Image.open(io.BytesIO(jpg_bytes)) as rendered_jpg:
         self.assertEqual(rendered_jpg.size, (480, 800))
 
+  def test_render_daily_payload_uses_saved_palette_profile_when_omitted(self) -> None:
+    source_image = _build_gradient_image(size=(96, 96))
+    source_jpeg = io.BytesIO()
+    source_image.save(source_jpeg, format="JPEG", quality=92)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_root = Path(tmp_dir)
+      original_data_dir = ORCH.DATA_DIR
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_db_path = ORCH.DB_PATH
+      original_db = ORCH.DB
+      original_urlopen = ORCH.urlopen
+
+      ORCH.DATA_DIR = tmp_root
+      ORCH.ASSET_DIR = tmp_root / "assets"
+      ORCH.DAILY_CACHE_DIR = tmp_root / "daily-cache"
+      ORCH.DB_PATH = tmp_root / "orchestrator.db"
+      ORCH.DB = None
+      ORCH.urlopen = lambda *_args, **_kwargs: _DummyUrlopenResponse(source_jpeg.getvalue())
+      try:
+        ORCH._init_db()
+        ORCH._set_palette_profile("measured")
+        default_bytes = ORCH._render_daily_payload(1773910400, "https://example.com/daily.jpg", "bmp", "lab-ciede2000")
+        measured_bytes = ORCH._render_daily_payload(
+            1773910400,
+            "https://example.com/daily.jpg",
+            "bmp",
+            "lab-ciede2000",
+            palette_profile="measured",
+        )
+        reference_bytes = ORCH._render_daily_payload(
+            1773910400,
+            "https://example.com/daily.jpg",
+            "bmp",
+            "lab-ciede2000",
+            palette_profile="reference",
+        )
+      finally:
+        if ORCH.DB is not None:
+          ORCH.DB.close()
+          ORCH.DB = None
+        ORCH.DATA_DIR = original_data_dir
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.DB_PATH = original_db_path
+        ORCH.DB = original_db
+        ORCH.urlopen = original_urlopen
+
+      self.assertEqual(default_bytes, measured_bytes)
+      self.assertNotEqual(default_bytes, reference_bytes)
+      self.assertTrue((tmp_root / "daily-cache" / "daily-2026-03-19-lab-ciede2000-measured.bmp").exists())
+
+  def test_upload_conversion_uses_saved_palette_profile_when_omitted(self) -> None:
+    source_image = _build_gradient_image(size=(64, 64))
+    source_png = _encode_png(source_image)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_root = Path(tmp_dir)
+      original_data_dir = ORCH.DATA_DIR
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_db_path = ORCH.DB_PATH
+      original_db = ORCH.DB
+
+      ORCH.DATA_DIR = tmp_root
+      ORCH.ASSET_DIR = tmp_root / "assets"
+      ORCH.DAILY_CACHE_DIR = ORCH.ASSET_DIR / "daily-cache"
+      ORCH.DB_PATH = tmp_root / "orchestrator.db"
+      ORCH.DB = None
+      try:
+        ORCH._init_db()
+        ORCH._set_palette_profile("measured")
+        default_asset, default_sha = ORCH._read_and_convert_bmp(
+            UploadFile(filename="sample.png", file=io.BytesIO(source_png)),
+            "lab-ciede2000",
+        )
+        measured_asset, measured_sha = ORCH._read_and_convert_bmp(
+            UploadFile(filename="sample.png", file=io.BytesIO(source_png)),
+            "lab-ciede2000",
+            palette_profile="measured",
+        )
+        reference_asset, reference_sha = ORCH._read_and_convert_bmp(
+            UploadFile(filename="sample.png", file=io.BytesIO(source_png)),
+            "lab-ciede2000",
+            palette_profile="reference",
+        )
+      finally:
+        if ORCH.DB is not None:
+          ORCH.DB.close()
+          ORCH.DB = None
+        ORCH.DATA_DIR = original_data_dir
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.DB_PATH = original_db_path
+        ORCH.DB = original_db
+
+      self.assertEqual(default_sha, measured_sha)
+      self.assertEqual(default_asset, measured_asset)
+      self.assertNotEqual(default_sha, reference_sha)
+      self.assertNotEqual(default_asset, reference_asset)
+
   def test_daily_dither_setting_roundtrip(self) -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
       tmp_root = Path(tmp_dir)
@@ -268,6 +414,7 @@ class DitherAlgorithmTests(unittest.TestCase):
       finally:
         if ORCH.DB is not None:
           ORCH.DB.close()
+          ORCH.DB = None
         ORCH.DATA_DIR = original_data_dir
         ORCH.ASSET_DIR = original_asset_dir
         ORCH.DAILY_CACHE_DIR = original_daily_cache_dir

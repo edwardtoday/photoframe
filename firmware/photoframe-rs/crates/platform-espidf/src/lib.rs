@@ -10,7 +10,9 @@ use photoframe_domain::FailureKind;
 #[cfg(target_os = "espidf")]
 use photoframe_app::{ImageFormat, WifiCredential};
 #[cfg(target_os = "espidf")]
-use photoframe_contracts::{DeviceConfigPayload, DeviceConfigResponse, RemoteConfigPatch};
+    use photoframe_contracts::{
+        DeviceConfigAppliedRequest, DeviceConfigPayload, DeviceConfigResponse, RemoteConfigPatch,
+    };
 #[cfg(target_os = "espidf")]
 use photoframe_domain::{device_id_from_mac_suffix, token_hex_from_bytes};
 
@@ -532,6 +534,53 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
                 );
             }
             Err(last_error)
+        }
+    }
+
+    fn report_config_applied(
+        &mut self,
+        config: &DeviceRuntimeConfig,
+        config_version: i32,
+        applied: bool,
+        error: &str,
+        applied_epoch: i64,
+    ) -> Result<(), String> {
+        #[cfg(not(target_os = "espidf"))]
+        {
+            let _ = (config, config_version, applied, error, applied_epoch);
+            Err("EspIdfOrchestratorApi 尚未接入 HTTP 客户端".into())
+        }
+
+        #[cfg(target_os = "espidf")]
+        {
+            if !config.orchestrator_enabled
+                || config.orchestrator_base_url.is_empty()
+                || config.device_id.is_empty()
+            {
+                return Ok(());
+            }
+
+            let payload = DeviceConfigAppliedRequest {
+                device_id: config.device_id.clone(),
+                config_version: config_version.max(0),
+                applied,
+                error: error.to_string(),
+                applied_epoch,
+            };
+            let body = serde_json::to_vec(&payload).map_err(|err| err.to_string())?;
+            let url = format!(
+                "{}/api/v1/device/config/applied",
+                trim_trailing_slash(&config.orchestrator_base_url)
+            );
+            let status = http_post_json_status(
+                &url,
+                Some((&PHOTOFRAME_TOKEN_HEADER, &config.orchestrator_token)),
+                &body,
+            )?;
+            if (200..300).contains(&status) {
+                return Ok(());
+            }
+            Err(format!("unexpected status: {status} url={url}"))
         }
     }
 

@@ -41,9 +41,9 @@ const BUILTIN_WIFI_PROFILES: [(&str, &str); 3] = [
     ("Qing-AP", "64139772"),
 ];
 #[cfg(target_os = "espidf")]
-const LEGACY_IMAGE_URL_TEMPLATE: &str = "http://192.168.58.113:8000/image/480x800?date=%DATE%";
+const DEPRECATED_IMAGE_URL_TEMPLATE: &str = "https://picsum.photos/480/800?date=%DATE%";
 #[cfg(target_os = "espidf")]
-const LEGACY_ORCHESTRATOR_BASE_URL: &str = "http://192.168.58.113:18081";
+const DEPRECATED_ORCHESTRATOR_BASE_URL: &str = "http://192.168.233.11:8081";
 #[cfg(target_os = "espidf")]
 const MANUAL_SYNC_SERIAL_GRACE_SECONDS: u64 = 60;
 
@@ -128,11 +128,11 @@ fn migrate_legacy_network_defaults(config: &mut DeviceRuntimeConfig) -> bool {
     let defaults = DeviceRuntimeConfig::default();
     let mut changed = false;
 
-    if config.orchestrator_base_url == LEGACY_ORCHESTRATOR_BASE_URL {
+    if config.orchestrator_base_url == DEPRECATED_ORCHESTRATOR_BASE_URL {
         config.orchestrator_base_url = defaults.orchestrator_base_url;
         changed = true;
     }
-    if config.image_url_template == LEGACY_IMAGE_URL_TEMPLATE {
+    if config.image_url_template == DEPRECATED_IMAGE_URL_TEMPLATE {
         config.image_url_template = defaults.image_url_template;
         changed = true;
     }
@@ -471,7 +471,19 @@ fn main() {
     if matches!(long_press_action, LongPressAction::OpenStaPortalWindow) {
         portal_power_sample =
             runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
-        if let Err(err) = portal::run_sta_portal_window(portal_power_sample, false) {
+        if let Err(err) = portal::run_sta_portal_window(portal::PortalRuntimeStatus {
+            wifi_connected: true,
+            force_refresh: false,
+            last_http_status: 0,
+            image_changed: false,
+            image_source: "portal".into(),
+            next_wakeup_epoch: 0,
+            battery_mv: portal_power_sample.battery_mv,
+            battery_percent: portal_power_sample.battery_percent,
+            charging: portal_power_sample.charging,
+            vbus_good: portal_power_sample.vbus_good,
+            last_error: String::new(),
+        }) {
             println!("photoframe-rs: sta portal window failed: {err}");
         }
     }

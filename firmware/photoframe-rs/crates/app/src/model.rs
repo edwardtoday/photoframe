@@ -170,8 +170,8 @@ pub struct DeviceRuntimeConfig {
     pub remote_config_version: i32,
 }
 
-const DEFAULT_IMAGE_URL_TEMPLATE: &str = "https://picsum.photos/480/800?date=%DATE%";
-const DEFAULT_ORCHESTRATOR_BASE_URL: &str = "http://192.168.233.11:8081";
+const DEFAULT_IMAGE_URL_TEMPLATE: &str = "http://192.168.58.113:8000/image/480x800?date=%DATE%";
+const DEFAULT_ORCHESTRATOR_BASE_URL: &str = "http://192.168.58.113:18081";
 const FIRMWARE_BUILD_VERSION: &str = match option_env!("PHOTOFRAME_FIRMWARE_VERSION") {
     Some(version) => version,
     None => env!("CARGO_PKG_VERSION"),

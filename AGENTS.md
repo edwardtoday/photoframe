@@ -33,5 +33,5 @@
 
 ## 最小验证（相框不在手时）
 
-- 固件编译：`scripts/build-photoframe-fw.sh`
+- 固件编译：`scripts/build-photoframe-rs.sh`
 - orchestrator 语法检查：`python3 -m compileall -q services/photoframe-orchestrator/app`

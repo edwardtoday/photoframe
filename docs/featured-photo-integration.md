@@ -3,7 +3,7 @@
 ## 背景
 
 - 设备：Waveshare `ESP32-S3-PhotoPainter`（480x800 彩色墨水屏）
-- 固件：`firmware/photoframe-fw/`
+- 固件：`firmware/photoframe-rs/`
 - 每日图服务：`immich-featured-today`（示例 `http://192.168.58.113:8000`）
 - 新增编排服务：`services/photoframe-orchestrator/`
 

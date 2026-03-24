@@ -7,18 +7,21 @@ Rust 重写中的新固件工程。
 - 已建立 Cargo workspace，并补齐 `domain` / `contracts` / `app` / `platform-espidf` / `drivers-ffi` / `firmware-device` 六层结构
 - 已有宿主机可验证策略：唤醒动作、长按语义、失败退避、URL 候选、配置应用、电源纠偏
 - 已接入真实设备主链：NVS 配置、设备身份、多 Wi‑Fi 轮询连接、SNTP 校时、orchestrator `device/config` / `device/next` / `device/checkin`、图片下载、BMP/JPEG 渲染、深睡
-- 当前仓库内自研固件逻辑已迁为 Rust；仅保留 Espressif `esp_new_jpeg` 作为外部 vendor 库链接
+- 当前仓库内自研固件逻辑已迁为 Rust；`esp_new_jpeg` 以 vendored 静态库形式随本目录保留
 - 已能通过 Docker 工具链导出可刷机镜像；当前自研固件代码已完成 Rust 收口
 - 2026-03-09 已完成首轮真机 smoke：刷机启动、空 Wi‑Fi 场景进入 AP Portal、`GET /`、`GET /api/config`、`GET /api/wifi/scan`、`POST /api/config` 均已打通
 - 2026-03-09 已完成联网闭环真机验收：STA 连接获取 IP、`device/config` / `device/next` / `device/checkin` 联调通过（200）、主周期可完成后进入休眠决策
 - 2026-03-09 已修复 daily 图片兼容链路：同源图片请求会自动携带 `X-PhotoFrame-Token`，并与 orchestrator 的 BMP 代理下发策略配合，避免上游 progressive JPEG 导致 `render failed`
 - 2026-03-09 已修复 `device/checkin` 回归：上报失败改回 best-effort，不再把整轮主周期打成 `cycle failed`；同时补充按 base URL / attempt 打印的 POST 诊断日志，便于串口定位为何“能拉图但不报电量”
+- 已补齐 `POST /api/v1/device/config/applied` 显式回报，避免仅依赖 orchestrator 侧的隐式版本对齐
+- `device/checkin.poll_interval_seconds` 语义已对齐 orchestrator：表示设备常规轮询周期；实际本轮休眠时长继续看 `sleep_seconds` / `next_wakeup_epoch`
+- Rust 默认配置已回收为与 `fw` 一致的本地基线，不再使用 `picsum.photos` / `192.168.233.11:8081` 这组临时开发默认值；若设备历史里还残留这组值，会在未接收远端配置前自动迁回当前默认基线
 - 已固化构建配置：`ESP_IDF_SDKCONFIG_DEFAULTS` 生效、主任务栈提升到 `16384`、分区表路径对齐 Docker 工作目录
 - USB hold 模式已改为低频电源采样（3 秒一次），降低 PMIC I2C 报错噪音并避免高频采样抖动
 - 固件启动时会自动补齐 3 条内置 Wi‑Fi 配置（`OpenWrt`、`Qing-IoT`、`Qing-AP`），并将 Wi‑Fi 列表容量扩展到 8 条，确保在目标环境可联网且可继续扩展
 - 远端 `wifi_profiles` 配置语义已改为“完整替换设备列表”，支持通过 orchestrator 做增删改（提交空数组可清空）
 - 已补充恢复机制：当设备因误刷整片镜像导致 NVS 丢失时，可通过 `PHOTOFRAME_BOOTSTRAP_CONFIG_JSON` 构建一版恢复固件，把 orchestrator / photo token 等关键配置写回
-- 当前量产路径仍是 `../photoframe-fw/`；Rust 路径现已进入真机联调阶段，后续重点转为按键 / EPD / PMIC / 深睡 / 联网闭环验收
+- 当前设备固件路径就是本目录；后续重点转为按键 / EPD / PMIC / 深睡 / 联网闭环验收
 
 ## 目录
 

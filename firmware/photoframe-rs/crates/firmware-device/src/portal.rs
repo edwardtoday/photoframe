@@ -14,7 +14,7 @@ use std::{
 #[cfg(target_os = "espidf")]
 use esp_idf_sys as sys;
 #[cfg(target_os = "espidf")]
-use photoframe_app::{DeviceRuntimeConfig, LocalConfigPatch, PowerSample, Storage};
+use photoframe_app::{DeviceRuntimeConfig, LocalConfigPatch, Storage};
 #[cfg(target_os = "espidf")]
 use photoframe_platform_espidf::EspIdfStorage;
 #[cfg(target_os = "espidf")]
@@ -77,7 +77,7 @@ static PORTAL_HTML: &str = r#"<!doctype html>
       <option value="1">编排服务：启用（推荐）</option>
       <option value="0">编排服务：关闭</option>
     </select>
-    <input id="orchBaseUrl" placeholder="编排服务地址，例如 http://192.168.233.11:8081" />
+    <input id="orchBaseUrl" placeholder="编排服务地址，例如 http://192.168.58.113:18081" />
     <input id="deviceId" placeholder="设备 ID（留空则自动生成）" />
     <input id="orchToken" placeholder="编排服务 Token（可选）" />
     <input id="photoToken" placeholder="图片 Token（可选）" />
@@ -189,16 +189,19 @@ static PORTAL_HTML: &str = r#"<!doctype html>
 "#;
 
 #[cfg(target_os = "espidf")]
-#[derive(Clone, Copy)]
-struct PortalRuntimeStatus {
-    wifi_connected: bool,
-    force_refresh: bool,
-    last_http_status: i32,
-    image_changed: bool,
-    battery_mv: i32,
-    battery_percent: i32,
-    charging: i32,
-    vbus_good: i32,
+#[derive(Clone)]
+pub(crate) struct PortalRuntimeStatus {
+    pub(crate) wifi_connected: bool,
+    pub(crate) force_refresh: bool,
+    pub(crate) last_http_status: i32,
+    pub(crate) image_changed: bool,
+    pub(crate) image_source: String,
+    pub(crate) next_wakeup_epoch: i64,
+    pub(crate) battery_mv: i32,
+    pub(crate) battery_percent: i32,
+    pub(crate) charging: i32,
+    pub(crate) vbus_good: i32,
+    pub(crate) last_error: String,
 }
 
 #[cfg(target_os = "espidf")]
@@ -434,13 +437,13 @@ fn build_config_json(config: &DeviceRuntimeConfig, status: PortalRuntimeStatus) 
         "force_refresh": status.force_refresh,
         "last_http_status": status.last_http_status,
         "image_changed": status.image_changed,
-        "image_source": "daily",
-        "next_wakeup_epoch": 0,
+        "image_source": status.image_source,
+        "next_wakeup_epoch": status.next_wakeup_epoch,
         "battery_mv": status.battery_mv,
         "battery_percent": status.battery_percent,
         "charging": status.charging,
         "vbus_good": status.vbus_good,
-        "last_error": "",
+        "last_error": status.last_error,
     }).to_string()
 }
 
@@ -505,7 +508,7 @@ unsafe extern "C" fn handle_root(req: *mut sys::httpd_req_t) -> i32 {
 unsafe extern "C" fn handle_get_config(req: *mut sys::httpd_req_t) -> i32 {
     let state = state_from_req(req);
     let config = state.config.lock().unwrap().clone();
-    let body = build_config_json(&config, state.status);
+    let body = build_config_json(&config, state.status.clone());
     send_json(req, &body)
 }
 
@@ -772,34 +775,32 @@ pub fn run_ap_portal_forever() -> Result<(), String> {
 
     let mut storage = EspIdfStorage::new()?;
     let config = storage.load_config()?;
+    let power_sample = crate::runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
     let status = PortalRuntimeStatus {
         wifi_connected: false,
         force_refresh: false,
         last_http_status: 0,
         image_changed: false,
-        battery_mv: -1,
-        battery_percent: -1,
-        charging: -1,
-        vbus_good: -1,
+        image_source: "portal".into(),
+        next_wakeup_epoch: 0,
+        battery_mv: power_sample.battery_mv,
+        battery_percent: power_sample.battery_percent,
+        charging: power_sample.charging,
+        vbus_good: power_sample.vbus_good,
+        last_error: if config.has_wifi_credentials() {
+            String::new()
+        } else {
+            "missing wifi credentials".into()
+        },
     };
     let server = RustPortalServer::start(config, status, true)?;
     portal_loop(&server, None)
 }
 
 #[cfg(target_os = "espidf")]
-pub fn run_sta_portal_window(power_sample: PowerSample, force_refresh: bool) -> Result<(), String> {
+pub fn run_sta_portal_window(status: PortalRuntimeStatus) -> Result<(), String> {
     let mut storage = EspIdfStorage::new()?;
     let config = storage.load_config()?;
-    let status = PortalRuntimeStatus {
-        wifi_connected: true,
-        force_refresh,
-        last_http_status: 0,
-        image_changed: false,
-        battery_mv: power_sample.battery_mv,
-        battery_percent: power_sample.battery_percent,
-        charging: power_sample.charging,
-        vbus_good: power_sample.vbus_good,
-    };
     let server = RustPortalServer::start(config, status, false)?;
     portal_loop(&server, Some(120))
 }
@@ -810,6 +811,6 @@ pub fn run_ap_portal_forever() -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "espidf"))]
-pub fn run_sta_portal_window(_power_sample: (), _force_refresh: bool) -> Result<(), String> {
+pub fn run_sta_portal_window(_status: ()) -> Result<(), String> {
     Err("portal only works on espidf target".into())
 }

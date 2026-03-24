@@ -37,17 +37,47 @@ scripts/build-upstream.sh
 
 > 本仓库在 2026-02-07 已验证该步骤可编译通过，并生成 `xiaozhi.bin`。
 
-## 阶段 C：编译自有固件
+## 阶段 C：编译设备固件（Rust）
 
 ```bash
-scripts/build-photoframe-fw.sh
+scripts/build-photoframe-rs.sh
 ```
 
-预期：成功生成 `firmware/photoframe-fw/build/flasher_args.json` 与 `photoframe_fw.bin`。
+预期：成功生成：
 
-> 本仓库在 2026-02-07 已验证该步骤可编译通过。
+- `firmware/photoframe-rs/dist/photoframe-rs-app.bin`
+- `firmware/photoframe-rs/dist/photoframe-rs-fullchip.bin`
 
-## 烧录（宿主机）
+> 本仓库已验证该步骤可编译通过。
+
+## 使用 y9000 的 Docker 远端编译
+
+当本机不想直接跑 Docker，或需要借用 `y9000` 的 CPU / Docker 环境时，使用：
+
+```bash
+scripts/build-with-y9000.sh --bootstrap-if-missing
+```
+
+说明：
+
+- 默认 target 是 `rs`，即远端执行 `scripts/build-photoframe-rs.sh`
+- 首次运行若 `y9000` 上还没有 `/home/qingpei/git/github/photoframe`，需要加 `--bootstrap-if-missing`
+- 脚本会先 rsync 工作区到远端，再在远端调用现有构建脚本，所以不会改动本机 `idf-docker.sh` 的行为
+- `rs` 构建产物会按宿主机烧录所需的最小集合拉回本地 `firmware/photoframe-rs/dist/` 与 `target/.../release/`
+- 若要编译上游固件，可显式使用：
+
+```bash
+scripts/build-with-y9000.sh --target upstream --bootstrap-if-missing
+```
+
+若要把恢复配置等环境变量传给远端 `rs` 构建，可显式转发：
+
+```bash
+export PHOTOFRAME_BOOTSTRAP_CONFIG_JSON='{"timezone":"Asia/Shanghai"}'
+scripts/build-with-y9000.sh --target rs --bootstrap-if-missing --env PHOTOFRAME_BOOTSTRAP_CONFIG_JSON
+```
+
+## 烧录（宿主机，Rust 固件）
 
 1) 先找到串口：
 
@@ -58,21 +88,16 @@ ls -1 /dev/cu.*
 2) 烧录：
 
 ```bash
-scripts/flash-host.py \
-  --port /dev/cu.usbmodemXXXX \
-  --project-dir firmware/photoframe-fw
+scripts/flash-photoframe-rs.sh /dev/cu.usbmodemXXXX 115200
 ```
 
 若仅检查命令拼装是否正确（不实际烧录）：
 
 ```bash
-scripts/flash-host.py \
-  --port /dev/cu.usbmodemXXXX \
-  --project-dir firmware/photoframe-fw \
-  --dry-run
+scripts/flash-photoframe-rs.sh /dev/cu.usbmodemXXXX 115200 --dry-run
 ```
 
-> 这里会自动读取 `build/flasher_args.json` 组装 esptool 命令，以减少手工抄地址的错误。
+> Rust 烧录脚本会优先使用 `dist/photoframe-rs-app.bin`，并校验它不早于当前 ELF，避免误刷陈旧产物。
 
 ## 串口监控（宿主机）
 

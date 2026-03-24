@@ -44,7 +44,9 @@ struct FakeOrchestrator {
     directive_calls: usize,
     last_preferred_poll_seconds: Option<u64>,
     checkin_calls: usize,
+    last_checkin_payload: Option<DeviceCheckinRequest>,
     checkin_error: Option<String>,
+    config_applied_calls: Vec<(i32, bool, String)>,
     debug_stages: Vec<String>,
 }
 impl OrchestratorApi for FakeOrchestrator {
@@ -71,12 +73,26 @@ impl OrchestratorApi for FakeOrchestrator {
     fn report_checkin(
         &mut self,
         _base_urls: &[String],
-        _payload: &DeviceCheckinRequest,
+        payload: &DeviceCheckinRequest,
     ) -> Result<(), String> {
         self.checkin_calls += 1;
+        self.last_checkin_payload = Some(payload.clone());
         if let Some(error) = &self.checkin_error {
             return Err(error.clone());
         }
+        Ok(())
+    }
+
+    fn report_config_applied(
+        &mut self,
+        _config: &DeviceRuntimeConfig,
+        config_version: i32,
+        applied: bool,
+        error: &str,
+        _applied_epoch: i64,
+    ) -> Result<(), String> {
+        self.config_applied_calls
+            .push((config_version, applied, error.to_string()));
         Ok(())
     }
 
@@ -195,6 +211,10 @@ fn updated_config_requests_reboot_before_fetch() {
 
     assert_eq!(report.exit, CycleExit::RebootForConfig);
     assert!(runner.image_fetcher().fetch_calls.is_empty());
+    assert_eq!(
+        runner.orchestrator().config_applied_calls,
+        vec![(2, true, String::new())]
+    );
 }
 
 #[test]
@@ -411,6 +431,14 @@ fn successful_cycle_uses_directive_and_reports_checkin() {
     assert!(report.portal_window_opened);
     assert_eq!(runner.orchestrator().checkin_calls, 1);
     assert_eq!(runner.display().render_calls, 1);
+    assert_eq!(
+        runner.orchestrator().last_checkin_payload.as_ref().map(|payload| (
+            payload.sleep_seconds,
+            payload.poll_interval_seconds,
+            payload.image_source.as_str()
+        )),
+        Some((900, 3600, "override"))
+    );
 }
 
 #[test]

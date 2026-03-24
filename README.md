@@ -39,8 +39,7 @@
 ## 仓库结构
 
 - `upstream/ESP32-S3-PhotoPainter/`：Waveshare 开源固件（Git submodule）
-- `firmware/photoframe-fw/`：你的私有固件实现（不改 upstream）
-- `firmware/photoframe-rs/`：Rust 重写中的新固件工程（分阶段迁移）
+- `firmware/photoframe-rs/`：当前设备固件工程（Rust + ESP-IDF）
 - `services/photoframe-orchestrator/`：NAS 侧编排服务（Docker + Web）
 - `references/waveshare/wiki/`：Wiki 页面快照/链接索引
 - `references/waveshare/downloads/`：从 Wiki 相关链接下载的资料（默认不入 git，可脚本重拉）
@@ -72,6 +71,12 @@ scripts/sync-waveshare-official.sh
 cat docs/workflow-esp-idf-docker.md
 ```
 
+5) 若要复用 `y9000` 上的 Docker 做远端编译：
+
+```bash
+scripts/build-with-y9000.sh --bootstrap-if-missing
+```
+
 ## 固件开发进度
 
 - A：Docker 编译 + 宿主机烧录/调试链路 ✅
@@ -83,22 +88,18 @@ cat docs/workflow-esp-idf-docker.md
 - G：按键唤醒 120 秒局域网配置窗口 ✅
 - H：电池/充电状态采集与 orchestrator 上报 ✅
 
-## Rust 重写计划（进行中）
+## 固件现状
 
-- 当前量产路径仍为 `firmware/photoframe-fw/`（C++ / ESP-IDF）
-- 新路径 `firmware/photoframe-rs/` 已能通过 **Docker 工具链** 编译并导出可刷机镜像：
-  - 构建：`scripts/build-photoframe-rs.sh`
-  - 产物：`firmware/photoframe-rs/dist/photoframe-rs-app.bin`、`firmware/photoframe-rs/dist/photoframe-rs-fullchip.bin`
-- Rust 固件当前已接通：NVS 配置、设备身份生成、多 Wi‑Fi 轮询连接、SNTP 校时、orchestrator 配置同步 / 指令拉取、图片下载、BMP/JPEG 渲染、checkin 上报、按键唤醒判定、AP/STA Portal、深睡进入；自研固件代码已改为 Rust 实现
-- 当前阶段目标已从“只能编译骨架”推进到“自研固件全 Rust 化、可编译、可出包、主闭环打通”；2026-03-09 已完成真机 AP Portal smoke + 联网闭环验收（`device/config` / `device/next` / `device/checkin`）
-- Rust 固件构建配置已收敛：`sdkconfig.defaults` 通过 `.cargo/config.toml` 注入、主任务栈提升到 `16384`、分区表路径对齐 Docker 工作目录
-- Rust 固件每次启动都会确保内置 3 条网络配置（`OpenWrt` / `Qing-IoT` / `Qing-AP`）存在；Wi‑Fi 列表容量已扩至 8 条，并已支持通过 orchestrator 对 `wifi_profiles` 做增删改查（完整替换语义）
-- Rust 现场升级默认使用 `scripts/flash-photoframe-rs.sh` 分段刷写，保留 NVS；`photoframe-rs-fullchip.bin` 只用于空片首刷，误刷会清空设备本地 token / Wi‑Fi / orchestrator 配置
-- 下一阶段的主要工作是 **真机联调与行为验收**（按键/Portal 提交链路/EPD/PMIC/功耗/联网闭环）
-- 重写基线文档：`docs/plans/2026-03-07-rust-firmware-rewrite-design.md`
+- 当前设备固件路径为 `firmware/photoframe-rs/`
+- 构建：`scripts/build-photoframe-rs.sh`
+- 远端 Docker 构建：`scripts/build-with-y9000.sh --bootstrap-if-missing`
+- 产物：`firmware/photoframe-rs/dist/photoframe-rs-app.bin`、`firmware/photoframe-rs/dist/photoframe-rs-fullchip.bin`
+- 现场升级默认使用 `scripts/flash-photoframe-rs.sh` 分段刷写，保留 NVS；`photoframe-rs-fullchip.bin` 只用于空片首刷，误刷会清空设备本地 token / Wi‑Fi / orchestrator 配置
+- 当前已接通：NVS 配置、设备身份生成、多 Wi‑Fi 轮询连接、SNTP 校时、orchestrator 配置同步 / 指令拉取、图片下载、BMP/JPEG 渲染、显式 `config/applied` 回报、checkin 上报、按键唤醒判定、AP/STA Portal、深睡进入
+- 构建基线文档：`docs/plans/2026-03-07-rust-firmware-rewrite-design.md`
 - 实施计划：`docs/plans/2026-03-07-rust-firmware-rewrite.md`
 - 里程碑发布说明：`docs/releases/v0.1.0-rust-fw.md`（tag：`v0.1.0-rust-fw`）
-- 本次重写第一优先级仍是：稳定性、可测试性、省电行为不回退
+- 第一优先级仍是：稳定性、可测试性、省电行为不回退
 
 ## 启动 NAS 编排服务（镜像拉取模式）
 

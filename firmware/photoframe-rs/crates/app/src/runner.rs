@@ -40,6 +40,18 @@ pub trait OrchestratorApi {
         payload: &DeviceCheckinRequest,
     ) -> Result<(), String>;
 
+    fn report_config_applied(
+        &mut self,
+        config: &DeviceRuntimeConfig,
+        config_version: i32,
+        applied: bool,
+        error: &str,
+        applied_epoch: i64,
+    ) -> Result<(), String> {
+        let _ = (config, config_version, applied, error, applied_epoch);
+        Ok(())
+    }
+
     fn report_debug_stage(
         &mut self,
         _config: &DeviceRuntimeConfig,
@@ -183,7 +195,23 @@ where
             && !config.orchestrator_base_url.is_empty()
             && let Some(next_config) = self.orchestrator.sync_config(&config, now_epoch)?
         {
-            self.storage.save_config(&next_config)?;
+            if let Err(err) = self.storage.save_config(&next_config) {
+                let _ = self.orchestrator.report_config_applied(
+                    &config,
+                    next_config.remote_config_version,
+                    false,
+                    &err,
+                    now_epoch,
+                );
+                return Err(format!("save synced config failed: {err}"));
+            }
+            let _ = self.orchestrator.report_config_applied(
+                &config,
+                next_config.remote_config_version,
+                true,
+                "",
+                now_epoch,
+            );
             return Ok(CycleReport {
                 exit: CycleExit::RebootForConfig,
                 action,
@@ -468,7 +496,9 @@ where
             checkin_epoch: self.clock.now_epoch(),
             next_wakeup_epoch,
             sleep_seconds,
-            poll_interval_seconds: sleep_seconds.min(u64::from(u32::MAX)) as u32,
+            poll_interval_seconds: u64::from(config.interval_minutes.max(1))
+                .saturating_mul(60)
+                .min(u64::from(u32::MAX)) as u32,
             failure_count: config.failure_count,
             last_http_status,
             fetch_ok,

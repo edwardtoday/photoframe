@@ -37,11 +37,14 @@ CMD="$*"
 
 mkdir -p "${HOME}/.cargo/registry" "${HOME}/.cargo/git" "${HOME}/.espressif"
 
+CONTAINER_CMD="git config --global --add safe.directory /work >/dev/null 2>&1 || true; . /opt/esp/idf/export.sh >/dev/null && . /root/export-esp.sh >/dev/null && ${CMD}"
+
 docker run --rm "${TTY_ARGS[@]}" \
   -v "${REPO_ROOT}:/work" \
   -v "${HOME}/.cargo/registry:/root/.cargo/registry" \
   -v "${HOME}/.cargo/git:/root/.cargo/git" \
   -v "${HOME}/.espressif:/root/.espressif" \
   -w "${WORKDIR}" \
+  --entrypoint /bin/bash \
   "${IMAGE}" \
-  ". /opt/esp/idf/export.sh >/dev/null && . /root/export-esp.sh >/dev/null && ${CMD}"
+  -lc "${CONTAINER_CMD}"

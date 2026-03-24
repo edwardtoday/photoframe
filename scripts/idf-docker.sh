@@ -42,6 +42,8 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   echo "[info] macOS 上 Docker Desktop 不支持稳定 USB 直通；建议容器内编译，宿主机烧录/串口监控。"
 fi
 
+CONTAINER_CMD="git config --global --add safe.directory /work >/dev/null 2>&1 || true; $*"
+
 docker run --rm "${TTY_ARGS[@]}" \
   -v "${REPO_ROOT}:/work" \
   -v "${HOME}/.espressif:/root/.espressif" \
@@ -49,4 +51,4 @@ docker run --rm "${TTY_ARGS[@]}" \
   -w "${CONTAINER_WORKDIR}" \
   "${DEVICE_ARGS[@]}" \
   "${IMAGE}" \
-  bash -lc "$*"
+  bash -lc "${CONTAINER_CMD}"

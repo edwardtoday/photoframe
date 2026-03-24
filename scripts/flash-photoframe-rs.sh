@@ -54,7 +54,18 @@ fi
 
 FLASHER_ARGS="${PHOTOFRAME_FLASHER_ARGS_JSON_OVERRIDE:-}"
 if [[ -z "${FLASHER_ARGS}" ]]; then
-  FLASHER_ARGS="$(find "${BUILD_ROOT}/build" -path '*/out/build/flasher_args.json' | head -n 1)"
+  FLASHER_ARGS="$(
+    python3 - "${BUILD_ROOT}" <<'PY'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1]) / "build"
+matches = [path for path in root.glob("**/out/build/flasher_args.json") if path.is_file()]
+if matches:
+    newest = max(matches, key=lambda path: path.stat().st_mtime)
+    print(str(newest))
+PY
+  )"
 fi
 if [[ -z "${FLASHER_ARGS}" || ! -f "${FLASHER_ARGS}" ]]; then
   echo "[error] 未找到 flasher_args.json；请先执行 scripts/build-photoframe-rs.sh" >&2

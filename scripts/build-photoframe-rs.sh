@@ -8,7 +8,7 @@ ELF_REL="/work/firmware/photoframe-rs/target/xtensa-esp32s3-espidf/release/photo
 ELF_ABS="${REPO_ROOT}/firmware/photoframe-rs/target/xtensa-esp32s3-espidf/release/photoframe-firmware-device"
 FULL_BIN_ABS="${DIST_DIR}/photoframe-rs-fullchip.bin"
 APP_BIN_ABS="${DIST_DIR}/photoframe-rs-app.bin"
-PARTITIONS_CSV="/work/firmware/photoframe-fw/partitions.csv"
+PARTITIONS_CSV="/work/firmware/photoframe-rs/partitions.csv"
 
 mkdir -p "${DIST_DIR}"
 rm -f "${DIST_DIR}/photoframe-rs.bin"

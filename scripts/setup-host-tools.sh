@@ -11,4 +11,4 @@ python3 -m venv "${VENV_DIR}"
 "${VENV_DIR}/bin/python" -m pip install esptool pyserial
 
 echo "[done] host 工具已就绪: ${VENV_DIR}"
-echo "[hint] 可用 scripts/flash-host.py 与 scripts/monitor-host.sh"
+echo "[hint] 设备固件可用 scripts/flash-photoframe-rs.sh 与 scripts/monitor-host.sh"

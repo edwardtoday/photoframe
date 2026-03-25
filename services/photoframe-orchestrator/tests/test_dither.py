@@ -129,9 +129,10 @@ def _pixel_set(image: Image.Image) -> set[tuple[int, int, int]]:
 
 class _DummyUrlopenResponse:
 
-  def __init__(self, payload: bytes, status: int = 200) -> None:
+  def __init__(self, payload: bytes, status: int = 200, headers: dict[str, str] | None = None) -> None:
     self._payload = payload
     self.status = status
+    self.headers = headers or {}
 
   def read(self) -> bytes:
     return self._payload
@@ -431,6 +432,122 @@ class DitherAlgorithmTests(unittest.TestCase):
         self.assertEqual(cached_image.getpixel((0, 0)), (255, 0, 0))
       with Image.open(io.BytesIO(fresh_bytes)) as fresh_image:
         self.assertEqual(fresh_image.getpixel((0, 0)), (0, 0, 255))
+
+  def test_render_daily_payload_revalidates_with_304_without_rewriting_files(self) -> None:
+    source = Image.new("RGB", (96, 96), (255, 0, 0))
+    source_jpeg = io.BytesIO()
+    source.save(source_jpeg, format="JPEG", quality=92)
+    upstream_headers = {
+        "ETag": '"etag-1"',
+        "Last-Modified": "Tue, 24 Mar 2026 00:00:00 GMT",
+    }
+    requests: list[dict[str, str]] = []
+    call_count = 0
+
+    def fake_urlopen(req, **_kwargs):
+      nonlocal call_count
+      requests.append({str(key).lower(): str(value) for key, value in req.header_items()})
+      call_count += 1
+      if call_count == 1:
+        return _DummyUrlopenResponse(source_jpeg.getvalue(), headers=upstream_headers)
+      return _DummyUrlopenResponse(b"", status=304, headers=upstream_headers)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_urlopen = ORCH.urlopen
+      original_revalidate_seconds = ORCH.DAILY_UPSTREAM_REVALIDATE_SECONDS
+      ORCH.DAILY_CACHE_DIR = Path(tmp_dir) / "daily-cache"
+      ORCH.DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+      ORCH.urlopen = fake_urlopen
+      ORCH.DAILY_UPSTREAM_REVALIDATE_SECONDS = 0
+      try:
+        bmp_bytes = ORCH._render_daily_payload(1773910400, "https://example.com/daily.jpg", "bmp", "jarvis")
+        bmp_name, jpg_name = ORCH._daily_asset_names(1773910400, "jarvis-reference")
+        bmp_path = ORCH.DAILY_CACHE_DIR / bmp_name
+        jpg_path = ORCH.DAILY_CACHE_DIR / jpg_name
+        bmp_mtime = bmp_path.stat().st_mtime_ns
+        jpg_mtime = jpg_path.stat().st_mtime_ns
+
+        bmp_again = ORCH._render_daily_payload(1773910400, "https://example.com/daily.jpg", "bmp", "jarvis")
+      finally:
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.urlopen = original_urlopen
+        ORCH.DAILY_UPSTREAM_REVALIDATE_SECONDS = original_revalidate_seconds
+
+      self.assertEqual(bmp_again, bmp_bytes)
+      self.assertEqual(call_count, 2)
+      self.assertEqual(bmp_path.stat().st_mtime_ns, bmp_mtime)
+      self.assertEqual(jpg_path.stat().st_mtime_ns, jpg_mtime)
+      self.assertEqual(requests[1].get("if-none-match"), '"etag-1"')
+      self.assertEqual(requests[1].get("if-modified-since"), "Tue, 24 Mar 2026 00:00:00 GMT")
+
+  def test_render_daily_payload_keeps_existing_files_when_upstream_rerender_is_identical(self) -> None:
+    first_source = Image.new("RGB", (96, 96), (255, 0, 0))
+    second_source = Image.new("RGB", (96, 96), (255, 0, 0))
+    first_jpeg = io.BytesIO()
+    second_jpeg = io.BytesIO()
+    first_source.save(first_jpeg, format="JPEG", quality=92)
+    second_source.save(second_jpeg, format="JPEG", quality=75)
+    upstream_headers = [
+        {
+            "ETag": '"etag-1"',
+            "Last-Modified": "Tue, 24 Mar 2026 00:00:00 GMT",
+        },
+        {
+            "ETag": '"etag-2"',
+            "Last-Modified": "Tue, 24 Mar 2026 00:10:00 GMT",
+        },
+    ]
+    call_count = 0
+
+    def fake_urlopen(_req, **_kwargs):
+      nonlocal call_count
+      payload = first_jpeg.getvalue() if call_count == 0 else second_jpeg.getvalue()
+      headers = upstream_headers[min(call_count, len(upstream_headers) - 1)]
+      call_count += 1
+      return _DummyUrlopenResponse(payload, headers=headers)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_urlopen = ORCH.urlopen
+      original_revalidate_seconds = ORCH.DAILY_UPSTREAM_REVALIDATE_SECONDS
+      ORCH.DAILY_CACHE_DIR = Path(tmp_dir) / "daily-cache"
+      ORCH.DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+      ORCH.urlopen = fake_urlopen
+      ORCH.DAILY_UPSTREAM_REVALIDATE_SECONDS = 0
+      try:
+        jpg_bytes = ORCH._render_daily_payload(1773910400, "https://example.com/daily.jpg", "jpg", "jarvis")
+        bmp_name, jpg_name = ORCH._daily_asset_names(1773910400, "jarvis-reference")
+        bmp_path = ORCH.DAILY_CACHE_DIR / bmp_name
+        jpg_path = ORCH.DAILY_CACHE_DIR / jpg_name
+        bmp_mtime = bmp_path.stat().st_mtime_ns
+        jpg_mtime = jpg_path.stat().st_mtime_ns
+
+        jpg_again = ORCH._render_daily_payload(1773910400, "https://example.com/daily.jpg", "jpg", "jarvis")
+      finally:
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.urlopen = original_urlopen
+        ORCH.DAILY_UPSTREAM_REVALIDATE_SECONDS = original_revalidate_seconds
+
+      self.assertEqual(call_count, 2)
+      self.assertEqual(jpg_again, jpg_bytes)
+      self.assertEqual(bmp_path.stat().st_mtime_ns, bmp_mtime)
+      self.assertEqual(jpg_path.stat().st_mtime_ns, jpg_mtime)
+
+  def test_daily_assets_use_revalidated_cache_control(self) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      ORCH.ASSET_DIR = Path(tmp_dir) / "assets"
+      ORCH.DAILY_CACHE_DIR = ORCH.ASSET_DIR / "daily-cache"
+      try:
+        daily_path = ORCH.DAILY_CACHE_DIR / "daily-2026-03-24-sierra-reference.jpg"
+        override_path = ORCH.ASSET_DIR / "override.jpg"
+        self.assertEqual(ORCH._daily_asset_cache_control(daily_path), "private, no-cache")
+        self.assertEqual(ORCH._daily_asset_cache_control(override_path), "public, max-age=31536000, immutable")
+      finally:
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
 
   def test_upload_conversion_uses_saved_palette_profile_when_omitted(self) -> None:
     source_image = _build_gradient_image(size=(64, 64))

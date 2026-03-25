@@ -76,6 +76,7 @@ SSH_IDENTITY_FILE=~/.ssh/id_rsa scripts/deploy-orchestrator-offline-to-tvs675-la
 - 本机构建 `linux/amd64` 镜像并导出 tar
 - 通过 `scp` 投送到 NAS
 - NAS 执行 `docker load`
+- 默认把远端 `docker-compose.yml` 的 `image:` 固定到本次发布的 `IMAGE_REPO:TAG`，避免 watchtower 被 Docker Hub 上的 `latest` 覆盖
 - 在远端 compose 目录执行 `docker compose up -d --pull never --force-recreate`
 
 ## 发布 multi-arch 镜像
@@ -110,6 +111,7 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 - `PUBLIC_DAILY_BMP_TOKEN`：公网日图接口口令（`/public/daily.bmp`，为空则禁用）
 - `PHOTOFRAME_ASSET_JPEG_QUALITY`：插播上传时生成 `.jpg` 派生资源的质量参数（40-95，默认 85）
 - `DAILY_FETCH_TIMEOUT_SECONDS`：公网日图代理拉取上游超时（秒，默认 10）
+- `DAILY_UPSTREAM_REVALIDATE_SECONDS`：daily 缓存向上游做条件校验的最小间隔（秒，默认 300）；到期后会带 `If-None-Match` / `If-Modified-Since` 回源确认是否变更
 - `DAILY_ASSET_RETENTION_DAYS`：Daily 静态缓存保留天数（默认 14；仅清理 `daily-*.bmp/.jpg`）
 - `TZ`：服务端时区
 
@@ -117,6 +119,7 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 
 - 控制台“当前下发预览”支持选择并保存 Daily Dither 算法；预览会即时试算，保存后 `/public/daily.*` 与 `/api/v1/preview/current.*` 会统一使用该算法。
 - Daily 链路现在默认从上游 JPG 抓图，服务端会统一裁剪到 `480x800`，再量化到设备 6 色调色板并生成 `.bmp` / `.jpg` 缓存。
+- Daily 缓存会记住上游 `ETag` / `Last-Modified`；到达 `DAILY_UPSTREAM_REVALIDATE_SECONDS` 后会做条件回源。若上游未变，或虽回源成功但最终渲染结果字节不变，则不会重写本地文件，便于设备继续命中稳定 ETag。
 - 控制台“创建插播”也支持选择服务端 dither 算法。
 - `保持原图`：维持当前行为，只做裁剪缩放，不做服务端预抖动。
 - 其余选项会在 orchestrator 侧先量化到设备 6 色调色板，再生成 `.bmp` / `.jpg` 派生资源。

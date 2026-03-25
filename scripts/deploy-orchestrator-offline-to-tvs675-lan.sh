@@ -20,6 +20,7 @@ usage() {
   PLATFORM=linux/amd64
   BUILDER_NAME=photoframe-offline
   REMOTE_DIR=/share/ZFS19_DATA/Container/docker/photoframe-orchestrator
+  REMOTE_COMPOSE_FILE=docker-compose.yml
   REMOTE_DOCKER=...   # 可显式指定 QNAP Container Station 的 docker 路径
   SSH_IDENTITY_FILE=... # 额外指定 ssh 私钥（会自动加 -o IdentitiesOnly=yes -i）
   SSH_EXTRA_OPTS=...    # 追加 ssh 参数（按空格分割），用于 StrictHostKeyChecking 等
@@ -30,6 +31,7 @@ usage() {
   KEEP_LOCAL_TAR=1    # 保留本地 tar
   KEEP_REMOTE_TAR=1   # 保留 NAS 上的 tar
   NO_DB_BACKUP=1      # 不备份 sqlite db
+  PIN_REMOTE_IMAGE_TAG=1 # 远端 compose 默认固定到 IMAGE_REPO:TAG，避免 watchtower 被 latest 覆盖
 EOF
 }
 
@@ -126,6 +128,7 @@ IMAGE_REPO="${IMAGE_REPO:-edwardtoday/photoframe-orchestrator}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 BUILDER_NAME="${BUILDER_NAME:-photoframe-offline}"
 REMOTE_DIR="${REMOTE_DIR:-/share/ZFS19_DATA/Container/docker/photoframe-orchestrator}"
+REMOTE_COMPOSE_FILE="${REMOTE_COMPOSE_FILE:-docker-compose.yml}"
 APP_VERSION="${PHOTOFRAME_ORCHESTRATOR_VERSION:-0.2.8}"
 APP_GIT_SHA="$(git -C "${REPO_ROOT}" rev-parse --short=8 HEAD)"
 if ! git -C "${REPO_ROOT}" diff --quiet --exit-code; then
@@ -157,11 +160,13 @@ fi
 platform_slug="${PLATFORM//\//_}"
 LOCAL_TAR="/tmp/photoframe-orchestrator_${TAG}_${platform_slug}.tar"
 REMOTE_TAR="${REMOTE_DIR}/photoframe-orchestrator_${TAG}_${platform_slug}.tar"
+REMOTE_IMAGE_REF="${IMAGE_REPO}:${TAG}"
 
 log "tag=${TAG}"
 log "host=${HOST}"
 log "platform=${PLATFORM}"
 log "image=${IMAGE_REPO}:${TAG} (plus latest)"
+log "remote_image_ref=${REMOTE_IMAGE_REF}"
 log "app_version=${APP_VERSION}"
 log "app_git_sha=${APP_GIT_SHA}"
 log "local_tar=${LOCAL_TAR}"
@@ -209,6 +214,8 @@ set -e
 DOCKER="${REMOTE_DOCKER_RESOLVED}"
 REMOTE_DIR="${REMOTE_DIR}"
 REMOTE_TAR="${REMOTE_TAR}"
+REMOTE_COMPOSE_FILE="${REMOTE_COMPOSE_FILE}"
+REMOTE_IMAGE_REF="${REMOTE_IMAGE_REF}"
 
 if [ -x "\${DOCKER}" ]; then
   :
@@ -226,6 +233,10 @@ if [ ! -f "\${REMOTE_TAR}" ]; then
   echo "[error] remote tar not found: \${REMOTE_TAR}" >&2
   exit 1
 fi
+if [ ! -f "\${REMOTE_COMPOSE_FILE}" ]; then
+  echo "[error] remote compose file not found: \${REMOTE_COMPOSE_FILE}" >&2
+  exit 1
+fi
 
 cd "\${REMOTE_DIR}"
 
@@ -237,8 +248,30 @@ fi
 
 "\${DOCKER}" load -i "\${REMOTE_TAR}"
 
-# 关键：不 pull，强制重建让容器切到新 image id（即使 tag 仍是 latest）。
-"\${DOCKER}" compose up -d --pull never --force-recreate
+if [ "\${PIN_REMOTE_IMAGE_TAG:-1}" = "1" ]; then
+  compose_backup="\${REMOTE_COMPOSE_FILE}.bak.\$(date +%Y%m%d-%H%M%S)"
+  cp "\${REMOTE_COMPOSE_FILE}" "\${compose_backup}"
+  awk -v image="\${REMOTE_IMAGE_REF}" '
+    BEGIN { replaced = 0 }
+    !replaced && /^[[:space:]]*image:[[:space:]]*/ {
+      indent = substr(\$0, 1, match(\$0, /image:/) - 1)
+      print indent "image: " image
+      replaced = 1
+      next
+    }
+    { print }
+    END {
+      if (!replaced) {
+        exit 2
+      }
+    }
+  ' "\${REMOTE_COMPOSE_FILE}" > "\${REMOTE_COMPOSE_FILE}.tmp"
+  mv "\${REMOTE_COMPOSE_FILE}.tmp" "\${REMOTE_COMPOSE_FILE}"
+  echo "[info] compose image pinned: \${REMOTE_IMAGE_REF} (backup: \${compose_backup})"
+fi
+
+# 关键：不 pull，强制重建让容器切到新 image id。
+"\${DOCKER}" compose -f "\${REMOTE_COMPOSE_FILE}" up -d --pull never --force-recreate
 
 "\${DOCKER}" ps --filter name=photoframe-orchestrator --format "table {{.Names}}\\t{{.Image}}\\t{{.Status}}"
 

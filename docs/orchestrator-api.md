@@ -57,7 +57,7 @@
 - 服务会在每次 `device/next` 响应后记录一条图片下发历史
 - `image_url` 可能是：
   - `.../api/v1/assets/<sha>.bmp?device_id=...` 或 `.../api/v1/assets/<sha>.jpg?device_id=...`（插播资源；取决于 `accept_formats` 与派生文件是否存在）
-  - `.../api/v1/assets/daily-<date>-<algorithm>-<profile>.bmp?device_id=...` 或对应 `.jpg`（日图；由 orchestrator 从上游 JPG 抓图后按当前 Daily Dither 算法与 palette profile 生成的静态缓存）
+  - `.../api/v1/assets/daily-<date>-<algorithm>-<profile>.bmp?device_id=...` 或对应 `.jpg`（日图；由 orchestrator 从上游 JPG 抓图后按当前 Daily Dither 算法与 palette profile 生成的静态缓存，并按上游 `ETag` / `Last-Modified` 做条件校验）
 
 ## 2) 设备上报心跳
 
@@ -397,6 +397,7 @@ Header：
 缓存与省电：
 
 - 响应会携带 `ETag`，并支持 `If-None-Match` 命中 `304 Not Modified`（不返回正文），用于设备侧省流省电轮询。
+- 服务端 daily 缓存会定期带 `If-None-Match` / `If-Modified-Since` 回源；若上游未变，或虽回源成功但最终渲染结果字节不变，则不会重写本地 daily 资产，便于设备继续命中稳定 ETag。
 - 当提供 `device_id`（非 `*`）时，服务会更新该设备的 `last_seen`（控制台的 `last_checkin`），
   便于在设备仅能访问 `/public/daily.*` 的场景下也能确认“设备仍在活跃拉图”；并会用服务端已保存的最近电量值写入一条采样点
   （若尚无任何电量读数则跳过），让电池曲线能反映设备仍有活动。

@@ -43,6 +43,10 @@ try:
   DAILY_FETCH_TIMEOUT_SECONDS = max(1.0, float(os.getenv("DAILY_FETCH_TIMEOUT_SECONDS", "10")))
 except Exception:
   DAILY_FETCH_TIMEOUT_SECONDS = 10.0
+try:
+  DAILY_UPSTREAM_REVALIDATE_SECONDS = max(0, int(os.getenv("DAILY_UPSTREAM_REVALIDATE_SECONDS", "300")))
+except Exception:
+  DAILY_UPSTREAM_REVALIDATE_SECONDS = 300
 TZ_NAME = os.getenv("TZ", "Asia/Shanghai")
 LOCAL_TZ = ZoneInfo(TZ_NAME)
 APP_VERSION = os.getenv("PHOTOFRAME_ORCHESTRATOR_VERSION", "0.2.8")
@@ -1014,14 +1018,64 @@ def _daily_image_url(now_epoch: int) -> str:
 
 
 def _fetch_daily_source_bytes(url: str) -> bytes:
-  req = UrlRequest(url, headers={"User-Agent": f"photoframe-orchestrator/{APP_VERSION}"})
+  status, payload, _headers = _fetch_daily_source(url)
+  if status != 200 or payload is None:
+    raise HTTPException(status_code=502, detail=f"daily upstream status={status}")
+  return payload
+
+
+def _daily_upstream_header(resp: Any, name: str) -> str:
+  headers = getattr(resp, "headers", None)
+  if headers is not None:
+    try:
+      value = headers.get(name)
+    except Exception:
+      value = None
+    if value:
+      return str(value).strip()
+  getter = getattr(resp, "getheader", None)
+  if callable(getter):
+    try:
+      value = getter(name)
+    except Exception:
+      value = None
+    if value:
+      return str(value).strip()
+  return ""
+
+
+def _daily_upstream_cache_headers(resp: Any) -> dict[str, str]:
+  return {
+      "etag": _daily_upstream_header(resp, "ETag"),
+      "last_modified": _daily_upstream_header(resp, "Last-Modified"),
+  }
+
+
+def _fetch_daily_source(
+    url: str,
+    *,
+    if_none_match: str | None = None,
+    if_modified_since: str | None = None,
+) -> tuple[int, bytes | None, dict[str, str]]:
+  headers = {"User-Agent": f"photoframe-orchestrator/{APP_VERSION}"}
+  if (if_none_match or "").strip():
+    headers["If-None-Match"] = str(if_none_match).strip()
+  if (if_modified_since or "").strip():
+    headers["If-Modified-Since"] = str(if_modified_since).strip()
+
+  req = UrlRequest(url, headers=headers)
   try:
     with urlopen(req, timeout=DAILY_FETCH_TIMEOUT_SECONDS) as resp:
       status = int(getattr(resp, "status", 200))
+      cache_headers = _daily_upstream_cache_headers(resp)
+      if status == 304:
+        return 304, None, cache_headers
       if status != 200:
         raise HTTPException(status_code=502, detail=f"daily upstream status={status}")
       payload = resp.read()
   except HTTPError as exc:
+    if int(exc.code) == 304:
+      return 304, None, _daily_upstream_cache_headers(exc)
     raise HTTPException(status_code=502, detail=f"daily upstream status={exc.code}") from exc
   except URLError as exc:
     raise HTTPException(status_code=502, detail=f"daily upstream unavailable: {exc}") from exc
@@ -1030,7 +1084,7 @@ def _fetch_daily_source_bytes(url: str) -> bytes:
 
   if not payload:
     raise HTTPException(status_code=502, detail="daily upstream empty")
-  return payload
+  return 200, payload, cache_headers
 
 
 def _normalize_device_id(value: str | None) -> str:
@@ -1369,6 +1423,77 @@ def _locate_asset_path(asset_name: str) -> Path:
   raise HTTPException(status_code=404, detail="asset not found")
 
 
+def _daily_cache_metadata_path(asset_name: str) -> Path:
+  safe_name = os.path.basename(asset_name)
+  stem = Path(safe_name).stem
+  return DAILY_CACHE_DIR / f"{stem}.meta.json"
+
+
+def _read_daily_cache_metadata(path: Path) -> dict[str, Any]:
+  try:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+  except FileNotFoundError:
+    return {}
+  except Exception:
+    LOGGER.warning("daily cache metadata unreadable: path=%s", path)
+    return {}
+  return raw if isinstance(raw, dict) else {}
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+  path.parent.mkdir(parents=True, exist_ok=True)
+  temp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{threading.get_ident()}")
+  try:
+    temp_path.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
+    os.replace(temp_path, path)
+  finally:
+    try:
+      temp_path.unlink()
+    except FileNotFoundError:
+      pass
+
+
+def _write_bytes_if_changed(path: Path, payload: bytes) -> bool:
+  try:
+    current = path.read_bytes()
+  except FileNotFoundError:
+    current = None
+  if current == payload:
+    return False
+  path.parent.mkdir(parents=True, exist_ok=True)
+  temp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{threading.get_ident()}")
+  try:
+    temp_path.write_bytes(payload)
+    os.replace(temp_path, path)
+  finally:
+    try:
+      temp_path.unlink()
+    except FileNotFoundError:
+      pass
+  return True
+
+
+def _daily_cache_should_revalidate(metadata: dict[str, Any], now_ts: int, url: str) -> bool:
+  if DAILY_UPSTREAM_REVALIDATE_SECONDS <= 0:
+    return True
+  cached_url = str(metadata.get("url") or "").strip()
+  if cached_url != url:
+    return True
+  checked_epoch = int(metadata.get("checked_epoch") or 0)
+  if checked_epoch <= 0:
+    return True
+  return (now_ts - checked_epoch) >= DAILY_UPSTREAM_REVALIDATE_SECONDS
+
+
+def _daily_asset_cache_control(path: Path) -> str:
+  if path.parent == DAILY_CACHE_DIR:
+    return "private, no-cache"
+  return "public, max-age=31536000, immutable"
+
+
 def _cleanup_daily_assets(now_ts: int) -> None:
   keep_from = datetime.fromtimestamp(now_ts, LOCAL_TZ).date() - timedelta(days=DAILY_ASSET_RETENTION_DAYS - 1)
   removed = 0
@@ -1380,6 +1505,23 @@ def _cleanup_daily_assets(now_ts: int) -> None:
       if not path.is_file():
         continue
       match = DAILY_ASSET_NAME_RE.match(path.name)
+      if match is None:
+        continue
+      try:
+        asset_date = datetime.strptime(match.group(1), "%Y-%m-%d").date()
+      except ValueError:
+        continue
+      if asset_date >= keep_from:
+        continue
+      try:
+        path.unlink()
+        removed += 1
+      except FileNotFoundError:
+        continue
+    if root != DAILY_CACHE_DIR:
+      continue
+    for path in root.glob("daily-*.meta.json"):
+      match = re.match(r"^daily-(\d{4}-\d{2}-\d{2})-.*\.meta\.json$", path.name, re.IGNORECASE)
       if match is None:
         continue
       try:
@@ -1479,27 +1621,76 @@ def _ensure_daily_assets(
   bmp_name, jpg_name = _daily_asset_names(now_ts, f"{dither_algorithm}-{profile_key}")
   bmp_path = DAILY_CACHE_DIR / bmp_name
   jpg_path = DAILY_CACHE_DIR / jpg_name
-  if bmp_path.exists() and jpg_path.exists():
+  metadata_path = _daily_cache_metadata_path(jpg_name)
+  metadata = _read_daily_cache_metadata(metadata_path)
+  cache_exists = bmp_path.exists() and jpg_path.exists()
+  if cache_exists and not _daily_cache_should_revalidate(metadata, now_ts, url):
     return bmp_name, jpg_name
 
   with DAILY_CACHE_LOCK:
-    if bmp_path.exists() and jpg_path.exists():
+    metadata = _read_daily_cache_metadata(metadata_path)
+    cache_exists = bmp_path.exists() and jpg_path.exists()
+    if cache_exists and not _daily_cache_should_revalidate(metadata, now_ts, url):
       return bmp_name, jpg_name
 
-    source_bytes = _fetch_daily_source_bytes(url)
+    upstream_etag = str(metadata.get("upstream_etag") or "").strip() if cache_exists else ""
+    upstream_last_modified = str(metadata.get("upstream_last_modified") or "").strip() if cache_exists else ""
+    status, source_bytes, cache_headers = _fetch_daily_source(
+        url,
+        if_none_match=upstream_etag or None,
+        if_modified_since=upstream_last_modified or None,
+    )
+    if status == 304 and cache_exists:
+      metadata.update(
+          {
+              "url": url,
+              "checked_epoch": int(now_ts),
+              "upstream_etag": cache_headers.get("etag") or upstream_etag,
+              "upstream_last_modified": cache_headers.get("last_modified") or upstream_last_modified,
+          }
+      )
+      _write_json_atomic(metadata_path, metadata)
+      return bmp_name, jpg_name
+
+    if source_bytes is None:
+      raise HTTPException(status_code=502, detail="daily upstream empty")
+
     fitted = _fit_daily_source_image(source_bytes)
     bmp_data, jpg_data = _render_override_assets(fitted, dither_algorithm, palette_profile=profile_key)
     DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    bmp_path.write_bytes(bmp_data)
-    jpg_path.write_bytes(jpg_data)
+    bmp_changed = _write_bytes_if_changed(bmp_path, bmp_data)
+    jpg_changed = _write_bytes_if_changed(jpg_path, jpg_data)
+    metadata = {
+        "url": url,
+        "checked_epoch": int(now_ts),
+        "upstream_etag": cache_headers.get("etag") or "",
+        "upstream_last_modified": cache_headers.get("last_modified") or "",
+        "upstream_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "rendered_bmp_sha256": hashlib.sha256(bmp_data).hexdigest(),
+        "rendered_jpg_sha256": hashlib.sha256(jpg_data).hexdigest(),
+    }
+    _write_json_atomic(metadata_path, metadata)
     _cleanup_daily_assets(now_ts)
-    LOGGER.info(
-        "daily asset refreshed: bmp=%s jpg=%s dither=%s source=%s",
-        bmp_name,
-        jpg_name,
-        f"{dither_algorithm}/{profile_key}",
-        url,
-    )
+    if bmp_changed or jpg_changed:
+      LOGGER.info(
+          "daily asset refreshed: bmp=%s jpg=%s dither=%s source=%s etag=%s last_modified=%s",
+          bmp_name,
+          jpg_name,
+          f"{dither_algorithm}/{profile_key}",
+          url,
+          cache_headers.get("etag") or "-",
+          cache_headers.get("last_modified") or "-",
+      )
+    else:
+      LOGGER.info(
+          "daily asset revalidated without rewrite: bmp=%s jpg=%s dither=%s source=%s etag=%s last_modified=%s",
+          bmp_name,
+          jpg_name,
+          f"{dither_algorithm}/{profile_key}",
+          url,
+          cache_headers.get("etag") or "-",
+          cache_headers.get("last_modified") or "-",
+      )
   return bmp_name, jpg_name
 
 
@@ -2158,12 +2349,12 @@ def asset(
     media_type = "image/png"
   else:
     media_type = "application/octet-stream"
-  # 资产文件名默认使用内容哈希，属于不可变资源，可大胆缓存。
+  # override 资源文件名默认使用内容哈希，可长期缓存；daily 缓存则要求客户端重验证 ETag。
   return FileResponse(
       path=path,
       media_type=media_type,
       filename=safe_name,
-      headers={"Cache-Control": "public, max-age=31536000, immutable"},
+      headers={"Cache-Control": _daily_asset_cache_control(path)},
   )
 
 

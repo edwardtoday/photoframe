@@ -12,6 +12,14 @@
   - 设备查询：`GET /api/v1/device/config`
   - 设备回报：`POST /api/v1/device/config/applied`
   - 历史查询：`GET /api/v1/device-configs`
+- 设备按需日志上传：
+  - 管理端下发：`POST /api/v1/device-log-requests`
+  - 设备回传：`POST /api/v1/device/log-upload`
+  - 管理端查看：`GET /api/v1/device-log-requests` / `GET /api/v1/device-log-uploads`
+- 固件 OTA 控制面：
+  - 固件制品上传：`POST /api/v1/firmware-artifacts/upload`
+  - rollout 管理：`POST /api/v1/firmware-rollouts`、`GET /api/v1/firmware-rollouts`
+  - 设备通过 `device/next` 获取 `firmware_update` 指令
 - Web 上传插播图并设置播放窗口：`POST /api/v1/overrides/upload`
   - 上传时可选服务端 dither：`Bayer / Floyd-Steinberg / Jarvis / Stucki / Lab + CIEDE2000 / Atkinson / Sierra`
   - 选中后，服务端会先按相框 6 色调色板生成实际下发的 BMP/JPEG 资产
@@ -26,6 +34,8 @@
 - 设备配置“填空式表单”：不再手写 JSON，灰字提示来自设备最近上报配置
 - 设备配置页提供 daily.bmp/daily.jpg URL 快捷填入（当前服务 / 公网示例）
 - 创建插播后给出“预计生效时间/可能过期”可读提示，便于和设备唤醒周期对齐
+- 支持“下次唤醒时上传日志”的一次性诊断请求：仅在显式请求时上传有限日志，不引入每轮固定成本
+- 已预留 A/B OTA 升级控制面；注意当前设备若仍是旧单分区布局，需先做一次 USB 迁移刷机后才能启用 ping-pong OTA
 
 ## 本地运行（源码）
 

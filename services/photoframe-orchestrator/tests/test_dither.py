@@ -121,6 +121,13 @@ def _encode_png(image: Image.Image) -> bytes:
   return out.getvalue()
 
 
+def _encode_bytes_file(image: Image.Image, fmt: str = "PNG") -> io.BytesIO:
+  out = io.BytesIO()
+  image.save(out, format=fmt)
+  out.seek(0)
+  return out
+
+
 def _pixel_set(image: Image.Image) -> set[tuple[int, int, int]]:
   pixels = image.load()
   width, height = image.size
@@ -142,6 +149,20 @@ class _DummyUrlopenResponse:
 
   def __exit__(self, exc_type, exc, tb) -> bool:
     return False
+
+
+class _DummyRequestUrl:
+
+  def __init__(self, scheme: str, netloc: str) -> None:
+    self.scheme = scheme
+    self.netloc = netloc
+
+
+class _DummyRequest:
+
+  def __init__(self, scheme: str = "http", netloc: str = "example.com") -> None:
+    self.url = _DummyRequestUrl(scheme, netloc)
+    self.headers: dict[str, str] = {}
 
 
 class DitherAlgorithmTests(unittest.TestCase):
@@ -230,6 +251,11 @@ class DitherAlgorithmTests(unittest.TestCase):
             battery_percent=80,
             charging=0,
             vbus_good=0,
+            running_partition="ota_0",
+            ota_state="valid",
+            ota_target_version="0.1.0+abcdef12",
+            ota_last_error="",
+            ota_last_attempt_epoch=1774199990,
             reported_config={
                 "orchestrator_enabled": 1,
                 "firmware_version": "0.1.0+abcdef12",
@@ -250,6 +276,9 @@ class DitherAlgorithmTests(unittest.TestCase):
       self.assertEqual(len(data["devices"]), 1)
       self.assertEqual(data["devices"][0]["firmware_version"], "0.1.0+abcdef12")
       self.assertEqual(data["devices"][0]["reported_config"]["firmware_version"], "0.1.0+abcdef12")
+      self.assertEqual(data["devices"][0]["running_partition"], "ota_0")
+      self.assertEqual(data["devices"][0]["ota_state"], "valid")
+      self.assertEqual(data["devices"][0]["ota_target_version"], "0.1.0+abcdef12")
 
   def test_preferred_output_format_prefers_bmp_when_device_supports_both(self) -> None:
     self.assertEqual(ORCH._preferred_output_format("jpeg,bmp"), "bmp")
@@ -548,6 +577,237 @@ class DitherAlgorithmTests(unittest.TestCase):
       finally:
         ORCH.ASSET_DIR = original_asset_dir
         ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+
+  def test_device_next_includes_pending_log_upload_request(self) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_root = Path(tmp_dir)
+      original_data_dir = ORCH.DATA_DIR
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_db_path = ORCH.DB_PATH
+      original_db = ORCH.DB
+      original_ensure_daily_assets = ORCH._ensure_daily_assets
+
+      ORCH.DATA_DIR = tmp_root
+      ORCH.ASSET_DIR = tmp_root / "assets"
+      ORCH.DAILY_CACHE_DIR = ORCH.ASSET_DIR / "daily-cache"
+      ORCH.DB_PATH = tmp_root / "orchestrator.db"
+      ORCH.DB = None
+      try:
+        ORCH._init_db()
+        ORCH.DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        (ORCH.DAILY_CACHE_DIR / "daily-test.bmp").write_bytes(b"BMstub")
+        (ORCH.DAILY_CACHE_DIR / "daily-test.jpg").write_bytes(b"JPGstub")
+        ORCH._ensure_daily_assets = lambda *_args, **_kwargs: ("daily-test.bmp", "daily-test.jpg")
+        ORCH.device_log_requests_create(
+            ORCH.DeviceLogUploadRequestPublish(
+                device_id="pf-demo",
+                reason="collect wake trace",
+                max_lines=64,
+                max_bytes=4096,
+                expires_in_minutes=60,
+            )
+        )
+        response = ORCH.device_next(
+            _DummyRequest("http", "127.0.0.1:8081"),
+            device_id="pf-demo",
+            now_epoch=1774200000,
+        )
+      finally:
+        if ORCH.DB is not None:
+          ORCH.DB.close()
+          ORCH.DB = None
+        ORCH.DATA_DIR = original_data_dir
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.DB_PATH = original_db_path
+        ORCH.DB = original_db
+        ORCH._ensure_daily_assets = original_ensure_daily_assets
+
+      self.assertIsNotNone(response.get("log_upload_request"))
+      self.assertEqual(response["log_upload_request"]["max_lines"], 64)
+      self.assertEqual(response["log_upload_request"]["max_bytes"], 4096)
+      self.assertEqual(response["log_upload_request"]["reason"], "collect wake trace")
+
+  def test_device_log_upload_marks_request_completed(self) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_root = Path(tmp_dir)
+      original_data_dir = ORCH.DATA_DIR
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_db_path = ORCH.DB_PATH
+      original_db = ORCH.DB
+
+      ORCH.DATA_DIR = tmp_root
+      ORCH.ASSET_DIR = tmp_root / "assets"
+      ORCH.DAILY_CACHE_DIR = ORCH.ASSET_DIR / "daily-cache"
+      ORCH.DB_PATH = tmp_root / "orchestrator.db"
+      ORCH.DB = None
+      try:
+        ORCH._init_db()
+        created = ORCH.device_log_requests_create(
+            ORCH.DeviceLogUploadRequestPublish(
+                device_id="pf-demo",
+                reason="collect boot logs",
+                max_lines=32,
+                max_bytes=2048,
+                expires_in_minutes=60,
+            )
+        )
+        request_id = int(created["request_id"])
+        upload = ORCH.device_log_upload(
+            ORCH.DeviceLogUploadPayload(
+                device_id="pf-demo",
+                request_id=request_id,
+                uploaded_epoch=1774200123,
+                line_count=2,
+                truncated=False,
+                lines=["[1][INFO] boot", "[2][WARN] wifi retry"],
+            )
+        )
+        requests = ORCH.device_log_requests(device_id="pf-demo")
+        uploads = ORCH.device_log_uploads(device_id="pf-demo")
+      finally:
+        if ORCH.DB is not None:
+          ORCH.DB.close()
+          ORCH.DB = None
+        ORCH.DATA_DIR = original_data_dir
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.DB_PATH = original_db_path
+        ORCH.DB = original_db
+
+      self.assertTrue(upload["ok"])
+      self.assertEqual(requests["items"][0]["status"], "completed")
+      self.assertEqual(requests["items"][0]["uploaded_line_count"], 2)
+      self.assertEqual(uploads["items"][0]["request_id"], request_id)
+      self.assertEqual(uploads["items"][0]["payload"]["lines"][0], "[1][INFO] boot")
+
+  def test_firmware_artifact_upload_and_rollout_are_listed(self) -> None:
+    payload_bytes = b"ESP32APPBIN"
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_root = Path(tmp_dir)
+      original_data_dir = ORCH.DATA_DIR
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_db_path = ORCH.DB_PATH
+      original_db = ORCH.DB
+
+      ORCH.DATA_DIR = tmp_root
+      ORCH.ASSET_DIR = tmp_root / "assets"
+      ORCH.DAILY_CACHE_DIR = ORCH.ASSET_DIR / "daily-cache"
+      ORCH.DB_PATH = tmp_root / "orchestrator.db"
+      ORCH.DB = None
+      try:
+        ORCH._init_db()
+        artifact = ORCH.firmware_artifact_upload(
+            UploadFile(filename="app.bin", file=io.BytesIO(payload_bytes)),
+            version="0.2.0+abcd1234",
+            note="ota test",
+        )
+        rollout = ORCH.firmware_rollout_create(
+            ORCH.FirmwareRolloutPublish(
+                device_id="pf-demo",
+                firmware_artifact_id=int(artifact["id"]),
+                min_battery_percent=55,
+                requires_vbus=True,
+                note="rollout test",
+            )
+        )
+        artifacts = ORCH.firmware_artifacts()
+        rollouts = ORCH.firmware_rollouts(device_id="pf-demo")
+      finally:
+        if ORCH.DB is not None:
+          ORCH.DB.close()
+          ORCH.DB = None
+        ORCH.DATA_DIR = original_data_dir
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.DB_PATH = original_db_path
+        ORCH.DB = original_db
+
+      self.assertTrue(artifact["ok"])
+      self.assertEqual(artifact["version"], "0.2.0+abcd1234")
+      self.assertEqual(artifacts["items"][0]["asset_sha256"], artifact["asset_sha256"])
+      self.assertTrue(rollout["ok"])
+      self.assertEqual(rollouts["items"][0]["min_battery_percent"], 55)
+      self.assertEqual(rollouts["items"][0]["requires_vbus"], True)
+
+  def test_device_next_includes_firmware_update_when_device_version_is_older(self) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_root = Path(tmp_dir)
+      original_data_dir = ORCH.DATA_DIR
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_db_path = ORCH.DB_PATH
+      original_db = ORCH.DB
+      original_ensure_daily_assets = ORCH._ensure_daily_assets
+
+      ORCH.DATA_DIR = tmp_root
+      ORCH.ASSET_DIR = tmp_root / "assets"
+      ORCH.DAILY_CACHE_DIR = ORCH.ASSET_DIR / "daily-cache"
+      ORCH.DB_PATH = tmp_root / "orchestrator.db"
+      ORCH.DB = None
+      try:
+        ORCH._init_db()
+        ORCH.DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        (ORCH.DAILY_CACHE_DIR / "daily-test.bmp").write_bytes(b"BMstub")
+        (ORCH.DAILY_CACHE_DIR / "daily-test.jpg").write_bytes(b"JPGstub")
+        ORCH._ensure_daily_assets = lambda *_args, **_kwargs: ("daily-test.bmp", "daily-test.jpg")
+        artifact = ORCH.firmware_artifact_upload(
+            UploadFile(filename="app.bin", file=io.BytesIO(b"ESP32APPBIN")),
+            version="0.2.0+abcd1234",
+            note="ota test",
+        )
+        ORCH.firmware_rollout_create(
+            ORCH.FirmwareRolloutPublish(
+                device_id="pf-demo",
+                firmware_artifact_id=int(artifact["id"]),
+                min_battery_percent=50,
+                requires_vbus=False,
+                note="rollout test",
+            )
+        )
+        ORCH.device_checkin(
+            ORCH.DeviceCheckin(
+                device_id="pf-demo",
+                checkin_epoch=1774200000,
+                next_wakeup_epoch=1774203600,
+                sleep_seconds=3600,
+                poll_interval_seconds=3600,
+                failure_count=0,
+                last_http_status=200,
+                fetch_ok=True,
+                image_changed=False,
+                image_source="daily",
+                last_error="",
+                sta_ip="192.168.1.9",
+                battery_mv=4090,
+                battery_percent=78,
+                charging=0,
+                vbus_good=0,
+                reported_config={"firmware_version": "0.1.0+old"},
+            )
+        )
+        response = ORCH.device_next(
+            _DummyRequest("http", "127.0.0.1:8081"),
+            device_id="pf-demo",
+            now_epoch=1774200123,
+        )
+      finally:
+        if ORCH.DB is not None:
+          ORCH.DB.close()
+          ORCH.DB = None
+        ORCH.DATA_DIR = original_data_dir
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.DB_PATH = original_db_path
+        ORCH.DB = original_db
+        ORCH._ensure_daily_assets = original_ensure_daily_assets
+
+      self.assertIsNotNone(response.get("firmware_update"))
+      self.assertEqual(response["firmware_update"]["version"], "0.2.0+abcd1234")
+      self.assertEqual(response["firmware_update"]["min_battery_percent"], 50)
 
   def test_upload_conversion_uses_saved_palette_profile_when_omitted(self) -> None:
     source_image = _build_gradient_image(size=(64, 64))

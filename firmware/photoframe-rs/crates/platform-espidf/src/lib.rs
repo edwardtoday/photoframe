@@ -2,9 +2,12 @@
 
 use photoframe_app::{
     Clock, DeviceRuntimeConfig, Display, ImageArtifact, ImageFetchOutcome, ImageFetchPlan,
-    ImageFetcher, OrchestratorApi, Storage,
+    FirmwareRuntimeStatus, FirmwareUpdater, ImageFetcher, OrchestratorApi, Storage,
 };
-use photoframe_contracts::{DeviceCheckinRequest, DeviceNextResponse};
+use photoframe_contracts::{
+    DeviceCheckinRequest, DeviceLogUploadRequest, DeviceLogUploadRequestBody, DeviceNextResponse,
+    FirmwareUpdateDirective,
+};
 use photoframe_domain::FailureKind;
 
 #[cfg(target_os = "espidf")]
@@ -24,8 +27,28 @@ use std::{
     ffi::{CStr, CString},
     os::raw::c_char,
     ptr,
+    sync::OnceLock,
     time::Instant,
 };
+
+#[cfg(target_os = "espidf")]
+type DiagnosticLogSink = fn(&str, &str);
+
+#[cfg(target_os = "espidf")]
+static DIAGNOSTIC_LOG_SINK: OnceLock<DiagnosticLogSink> = OnceLock::new();
+
+#[cfg(target_os = "espidf")]
+pub fn register_diag_log_sink(sink: DiagnosticLogSink) {
+    let _ = DIAGNOSTIC_LOG_SINK.set(sink);
+}
+
+#[cfg(target_os = "espidf")]
+fn emit_diag_log(level: &str, message: String) {
+    println!("{}", message);
+    if let Some(sink) = DIAGNOSTIC_LOG_SINK.get() {
+        sink(level, &message);
+    }
+}
 
 pub struct EspIdfClock;
 
@@ -206,6 +229,9 @@ impl Storage for EspIdfStorage {
             config.last_time_sync_epoch = self.get_i64("time_sync")?.unwrap_or(0);
             config.failure_count = self.get_i32("fail_cnt")?.unwrap_or(0).max(0) as u32;
             config.remote_config_version = self.get_i32("cfg_ver")?.unwrap_or(0).max(0);
+            config.ota_target_version = self.get_string("ota_ver")?.unwrap_or_default();
+            config.ota_last_error = self.get_string("ota_err")?.unwrap_or_default();
+            config.ota_last_attempt_epoch = self.get_i64("ota_try")?.unwrap_or(0);
 
             Ok(config)
         }
@@ -245,6 +271,9 @@ impl Storage for EspIdfStorage {
             self.set_i64("time_sync", config.last_time_sync_epoch)?;
             self.set_i32("fail_cnt", config.failure_count as i32)?;
             self.set_i32("cfg_ver", config.remote_config_version)?;
+            self.set_string("ota_ver", &config.ota_target_version)?;
+            self.set_string("ota_err", &config.ota_last_error)?;
+            self.set_i64("ota_try", config.ota_last_attempt_epoch)?;
             self.set_i32(
                 "last_wifi_idx",
                 config
@@ -487,7 +516,9 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
                         &body,
                     ) {
                         Ok(status) if (200..300).contains(&status) => {
-                            println!(
+                            emit_diag_log(
+                                "INFO",
+                                format!(
                                 "photoframe-rs/checkin: ok device_id={} base={}/{} attempt={}/3 status={} url={}",
                                 payload.device_id,
                                 base_index + 1,
@@ -495,12 +526,15 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
                                 attempt + 1,
                                 status,
                                 url
+                                ),
                             );
                             return Ok(());
                         }
                         Ok(status) => {
                             last_error = format!("non-2xx status={status}");
-                            println!(
+                            emit_diag_log(
+                                "WARN",
+                                format!(
                                 "photoframe-rs/checkin: non-2xx device_id={} base={}/{} attempt={}/3 status={} url={}",
                                 payload.device_id,
                                 base_index + 1,
@@ -508,11 +542,14 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
                                 attempt + 1,
                                 status,
                                 url
+                                ),
                             );
                         }
                         Err(err) => {
                             last_error = err.clone();
-                            println!(
+                            emit_diag_log(
+                                "WARN",
+                                format!(
                                 "photoframe-rs/checkin: error device_id={} base={}/{} attempt={}/3 err={} url={}",
                                 payload.device_id,
                                 base_index + 1,
@@ -520,17 +557,21 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
                                 attempt + 1,
                                 err,
                                 url
+                                ),
                             );
                         }
                     }
                 }
-                println!(
+                emit_diag_log(
+                    "WARN",
+                    format!(
                     "photoframe-rs/checkin: base failed device_id={} base={}/{} last_error={} url={}",
                     payload.device_id,
                     base_index + 1,
                     base_urls.len(),
                     last_error,
                     url
+                    ),
                 );
             }
             Err(last_error)
@@ -590,6 +631,54 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
         stage: &str,
     ) -> Result<(), String> {
         send_debug_stage_beacon(config, stage)
+    }
+
+    fn upload_logs(
+        &mut self,
+        config: &DeviceRuntimeConfig,
+        request: &DeviceLogUploadRequest,
+        payload: &DeviceLogUploadRequestBody,
+    ) -> Result<(), String> {
+        #[cfg(not(target_os = "espidf"))]
+        {
+            let _ = (config, request, payload);
+            Err("EspIdfOrchestratorApi 尚未接入 HTTP 客户端".into())
+        }
+
+        #[cfg(target_os = "espidf")]
+        {
+            if !config.orchestrator_enabled
+                || config.orchestrator_base_url.is_empty()
+                || config.device_id.is_empty()
+            {
+                return Ok(());
+            }
+
+            let body = serde_json::to_vec(payload).map_err(|err| err.to_string())?;
+            let url = format!(
+                "{}/api/v1/device/log-upload",
+                trim_trailing_slash(&config.orchestrator_base_url)
+            );
+            let status = http_post_json_status(
+                &url,
+                Some((&PHOTOFRAME_TOKEN_HEADER, &config.orchestrator_token)),
+                &body,
+            )?;
+            if (200..300).contains(&status) {
+                emit_diag_log(
+                    "INFO",
+                    format!(
+                        "photoframe-rs/log-upload: ok device_id={} request_id={} status={} url={}",
+                        payload.device_id, request.request_id, status, url
+                    ),
+                );
+                return Ok(());
+            }
+            Err(format!(
+                "unexpected status: {status} url={url} request_id={}",
+                request.request_id
+            ))
+        }
     }
 }
 
@@ -660,6 +749,97 @@ impl Display for EspIdfDisplay {
         _force_refresh: bool,
     ) -> Result<(), FailureKind> {
         Err(FailureKind::GeneralFailure)
+    }
+}
+
+pub struct EspIdfFirmwareUpdater;
+
+impl FirmwareUpdater for EspIdfFirmwareUpdater {
+    fn install_update(
+        &mut self,
+        config: &DeviceRuntimeConfig,
+        directive: &FirmwareUpdateDirective,
+    ) -> Result<bool, String> {
+        #[cfg(not(target_os = "espidf"))]
+        {
+            let _ = (config, directive);
+            Err("EspIdfFirmwareUpdater 尚未接入 OTA".into())
+        }
+
+        #[cfg(target_os = "espidf")]
+        {
+            if directive.version.trim().is_empty() || directive.app_bin_url.trim().is_empty() {
+                return Ok(false);
+            }
+            if directive.version == config.firmware_version() {
+                return Ok(false);
+            }
+            let token = orchestrator_token_for_url(&directive.app_bin_url, config);
+            install_firmware_inner(&directive.app_bin_url, token.as_deref(), directive)
+                .map(|_| true)
+        }
+    }
+
+    fn confirm_running_firmware(&mut self, _config: &DeviceRuntimeConfig) -> Result<(), String> {
+        #[cfg(not(target_os = "espidf"))]
+        {
+            Ok(())
+        }
+
+        #[cfg(target_os = "espidf")]
+        {
+            confirm_running_firmware_inner()
+        }
+    }
+
+    fn current_status(&mut self, config: &DeviceRuntimeConfig) -> FirmwareRuntimeStatus {
+        #[cfg(not(target_os = "espidf"))]
+        {
+            FirmwareRuntimeStatus {
+                ota_target_version: config.ota_target_version.clone(),
+                ota_last_error: config.ota_last_error.clone(),
+                ota_last_attempt_epoch: config.ota_last_attempt_epoch,
+                ..FirmwareRuntimeStatus::default()
+            }
+        }
+
+        #[cfg(target_os = "espidf")]
+        unsafe {
+            let mut status = FirmwareRuntimeStatus {
+                ota_target_version: config.ota_target_version.clone(),
+                ota_last_error: config.ota_last_error.clone(),
+                ota_last_attempt_epoch: config.ota_last_attempt_epoch,
+                ..FirmwareRuntimeStatus::default()
+            };
+            let running = sys::esp_ota_get_running_partition();
+            if running.is_null() {
+                return status;
+            }
+            status.running_partition =
+                CStr::from_ptr((*running).label.as_ptr() as *const _).to_string_lossy().into_owned();
+            let mut state: sys::esp_ota_img_states_t = Default::default();
+            let err = sys::esp_ota_get_state_partition(running, &mut state as *mut _);
+            status.ota_state = if err == sys::ESP_ERR_NOT_SUPPORTED {
+                "factory".into()
+            } else if err == sys::ESP_ERR_NOT_FOUND {
+                "unknown".into()
+            } else if check_esp(err, "esp_ota_get_state_partition").is_err() {
+                "error".into()
+            } else {
+                #[allow(non_upper_case_globals)]
+                match state {
+                    sys::esp_ota_img_states_t_ESP_OTA_IMG_NEW => "new",
+                    sys::esp_ota_img_states_t_ESP_OTA_IMG_PENDING_VERIFY => "pending_verify",
+                    sys::esp_ota_img_states_t_ESP_OTA_IMG_VALID => "valid",
+                    sys::esp_ota_img_states_t_ESP_OTA_IMG_INVALID => "invalid",
+                    sys::esp_ota_img_states_t_ESP_OTA_IMG_ABORTED => "aborted",
+                    sys::esp_ota_img_states_t_ESP_OTA_IMG_UNDEFINED => "undefined",
+                    _ => "unknown",
+                }
+                .into()
+            };
+            status
+        }
     }
 }
 
@@ -750,6 +930,223 @@ fn payload_to_patch(payload: DeviceConfigPayload) -> RemoteConfigPatch {
 }
 
 #[cfg(target_os = "espidf")]
+fn orchestrator_token_for_url(url: &str, config: &DeviceRuntimeConfig) -> Option<String> {
+    if config.orchestrator_token.is_empty() {
+        return None;
+    }
+    let expected_origin = photoframe_app::split_url_origin_and_rest(&config.orchestrator_base_url)
+        .map(|(origin, _)| origin)?;
+    let candidate_origin = photoframe_app::split_url_origin_and_rest(url).map(|(origin, _)| origin)?;
+    if candidate_origin == expected_origin {
+        return Some(config.orchestrator_token.clone());
+    }
+    None
+}
+
+#[cfg(target_os = "espidf")]
+fn confirm_running_firmware_inner() -> Result<(), String> {
+    unsafe {
+        let running = sys::esp_ota_get_running_partition();
+        if running.is_null() {
+            return Ok(());
+        }
+        let mut state: sys::esp_ota_img_states_t = Default::default();
+        let err = sys::esp_ota_get_state_partition(running, &mut state as *mut _);
+        if err == sys::ESP_ERR_NOT_SUPPORTED || err == sys::ESP_ERR_NOT_FOUND {
+            return Ok(());
+        }
+        check_esp(err, "esp_ota_get_state_partition")?;
+        #[allow(non_upper_case_globals)]
+        if state == sys::esp_ota_img_states_t_ESP_OTA_IMG_PENDING_VERIFY
+            || state == sys::esp_ota_img_states_t_ESP_OTA_IMG_NEW
+        {
+            check_esp(
+                sys::esp_ota_mark_app_valid_cancel_rollback(),
+                "esp_ota_mark_app_valid_cancel_rollback",
+            )?;
+            emit_diag_log(
+                "INFO",
+                "photoframe-rs/ota: marked running slot valid".to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "espidf")]
+fn install_firmware_inner(
+    url_text: &str,
+    orchestrator_token: Option<&str>,
+    directive: &FirmwareUpdateDirective,
+) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+
+    let url = CString::new(url_text).map_err(|err| err.to_string())?;
+    unsafe {
+        let mut config: sys::esp_http_client_config_t = std::mem::zeroed();
+        config.url = url.as_ptr();
+        config.timeout_ms = 60_000;
+        config.disable_auto_redirect = true;
+        if is_https_url(url_text) {
+            config.crt_bundle_attach = Some(sys::esp_crt_bundle_attach);
+        }
+
+        let client = sys::esp_http_client_init(&config);
+        if client.is_null() {
+            return Err("esp_http_client_init failed".into());
+        }
+        if let Some(token) = orchestrator_token
+            && !token.is_empty()
+            && let Err(err) = set_header(client, PHOTOFRAME_TOKEN_HEADER, token)
+        {
+            sys::esp_http_client_cleanup(client);
+            return Err(err);
+        }
+
+        let mut redirect_count = 0usize;
+        loop {
+            if let Err(err) = check_esp(sys::esp_http_client_open(client, 0), "esp_http_client_open")
+            {
+                sys::esp_http_client_cleanup(client);
+                return Err(err);
+            }
+            let _ = sys::esp_http_client_fetch_headers(client);
+            let status_code = sys::esp_http_client_get_status_code(client);
+            if is_redirect_status(status_code) {
+                if redirect_count >= MAX_HTTP_REDIRECTS {
+                    sys::esp_http_client_close(client);
+                    sys::esp_http_client_cleanup(client);
+                    return Err(format!("too many redirects: {status_code}"));
+                }
+                if let Err(err) = check_esp(
+                    sys::esp_http_client_set_redirection(client),
+                    "esp_http_client_set_redirection",
+                ) {
+                    sys::esp_http_client_close(client);
+                    sys::esp_http_client_cleanup(client);
+                    return Err(err);
+                }
+                let mut flushed = 0;
+                let _ = sys::esp_http_client_flush_response(client, &mut flushed);
+                sys::esp_http_client_close(client);
+                redirect_count += 1;
+                continue;
+            }
+            if status_code != 200 {
+                let body = read_body_stream(client).unwrap_or_default();
+                sys::esp_http_client_close(client);
+                sys::esp_http_client_cleanup(client);
+                let preview = String::from_utf8_lossy(&body).chars().take(120).collect::<String>();
+                return Err(format!("firmware download status={status_code} url={url_text} body={preview}"));
+            }
+
+            let content_len = sys::esp_http_client_get_content_length(client);
+            if directive.size_bytes > 0 && content_len > 0 && content_len as u64 != directive.size_bytes {
+                sys::esp_http_client_close(client);
+                sys::esp_http_client_cleanup(client);
+                return Err(format!(
+                    "firmware size mismatch before download: expected={} actual_header={}",
+                    directive.size_bytes, content_len
+                ));
+            }
+
+            let partition = sys::esp_ota_get_next_update_partition(ptr::null());
+            if partition.is_null() {
+                sys::esp_http_client_close(client);
+                sys::esp_http_client_cleanup(client);
+                return Err("esp_ota_get_next_update_partition returned null".into());
+            }
+            let mut handle: sys::esp_ota_handle_t = Default::default();
+            if let Err(err) = check_esp(
+                sys::esp_ota_begin(partition, sys::OTA_SIZE_UNKNOWN as usize, &mut handle),
+                "esp_ota_begin",
+            ) {
+                sys::esp_http_client_close(client);
+                sys::esp_http_client_cleanup(client);
+                return Err(err);
+            }
+
+            let mut hasher = Sha256::new();
+            let mut total = 0usize;
+            let mut chunk = vec![0u8; 4096];
+            loop {
+                let read = sys::esp_http_client_read(
+                    client,
+                    chunk.as_mut_ptr() as *mut c_char,
+                    chunk.len() as i32,
+                );
+                if read < 0 {
+                    let _ = sys::esp_ota_abort(handle);
+                    sys::esp_http_client_close(client);
+                    sys::esp_http_client_cleanup(client);
+                    return Err("esp_http_client_read failed".into());
+                }
+                if read == 0 {
+                    break;
+                }
+                let size = read as usize;
+                let slice = &chunk[..size];
+                hasher.update(slice);
+                total = total.saturating_add(size);
+                if directive.size_bytes > 0 && total > directive.size_bytes as usize {
+                    let _ = sys::esp_ota_abort(handle);
+                    sys::esp_http_client_close(client);
+                    sys::esp_http_client_cleanup(client);
+                    return Err(format!(
+                        "firmware size exceeded: expected={} actual_so_far={}",
+                        directive.size_bytes, total
+                    ));
+                }
+                if let Err(err) = check_esp(
+                    sys::esp_ota_write(handle, slice.as_ptr() as *const _, size as _),
+                    "esp_ota_write",
+                ) {
+                    let _ = sys::esp_ota_abort(handle);
+                    sys::esp_http_client_close(client);
+                    sys::esp_http_client_cleanup(client);
+                    return Err(err);
+                }
+            }
+            sys::esp_http_client_close(client);
+            sys::esp_http_client_cleanup(client);
+
+            if directive.size_bytes > 0 && total != directive.size_bytes as usize {
+                let _ = sys::esp_ota_abort(handle);
+                return Err(format!(
+                    "firmware size mismatch after download: expected={} actual={}",
+                    directive.size_bytes, total
+                ));
+            }
+            let actual_sha256 = hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            if !directive.sha256.eq_ignore_ascii_case(&actual_sha256) {
+                let _ = sys::esp_ota_abort(handle);
+                return Err(format!(
+                    "firmware sha256 mismatch: expected={} actual={}",
+                    directive.sha256, actual_sha256
+                ));
+            }
+            check_esp(sys::esp_ota_end(handle), "esp_ota_end")?;
+            check_esp(
+                sys::esp_ota_set_boot_partition(partition),
+                "esp_ota_set_boot_partition",
+            )?;
+            emit_diag_log(
+                "INFO",
+                format!(
+                    "photoframe-rs/ota: prepared update version={} bytes={} sha256={}",
+                    directive.version, total, actual_sha256
+                ),
+            );
+            return Ok(());
+        }
+    }
+}
+
+#[cfg(target_os = "espidf")]
 fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String> {
     let url = CString::new(plan.url.clone()).map_err(|err| err.to_string())?;
     let fetch_start = Instant::now();
@@ -834,11 +1231,14 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
             let etag = get_header_value(client, "ETag")?;
             let last_modified = get_header_value(client, "Last-Modified")?;
             if status_code == 304 {
-                println!(
+                emit_diag_log(
+                    "INFO",
+                    format!(
                     "photoframe-rs/timing: fetch status=304 total={}ms headers={}ms body=0ms bytes=0 changed=false format=unchanged url={}",
                     fetch_start.elapsed().as_millis(),
                     headers_ms,
                     plan.url
+                    ),
                 );
                 sys::esp_http_client_close(client);
                 sys::esp_http_client_cleanup(client);

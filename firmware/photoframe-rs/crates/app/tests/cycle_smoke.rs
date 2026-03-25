@@ -1,9 +1,12 @@
 use photoframe_app::{
     BootContext, Clock, CycleExit, CycleRunner, DeviceRuntimeConfig, Display, ImageArtifact,
-    ImageFetchOutcome, ImageFetchPlan, ImageFetcher, ImageFormat, OrchestratorApi, PowerSample,
-    Storage, WifiCredential,
+    FirmwareRuntimeStatus, FirmwareUpdater, ImageFetchOutcome, ImageFetchPlan, ImageFetcher, ImageFormat,
+    LogUploadProvider, OrchestratorApi, PowerSample, Storage, WifiCredential,
 };
-use photoframe_contracts::{DeviceCheckinRequest, DeviceNextResponse};
+use photoframe_contracts::{
+    DeviceCheckinRequest, DeviceLogUploadRequest, DeviceLogUploadRequestBody,
+    DeviceNextResponse, FirmwareUpdateDirective,
+};
 use photoframe_domain::{FailureKind, LongPressAction, WakeSource};
 
 const NEXT_BEIJING_SYNC_SLEEP_SECONDS: u64 = 43_600;
@@ -48,6 +51,10 @@ struct FakeOrchestrator {
     checkin_error: Option<String>,
     config_applied_calls: Vec<(i32, bool, String)>,
     debug_stages: Vec<String>,
+    upload_log_calls: usize,
+    last_log_upload_request: Option<DeviceLogUploadRequest>,
+    last_log_upload_payload: Option<DeviceLogUploadRequestBody>,
+    upload_log_error: Option<String>,
 }
 impl OrchestratorApi for FakeOrchestrator {
     fn sync_config(
@@ -104,6 +111,21 @@ impl OrchestratorApi for FakeOrchestrator {
         self.debug_stages.push(stage.to_string());
         Ok(())
     }
+
+    fn upload_logs(
+        &mut self,
+        _config: &DeviceRuntimeConfig,
+        request: &DeviceLogUploadRequest,
+        payload: &DeviceLogUploadRequestBody,
+    ) -> Result<(), String> {
+        self.upload_log_calls += 1;
+        self.last_log_upload_request = Some(request.clone());
+        self.last_log_upload_payload = Some(payload.clone());
+        if let Some(error) = &self.upload_log_error {
+            return Err(error.clone());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -145,6 +167,54 @@ impl Display for FakeDisplay {
     ) -> Result<(), FailureKind> {
         self.render_calls += 1;
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct FakeLogUploadProvider {
+    payload: Option<DeviceLogUploadRequestBody>,
+    calls: usize,
+}
+
+impl LogUploadProvider for FakeLogUploadProvider {
+    fn collect_logs(
+        &mut self,
+        _config: &DeviceRuntimeConfig,
+        _request: &DeviceLogUploadRequest,
+        _uploaded_epoch: i64,
+    ) -> Option<DeviceLogUploadRequestBody> {
+        self.calls += 1;
+        self.payload.clone()
+    }
+}
+
+#[derive(Default)]
+struct FakeFirmwareUpdater {
+    should_apply: bool,
+    install_calls: usize,
+    confirm_calls: usize,
+    last_directive: Option<FirmwareUpdateDirective>,
+    status: FirmwareRuntimeStatus,
+}
+
+impl FirmwareUpdater for FakeFirmwareUpdater {
+    fn install_update(
+        &mut self,
+        _config: &DeviceRuntimeConfig,
+        directive: &FirmwareUpdateDirective,
+    ) -> Result<bool, String> {
+        self.install_calls += 1;
+        self.last_directive = Some(directive.clone());
+        Ok(self.should_apply)
+    }
+
+    fn confirm_running_firmware(&mut self, _config: &DeviceRuntimeConfig) -> Result<(), String> {
+        self.confirm_calls += 1;
+        Ok(())
+    }
+
+    fn current_status(&mut self, _config: &DeviceRuntimeConfig) -> FirmwareRuntimeStatus {
+        self.status.clone()
     }
 }
 
@@ -235,6 +305,8 @@ fn daily_directive_failure_falls_back_to_template_url() {
                 device_epoch: None,
                 device_clock_ok: None,
                 effective_epoch: None,
+                log_upload_request: None,
+                firmware_update: None,
             }),
             ..FakeOrchestrator::default()
         },
@@ -362,7 +434,7 @@ fn failed_cycle_sleeps_until_next_beijing_sync_window() {
 
 #[test]
 fn successful_cycle_uses_directive_and_reports_checkin() {
-    let mut runner = CycleRunner::new(
+    let mut runner = CycleRunner::new_with_services(
         FakeClock,
         FakeStorage {
             config: seeded_config(),
@@ -378,6 +450,8 @@ fn successful_cycle_uses_directive_and_reports_checkin() {
                 device_epoch: None,
                 device_clock_ok: None,
                 effective_epoch: None,
+                log_upload_request: None,
+                firmware_update: None,
             }),
             ..FakeOrchestrator::default()
         },
@@ -400,6 +474,17 @@ fn successful_cycle_uses_directive_and_reports_checkin() {
             ..FakeImageFetcher::default()
         },
         FakeDisplay::default(),
+        FakeFirmwareUpdater {
+            status: FirmwareRuntimeStatus {
+                running_partition: "ota_0".into(),
+                ota_state: "valid".into(),
+                ota_target_version: "0.1.0+abcdef12".into(),
+                ota_last_error: String::new(),
+                ota_last_attempt_epoch: 1_760_000_000,
+            },
+            ..FakeFirmwareUpdater::default()
+        },
+        FakeLogUploadProvider::default(),
     );
 
     let report = runner
@@ -435,9 +520,11 @@ fn successful_cycle_uses_directive_and_reports_checkin() {
         runner.orchestrator().last_checkin_payload.as_ref().map(|payload| (
             payload.sleep_seconds,
             payload.poll_interval_seconds,
-            payload.image_source.as_str()
+            payload.image_source.as_str(),
+            payload.running_partition.as_str(),
+            payload.ota_state.as_str(),
         )),
-        Some((900, 3600, "override"))
+        Some((900, 3600, "override", "ota_0", "valid"))
     );
 }
 
@@ -460,6 +547,8 @@ fn successful_daily_cycle_requests_beijing_sleep_window_from_orchestrator() {
                 device_epoch: None,
                 device_clock_ok: None,
                 effective_epoch: None,
+                log_upload_request: None,
+                firmware_update: None,
             }),
             ..FakeOrchestrator::default()
         },
@@ -519,6 +608,8 @@ fn successful_cycle_keeps_sleep_plan_when_checkin_fails() {
                 device_epoch: None,
                 device_clock_ok: None,
                 effective_epoch: None,
+                log_upload_request: None,
+                firmware_update: None,
             }),
             checkin_error: Some("post failed".into()),
             ..FakeOrchestrator::default()
@@ -589,6 +680,8 @@ fn successful_cycle_reports_debug_stages_in_order() {
                 device_epoch: None,
                 device_clock_ok: None,
                 effective_epoch: None,
+                log_upload_request: None,
+                firmware_update: None,
             }),
             ..FakeOrchestrator::default()
         },
@@ -665,6 +758,8 @@ fn same_origin_image_fetch_uses_orchestrator_token_header() {
                 device_epoch: None,
                 device_clock_ok: None,
                 effective_epoch: None,
+                log_upload_request: None,
+                firmware_update: None,
             }),
             ..FakeOrchestrator::default()
         },
@@ -726,6 +821,8 @@ fn cross_origin_image_fetch_does_not_use_orchestrator_token_header() {
                 device_epoch: None,
                 device_clock_ok: None,
                 effective_epoch: None,
+                log_upload_request: None,
+                firmware_update: None,
             }),
             ..FakeOrchestrator::default()
         },
@@ -786,6 +883,8 @@ fn directive_url_prefers_orchestrator_origin_before_public_base_origin() {
                 device_epoch: None,
                 device_clock_ok: None,
                 effective_epoch: None,
+                log_upload_request: None,
+                firmware_update: None,
             }),
             ..FakeOrchestrator::default()
         },
@@ -819,4 +918,140 @@ fn directive_url_prefers_orchestrator_origin_before_public_base_origin() {
             .url
             .starts_with("http://192.168.233.11:8081/api/v1/preview/current.bmp")
     );
+}
+
+#[test]
+fn successful_cycle_uploads_logs_when_requested() {
+    let request = DeviceLogUploadRequest {
+        request_id: 77,
+        max_lines: 32,
+        max_bytes: 2048,
+        reason: Some("collect boot logs".into()),
+        created_epoch: 1_760_000_000,
+        expires_epoch: Some(1_760_003_600),
+    };
+    let payload = DeviceLogUploadRequestBody {
+        device_id: "pf-a1b2c3d4".into(),
+        request_id: 77,
+        uploaded_epoch: 1_760_000_000,
+        line_count: 2,
+        truncated: false,
+        lines: vec!["line-1".into(), "line-2".into()],
+    };
+
+    let mut runner = CycleRunner::new_with_log_upload_provider(
+        FakeClock,
+        FakeStorage {
+            config: seeded_config(),
+            save_count: 0,
+        },
+        FakeOrchestrator {
+            directive: Some(DeviceNextResponse {
+                image_url: "https://901.qingpei.me:40009/public/daily.jpg?device_id=pf-a1b2c3d4"
+                    .into(),
+                source: Some("daily".into()),
+                poll_after_seconds: Some(900),
+                valid_until_epoch: None,
+                server_epoch: None,
+                device_epoch: None,
+                device_clock_ok: None,
+                effective_epoch: None,
+                log_upload_request: Some(request.clone()),
+                firmware_update: None,
+            }),
+            ..FakeOrchestrator::default()
+        },
+        FakeImageFetcher {
+            queued_results: vec![ImageFetchOutcome {
+                ok: true,
+                status_code: 200,
+                error: String::new(),
+                image_changed: false,
+                sha256: "same".into(),
+                etag: None,
+                last_modified: None,
+                artifact: None,
+            }],
+            ..FakeImageFetcher::default()
+        },
+        FakeDisplay::default(),
+        FakeLogUploadProvider {
+            payload: Some(payload.clone()),
+            calls: 0,
+        },
+    );
+
+    let report = runner
+        .run(BootContext {
+            wake_source: WakeSource::Timer,
+            long_press_action: LongPressAction::None,
+            sta_ip: None,
+            power_sample: PowerSample::default(),
+        })
+        .unwrap();
+
+    assert!(report.logs_uploaded);
+    assert_eq!(runner.orchestrator().upload_log_calls, 1);
+    assert_eq!(runner.orchestrator().last_log_upload_request.as_ref(), Some(&request));
+    assert_eq!(runner.orchestrator().last_log_upload_payload.as_ref(), Some(&payload));
+}
+
+#[test]
+fn firmware_update_applied_reboots_before_image_fetch() {
+    let mut runner = CycleRunner::new_with_services(
+        FakeClock,
+        FakeStorage {
+            config: seeded_config(),
+            save_count: 0,
+        },
+        FakeOrchestrator {
+            directive: Some(DeviceNextResponse {
+                image_url: "https://901.qingpei.me:40009/public/daily.jpg?device_id=pf-a1b2c3d4"
+                    .into(),
+                source: Some("daily".into()),
+                poll_after_seconds: Some(900),
+                valid_until_epoch: None,
+                server_epoch: None,
+                device_epoch: None,
+                device_clock_ok: None,
+                effective_epoch: None,
+                log_upload_request: None,
+                firmware_update: Some(FirmwareUpdateDirective {
+                    rollout_id: 12,
+                    version: "9.9.9-test".into(),
+                    app_bin_url: "https://example.com/fw/app.bin".into(),
+                    sha256: "deadbeef".into(),
+                    size_bytes: 1024,
+                    min_battery_percent: Some(20),
+                    requires_vbus: false,
+                    created_epoch: 1_760_000_000,
+                }),
+            }),
+            ..FakeOrchestrator::default()
+        },
+        FakeImageFetcher::default(),
+        FakeDisplay::default(),
+        FakeFirmwareUpdater {
+            should_apply: true,
+            ..FakeFirmwareUpdater::default()
+        },
+        FakeLogUploadProvider::default(),
+    );
+
+    let report = runner
+        .run(BootContext {
+            wake_source: WakeSource::Timer,
+            long_press_action: LongPressAction::None,
+            sta_ip: None,
+            power_sample: PowerSample {
+                battery_mv: 4100,
+                battery_percent: 80,
+                charging: 0,
+                vbus_good: 0,
+            },
+        })
+        .unwrap();
+
+    assert_eq!(report.exit, CycleExit::RebootForFirmwareUpdate);
+    assert!(runner.image_fetcher().fetch_calls.is_empty());
 }

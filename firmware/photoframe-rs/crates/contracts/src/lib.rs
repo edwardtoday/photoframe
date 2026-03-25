@@ -1,6 +1,28 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceLogUploadRequest {
+    pub request_id: i32,
+    pub max_lines: u32,
+    pub max_bytes: u32,
+    pub reason: Option<String>,
+    pub created_epoch: i64,
+    pub expires_epoch: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FirmwareUpdateDirective {
+    pub rollout_id: i32,
+    pub version: String,
+    pub app_bin_url: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub min_battery_percent: Option<i32>,
+    pub requires_vbus: bool,
+    pub created_epoch: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceNextResponse {
     pub image_url: String,
     pub source: Option<String>,
@@ -10,6 +32,8 @@ pub struct DeviceNextResponse {
     pub device_epoch: Option<i64>,
     pub device_clock_ok: Option<bool>,
     pub effective_epoch: Option<i64>,
+    pub log_upload_request: Option<DeviceLogUploadRequest>,
+    pub firmware_update: Option<FirmwareUpdateDirective>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -66,6 +90,7 @@ pub struct DeviceConfigResponse {
     pub config_version: i32,
     pub config: DeviceConfigPayload,
     pub note: Option<String>,
+    pub log_upload_request: Option<DeviceLogUploadRequest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +137,11 @@ pub struct DeviceCheckinRequest {
     pub battery_percent: i32,
     pub charging: i32,
     pub vbus_good: i32,
+    pub running_partition: String,
+    pub ota_state: String,
+    pub ota_target_version: String,
+    pub ota_last_error: String,
+    pub ota_last_attempt_epoch: i64,
     pub reported_config: ReportedConfig,
 }
 
@@ -122,4 +152,14 @@ pub struct DeviceConfigAppliedRequest {
     pub applied: bool,
     pub error: String,
     pub applied_epoch: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceLogUploadRequestBody {
+    pub device_id: String,
+    pub request_id: i32,
+    pub uploaded_epoch: i64,
+    pub line_count: u32,
+    pub truncated: bool,
+    pub lines: Vec<String>,
 }

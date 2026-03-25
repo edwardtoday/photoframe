@@ -45,7 +45,15 @@
   "valid_until_epoch": 1760001800,
   "poll_after_seconds": 900,
   "default_poll_seconds": 3600,
-  "active_override_id": 12
+  "active_override_id": 12,
+  "log_upload_request": {
+    "request_id": 21,
+    "max_lines": 120,
+    "max_bytes": 8192,
+    "reason": "collect wake diagnostics",
+    "created_epoch": 1760000000,
+    "expires_epoch": 1760003600
+  }
 }
 ```
 
@@ -55,6 +63,8 @@
 - `source=daily`：无插播，回退到每日图
 - `poll_after_seconds`：服务建议下次唤醒间隔（用于平衡省电和插播时效）
 - 服务会在每次 `device/next` 响应后记录一条图片下发历史
+- `log_upload_request`：可选，一次性日志采集指令。设备若收到该字段，应在本轮主周期结束前 best-effort 上传最近一段诊断日志，不应阻塞正常拉图与休眠。
+- `firmware_update`：可选，A/B OTA 升级指令。设备若收到该字段，应优先检查电量 / VBUS 门槛，再把新固件下载到 inactive slot；只有写入和 SHA256 校验成功后才切换 boot partition 并重启。
 - `image_url` 可能是：
   - `.../api/v1/assets/<sha>.bmp?device_id=...` 或 `.../api/v1/assets/<sha>.jpg?device_id=...`（插播资源；取决于 `accept_formats` 与派生文件是否存在）
   - `.../api/v1/assets/daily-<date>-<algorithm>-<profile>.bmp?device_id=...` 或对应 `.jpg`（日图；由 orchestrator 从上游 JPG 抓图后按当前 Daily Dither 算法与 palette profile 生成的静态缓存，并按上游 `ETag` / `Last-Modified` 做条件校验）
@@ -205,7 +215,142 @@ Query:
 - `device_id`：可选，不填或 `*` 表示全部
 - `limit`：可选，1-200，默认 50
 
-## 4) Web 上传插播
+## 4) 设备按需日志上传
+
+设计目标：
+
+- 平时不引入“每轮必传”的固定耗电成本
+- 仅在管理端显式请求时，设备下次唤醒才上传一小段诊断日志
+- 日志上传为 best-effort，不应阻塞主周期的拉图、渲染和休眠
+
+### 4.1 管理端创建日志采集请求
+
+`POST /api/v1/device-log-requests`
+
+Header:
+
+- `X-PhotoFrame-Token`
+
+```json
+{
+  "device_id": "pf-a1b2c3d4",
+  "reason": "collect wake diagnostics",
+  "max_lines": 120,
+  "max_bytes": 8192,
+  "expires_in_minutes": 1440
+}
+```
+
+说明：
+
+- 同一设备新的请求创建时，旧的 pending 请求会被取消。
+- 设备只会拿到“最新且仍未过期”的一条请求。
+
+### 4.2 管理端查看日志采集请求
+
+`GET /api/v1/device-log-requests`
+
+Query:
+
+- `device_id`：可选
+- `status`：可选，典型值 `pending|completed|cancelled|expired`
+- `limit`：可选，默认 50
+
+### 4.3 管理端取消 pending 请求
+
+`DELETE /api/v1/device-log-requests/{request_id}`
+
+### 4.4 设备上传日志
+
+`POST /api/v1/device/log-upload`
+
+Header:
+
+- `X-PhotoFrame-Token`
+
+```json
+{
+  "device_id": "pf-a1b2c3d4",
+  "request_id": 21,
+  "uploaded_epoch": 1760000123,
+  "line_count": 3,
+  "truncated": false,
+  "lines": [
+    "[1760000001][boot:8][seq:1][INFO] photoframe-rs: wakeup cause=TIMER",
+    "[1760000005][boot:8][seq:2][INFO] photoframe-rs: wifi connected idx=0 ssid=HomeWiFi ip=192.168.1.8",
+    "[1760000018][boot:8][seq:3][INFO] photoframe-rs: cycle exit=Sleep { seconds: 3600, timer_only: false } source=daily checkin_reported=true logs_uploaded=true"
+  ]
+}
+```
+
+说明：
+
+- 上传成功后，请求会被标记为 `completed`。
+- 相同 `request_id` 的重复上传按幂等更新处理。
+- 取消或过期请求会拒绝上传。
+
+### 4.5 管理端查看已上传日志
+
+`GET /api/v1/device-log-uploads`
+
+Query:
+
+- `device_id`：可选
+- `limit`：可选，默认 20
+
+## 5) 固件 OTA 控制面
+
+说明：
+
+- OTA 只接受 `app.bin` 这类应用分区镜像，不接受整片镜像。
+- 设备若仍是旧单分区布局，需先 USB 迁移到 `ota_0/ota_1` 分区表后，才能启用 ping-pong OTA。
+
+### 5.1 固件制品上传
+
+`POST /api/v1/firmware-artifacts/upload`
+
+Header:
+
+- `X-PhotoFrame-Token`
+
+`multipart/form-data`：
+
+- `file`：固件应用分区镜像（`.bin`）
+- `version`：固件版本字符串
+- `note`：可选备注
+
+### 5.2 固件制品列表
+
+`GET /api/v1/firmware-artifacts`
+
+### 5.3 创建 rollout
+
+`POST /api/v1/firmware-rollouts`
+
+```json
+{
+  "device_id": "pf-a1b2c3d4",
+  "firmware_artifact_id": 3,
+  "min_battery_percent": 50,
+  "requires_vbus": false,
+  "note": "pmic fix rollout"
+}
+```
+
+说明：
+
+- 同一设备新的 rollout 创建时，旧的 enabled rollout 会被关闭。
+- `device_id` 当前只支持单设备，不支持 `*` 批量升级。
+
+### 5.4 查看 rollout
+
+`GET /api/v1/firmware-rollouts`
+
+### 5.5 取消 rollout
+
+`DELETE /api/v1/firmware-rollouts/{rollout_id}`
+
+## 6) Web 上传插播
 
 `POST /api/v1/overrides/upload`（`multipart/form-data`）
 
@@ -243,7 +388,7 @@ Query:
 
 当 `will_expire_before_effective=true` 时，表示该窗口可能在设备真正生效前就过期。
 
-## 5) 查询与管理
+## 7) 查询与管理
 
 - `GET /api/v1/devices`：设备状态（含 `next_wakeup_epoch` 与配置同步状态）
 - `GET /api/v1/power-samples`：电池采样历史（用于曲线展示与续航估算）
@@ -273,7 +418,7 @@ Query:
 - `reported_config`（设备上报配置快照，敏感值脱敏）
 - `battery_mv` / `battery_percent` / `charging` / `vbus_good`
 
-### 5.1) 电池采样历史（曲线/续航估算）
+### 7.1) 电池采样历史（曲线/续航估算）
 
 `GET /api/v1/power-samples`
 
@@ -314,7 +459,7 @@ Response：
 - 服务端会在每次设备 `POST /api/v1/device/checkin` 时追加采样（`sample_epoch` 取 `checkin_epoch`）。
 - 服务端默认保留最近 365 天采样，超期数据会自动清理。
 
-## 6) 当前下发图片预览（管理页）
+## 8) 当前下发图片预览（管理页）
 
 `GET /api/v1/preview/current.bmp`
 

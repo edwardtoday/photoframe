@@ -4,11 +4,12 @@ pub mod url;
 
 pub use model::{
     ApplyLocalConfigOutcome, ApplyRemoteConfigOutcome, DeviceRuntimeConfig, ImageArtifact,
-    ImageFetchOutcome, ImageFetchPlan, ImageFormat, LocalConfigPatch, NormalizePowerOutcome,
-    PowerCache, PowerSample, WifiCredential, normalize_power_sample,
+    FirmwareRuntimeStatus, ImageFetchOutcome, ImageFetchPlan, ImageFormat, LocalConfigPatch,
+    NormalizePowerOutcome, PowerCache, PowerSample, WifiCredential, normalize_power_sample,
 };
 pub use runner::{
-    BootContext, Clock, CycleExit, CycleReport, CycleRunner, Display, ImageFetcher,
+    BootContext, Clock, CycleExit, CycleReport, CycleRunner, Display, FirmwareUpdater,
+    ImageFetcher, LogUploadProvider, NoopFirmwareUpdater, NoopLogUploadProvider,
     OrchestratorApi, Storage,
 };
 pub use url::{

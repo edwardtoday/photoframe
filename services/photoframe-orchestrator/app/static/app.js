@@ -1370,6 +1370,21 @@ function firmwareVersionForDevice(device) {
   return reportedValue || '-';
 }
 
+function otaStatusText(device) {
+  const state = typeof device?.ota_state === 'string' ? device.ota_state.trim() : '';
+  const partition = typeof device?.running_partition === 'string' ? device.running_partition.trim() : '';
+  const target = typeof device?.ota_target_version === 'string' ? device.ota_target_version.trim() : '';
+  const attempted = fmtEpoch(device?.ota_last_attempt_epoch);
+  const error = typeof device?.ota_last_error === 'string' ? device.ota_last_error.trim() : '';
+  const parts = [];
+  if (partition) parts.push(partition);
+  if (state) parts.push(state);
+  if (target) parts.push(`-> ${target}`);
+  if (attempted && attempted !== '-') parts.push(`@ ${attempted}`);
+  if (error) parts.push(`err: ${shorten(error, 32)}`);
+  return parts.length > 0 ? parts.join(' ') : '-';
+}
+
 function getReportedWifiProfiles(device) {
   const reported = normalizeReported(device);
   if (!Array.isArray(reported.wifi_profiles)) {
@@ -1675,6 +1690,7 @@ async function loadDevices() {
       <td>${renderFetchStatus(d)}</td>
       <td>${escapeHtml(batteryStatusText(d))}</td>
       <td>${escapeHtml(powerSourceText(d))}</td>
+      <td title="${escapeHtml(otaStatusText(d))}">${escapeHtml(shorten(otaStatusText(d), 48))}</td>
       <td title="${escapeHtml(wifiSummary)}">${escapeHtml(shorten(wifiSummary, 48))}</td>
       <td>${escapeHtml(d.sta_ip || '-')}</td>
       <td>${escapeHtml(cfgVersion)}</td>

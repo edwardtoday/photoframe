@@ -110,7 +110,9 @@ fn sleep_ms(ms: u64) {
 
 #[cfg(target_os = "espidf")]
 fn log(message: &str) {
-    println!("photoframe-rs/power: {message}");
+    let rendered = format!("photoframe-rs/power: {message}");
+    println!("{}", rendered);
+    crate::diag::append("INFO", &rendered);
 }
 
 #[cfg(target_os = "espidf")]

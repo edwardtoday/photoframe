@@ -60,7 +60,7 @@ fn log_render_timing(
     flush_ms: u128,
     total_ms: u128,
 ) {
-    println!(
+    let rendered = format!(
         "photoframe-rs/timing: render status={} stage={} format={} input_bytes={} output_bytes={} power={}ms decode={}ms pack={}ms flush={}ms total={}ms",
         status,
         stage,
@@ -73,6 +73,8 @@ fn log_render_timing(
         flush_ms,
         total_ms
     );
+    println!("{}", rendered);
+    crate::diag::append("INFO", &rendered);
 }
 
 #[cfg(target_os = "espidf")]
@@ -152,7 +154,7 @@ fn render_image_direct(
             let pack_start = Instant::now();
             let packed = crate::render_core::render_bmp24_to_packed(&artifact.bytes, options)
                 .map_err(|err| {
-                    println!("photoframe-rs/render: bmp render failed: {err}");
+                    crate::device_log!("ERROR", "photoframe-rs/render: bmp render failed: {err}");
                     log_render_timing(
                         "err",
                         "bmp_pack",
@@ -177,7 +179,7 @@ fn render_image_direct(
                 photoframe_platform_espidf::send_debug_stage_beacon(config, "before_jpeg_decode");
             let decode_start = Instant::now();
             let decoded = crate::jpeg::decode_rgb888(&artifact.bytes).map_err(|err| {
-                println!("photoframe-rs/render: jpeg decode failed: {err}");
+                crate::device_log!("ERROR", "photoframe-rs/render: jpeg decode failed: {err}");
                 log_render_timing(
                     "err",
                     "jpeg_decode",
@@ -193,7 +195,8 @@ fn render_image_direct(
                 FailureKind::GeneralFailure
             })?;
             decode_ms = decode_start.elapsed().as_millis();
-            println!(
+            crate::device_log!(
+                "INFO",
                 "photoframe-rs/render: jpeg decoded width={} height={} rgb_len={}",
                 decoded.width, decoded.height, decoded.rgb_len
             );
@@ -203,7 +206,8 @@ fn render_image_direct(
                 .checked_mul(decoded.height as usize)
                 .and_then(|pixels| pixels.checked_mul(3))
                 .ok_or_else(|| {
-                    println!(
+                    crate::device_log!(
+                        "ERROR",
                         "photoframe-rs/render: jpeg size overflow width={} height={}",
                         decoded.width, decoded.height
                     );
@@ -222,7 +226,8 @@ fn render_image_direct(
                     FailureKind::GeneralFailure
                 })?;
             if decoded.rgb_len < expected_rgb_len {
-                println!(
+                crate::device_log!(
+                    "ERROR",
                     "photoframe-rs/render: jpeg rgb_len too short actual={} expected={}",
                     decoded.rgb_len, expected_rgb_len
                 );
@@ -254,7 +259,7 @@ fn render_image_direct(
                 options,
             )
             .map_err(|err| {
-                println!("photoframe-rs/render: rgb->packed failed: {err}");
+                crate::device_log!("ERROR", "photoframe-rs/render: rgb->packed failed: {err}");
                 log_render_timing(
                     "err",
                     "rgb_pack",
@@ -281,14 +286,14 @@ fn render_image_direct(
     } else {
         config.device_id.as_str()
     };
-    println!("photoframe-rs/render: pause wifi before panel flush");
+    crate::device_log!("INFO", "photoframe-rs/render: pause wifi before panel flush");
     EspWifiManager::pause_for_render();
     let flush_start = Instant::now();
     let flush_result = crate::panel::flush_packed_image(&packed.bytes);
     flush_ms = flush_start.elapsed().as_millis();
-    println!("photoframe-rs/render: resume wifi after panel flush");
+    crate::device_log!("INFO", "photoframe-rs/render: resume wifi after panel flush");
     if let Err(err) = EspWifiManager::reconnect_after_render(hostname, config) {
-        println!("photoframe-rs/render: wifi resume failed after flush: {err}");
+        crate::device_log!("WARN", "photoframe-rs/render: wifi resume failed after flush: {err}");
         log_render_timing(
             "err",
             "wifi_resume",
@@ -305,7 +310,7 @@ fn render_image_direct(
     }
     if let Err(err) = flush_result {
         let _ = photoframe_platform_espidf::send_debug_stage_beacon(config, "panel_flush_failed");
-        println!("photoframe-rs/render: panel flush failed: {err}");
+        crate::device_log!("ERROR", "photoframe-rs/render: panel flush failed: {err}");
         log_render_timing(
             "err",
             "panel_flush",

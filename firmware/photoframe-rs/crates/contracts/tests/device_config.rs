@@ -15,7 +15,15 @@ fn parses_device_config_response_with_nested_config() {
         "image_url_template": "https://example.com/daily.bmp",
         "timezone": "Asia/Shanghai"
       },
-      "note": "公网 token 切换"
+      "note": "公网 token 切换",
+      "log_upload_request": {
+        "request_id": 34,
+        "max_lines": 80,
+        "max_bytes": 4096,
+        "reason": "collect wake trace",
+        "created_epoch": 1760000000,
+        "expires_epoch": null
+      }
     }
     "#;
 
@@ -30,4 +38,10 @@ fn parses_device_config_response_with_nested_config() {
     );
     assert_eq!(response.config.timezone.as_deref(), Some("Asia/Shanghai"));
     assert_eq!(response.device_clock_ok, Some(false));
+    let request = response.log_upload_request.expect("missing log upload request");
+    assert_eq!(request.request_id, 34);
+    assert_eq!(request.max_lines, 80);
+    assert_eq!(request.max_bytes, 4096);
+    assert_eq!(request.reason.as_deref(), Some("collect wake trace"));
+    assert_eq!(request.expires_epoch, None);
 }

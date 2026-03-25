@@ -1,4 +1,7 @@
-use photoframe_contracts::{DeviceCheckinRequest, DeviceNextResponse};
+use photoframe_contracts::{
+    DeviceCheckinRequest, DeviceLogUploadRequest, DeviceLogUploadRequestBody,
+    DeviceNextResponse, FirmwareUpdateDirective,
+};
 use photoframe_domain::{
     CycleAction, FailureKind, LongPressAction, WakeSource, apply_cycle_outcome,
     decide_cycle_action, sleep_seconds_until_next_beijing_sync,
@@ -7,7 +10,7 @@ use photoframe_domain::{
 use crate::{
     DeviceRuntimeConfig, ImageArtifact, ImageFetchOutcome, ImageFetchPlan,
     build_checkin_base_url_candidates, build_dated_url, build_fetch_url_candidates,
-    model::PowerSample, split_url_origin_and_rest,
+    model::{FirmwareRuntimeStatus, PowerSample}, split_url_origin_and_rest,
 };
 
 pub trait Clock {
@@ -59,7 +62,60 @@ pub trait OrchestratorApi {
     ) -> Result<(), String> {
         Ok(())
     }
+
+    fn upload_logs(
+        &mut self,
+        _config: &DeviceRuntimeConfig,
+        _request: &DeviceLogUploadRequest,
+        _payload: &DeviceLogUploadRequestBody,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 }
+
+pub trait LogUploadProvider {
+    fn collect_logs(
+        &mut self,
+        _config: &DeviceRuntimeConfig,
+        _request: &DeviceLogUploadRequest,
+        _uploaded_epoch: i64,
+    ) -> Option<DeviceLogUploadRequestBody> {
+        None
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct NoopLogUploadProvider;
+
+impl LogUploadProvider for NoopLogUploadProvider {}
+
+pub trait FirmwareUpdater {
+    fn install_update(
+        &mut self,
+        _config: &DeviceRuntimeConfig,
+        _directive: &FirmwareUpdateDirective,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    fn confirm_running_firmware(&mut self, _config: &DeviceRuntimeConfig) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn current_status(&mut self, config: &DeviceRuntimeConfig) -> FirmwareRuntimeStatus {
+        FirmwareRuntimeStatus {
+            ota_target_version: config.ota_target_version.clone(),
+            ota_last_error: config.ota_last_error.clone(),
+            ota_last_attempt_epoch: config.ota_last_attempt_epoch,
+            ..FirmwareRuntimeStatus::default()
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct NoopFirmwareUpdater;
+
+impl FirmwareUpdater for NoopFirmwareUpdater {}
 
 pub trait ImageFetcher {
     fn fetch(&mut self, plan: &ImageFetchPlan) -> ImageFetchOutcome;
@@ -86,6 +142,7 @@ pub struct BootContext {
 pub enum CycleExit {
     EnterApPortal,
     RebootForConfig,
+    RebootForFirmwareUpdate,
     Sleep { seconds: u64, timer_only: bool },
 }
 
@@ -97,24 +154,99 @@ pub struct CycleReport {
     pub fetch_url_used: Option<String>,
     pub checkin_reported: bool,
     pub portal_window_opened: bool,
+    pub logs_uploaded: bool,
 }
 
-pub struct CycleRunner<C, S, O, I, D> {
+pub struct CycleRunner<C, S, O, I, D, F = NoopFirmwareUpdater, L = NoopLogUploadProvider> {
     clock: C,
     storage: S,
     orchestrator: O,
     image_fetcher: I,
     display: D,
+    firmware_updater: F,
+    log_upload_provider: L,
 }
 
-impl<C, S, O, I, D> CycleRunner<C, S, O, I, D> {
-    pub fn new(clock: C, storage: S, orchestrator: O, image_fetcher: I, display: D) -> Self {
+impl<C, S, O, I, D> CycleRunner<C, S, O, I, D, NoopFirmwareUpdater, NoopLogUploadProvider> {
+    pub fn new(
+        clock: C,
+        storage: S,
+        orchestrator: O,
+        image_fetcher: I,
+        display: D,
+    ) -> Self {
+        Self::new_with_services(
+            clock,
+            storage,
+            orchestrator,
+            image_fetcher,
+            display,
+            NoopFirmwareUpdater,
+            NoopLogUploadProvider,
+        )
+    }
+}
+
+impl<C, S, O, I, D, F> CycleRunner<C, S, O, I, D, F, NoopLogUploadProvider> {
+    pub fn new_with_firmware_updater(
+        clock: C,
+        storage: S,
+        orchestrator: O,
+        image_fetcher: I,
+        display: D,
+        firmware_updater: F,
+    ) -> Self {
+        Self::new_with_services(
+            clock,
+            storage,
+            orchestrator,
+            image_fetcher,
+            display,
+            firmware_updater,
+            NoopLogUploadProvider,
+        )
+    }
+}
+
+impl<C, S, O, I, D, L> CycleRunner<C, S, O, I, D, NoopFirmwareUpdater, L> {
+    pub fn new_with_log_upload_provider(
+        clock: C,
+        storage: S,
+        orchestrator: O,
+        image_fetcher: I,
+        display: D,
+        log_upload_provider: L,
+    ) -> Self {
+        Self::new_with_services(
+            clock,
+            storage,
+            orchestrator,
+            image_fetcher,
+            display,
+            NoopFirmwareUpdater,
+            log_upload_provider,
+        )
+    }
+}
+
+impl<C, S, O, I, D, F, L> CycleRunner<C, S, O, I, D, F, L> {
+    pub fn new_with_services(
+        clock: C,
+        storage: S,
+        orchestrator: O,
+        image_fetcher: I,
+        display: D,
+        firmware_updater: F,
+        log_upload_provider: L,
+    ) -> Self {
         Self {
             clock,
             storage,
             orchestrator,
             image_fetcher,
             display,
+            firmware_updater,
+            log_upload_provider,
         }
     }
 
@@ -131,13 +263,15 @@ impl<C, S, O, I, D> CycleRunner<C, S, O, I, D> {
     }
 }
 
-impl<C, S, O, I, D> CycleRunner<C, S, O, I, D>
+impl<C, S, O, I, D, F, L> CycleRunner<C, S, O, I, D, F, L>
 where
     C: Clock,
     S: Storage,
     O: OrchestratorApi,
     I: ImageFetcher,
     D: Display,
+    F: FirmwareUpdater,
+    L: LogUploadProvider,
 {
     /// 单轮编排只处理“策略与状态转换”，不依赖硬件细节，便于宿主机验证。
     pub fn run(&mut self, boot: BootContext) -> Result<CycleReport, String> {
@@ -160,6 +294,7 @@ where
                 fetch_url_used: None,
                 checkin_reported: false,
                 portal_window_opened: false,
+                logs_uploaded: false,
             });
         }
 
@@ -177,6 +312,7 @@ where
                 fetch_url_used: None,
                 checkin_reported: false,
                 portal_window_opened: false,
+                logs_uploaded: false,
             });
         }
 
@@ -188,6 +324,7 @@ where
                 fetch_url_used: None,
                 checkin_reported: false,
                 portal_window_opened,
+                logs_uploaded: false,
             });
         }
 
@@ -219,6 +356,7 @@ where
                 fetch_url_used: None,
                 checkin_reported: false,
                 portal_window_opened,
+                logs_uploaded: false,
             });
         }
 
@@ -232,18 +370,51 @@ where
         let mut success_sleep_seconds = sleep_seconds_until_next_beijing_sync(now_epoch)
             .unwrap_or_else(|| u64::from(config.interval_minutes.max(1)) * 60);
         let mut used_orchestrator_directive = false;
+        let mut log_upload_request: Option<DeviceLogUploadRequest> = None;
+        let mut firmware_update: Option<FirmwareUpdateDirective> = None;
 
         if config.orchestrator_enabled && !config.orchestrator_base_url.is_empty() {
             if let Some(directive) =
                 self.orchestrator
                     .fetch_directive(&config, now_epoch, success_sleep_seconds)?
             {
+                log_upload_request = directive.log_upload_request.clone();
+                firmware_update = directive.firmware_update.clone();
                 url = directive.image_url;
                 image_source = directive.source.unwrap_or_else(|| "daily".into());
                 if let Some(seconds) = directive.poll_after_seconds {
                     success_sleep_seconds = success_sleep_seconds.min(u64::from(seconds.max(60)));
                 }
                 used_orchestrator_directive = true;
+            }
+        }
+
+        if let Some(update) = firmware_update.as_ref()
+            && self.should_attempt_firmware_update(update, boot.power_sample, &config)
+        {
+            config.ota_target_version = update.version.clone();
+            config.ota_last_error.clear();
+            config.ota_last_attempt_epoch = now_epoch;
+            self.storage.save_config(&config)?;
+
+            match self.firmware_updater.install_update(&config, update) {
+                Ok(true) => {
+                    self.storage.save_config(&config)?;
+                    return Ok(CycleReport {
+                        exit: CycleExit::RebootForFirmwareUpdate,
+                        action,
+                        image_source: "firmware-update".into(),
+                        fetch_url_used: None,
+                        checkin_reported: false,
+                        portal_window_opened,
+                        logs_uploaded: false,
+                    });
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    config.ota_last_error = err;
+                    self.storage.save_config(&config)?;
+                }
             }
         }
 
@@ -371,6 +542,7 @@ where
             let _ = self
                 .orchestrator
                 .report_debug_stage(&config, "after_save_ok");
+            let _ = self.firmware_updater.confirm_running_firmware(&config);
 
             let next_wakeup_epoch = now_epoch + success_sleep_seconds as i64;
             let _ = self
@@ -392,6 +564,10 @@ where
                     &fallback_url,
                 )
                 .unwrap_or(false);
+            let logs_uploaded = self
+                .upload_logs_if_requested(&config, log_upload_request.as_ref(), now_epoch)
+                .unwrap_or(false);
+            let _ = self.firmware_updater.confirm_running_firmware(&config);
 
             return Ok(CycleReport {
                 exit: CycleExit::Sleep {
@@ -403,6 +579,7 @@ where
                 fetch_url_used,
                 checkin_reported,
                 portal_window_opened,
+                logs_uploaded,
             });
         }
 
@@ -448,6 +625,9 @@ where
                 &fallback_url,
             )
             .unwrap_or(false);
+        let logs_uploaded = self
+            .upload_logs_if_requested(&config, log_upload_request.as_ref(), now_epoch)
+            .unwrap_or(false);
 
         Ok(CycleReport {
             exit: CycleExit::Sleep {
@@ -459,7 +639,51 @@ where
             fetch_url_used,
             checkin_reported,
             portal_window_opened,
+            logs_uploaded,
         })
+    }
+
+    fn should_attempt_firmware_update(
+        &self,
+        update: &FirmwareUpdateDirective,
+        power_sample: PowerSample,
+        config: &DeviceRuntimeConfig,
+    ) -> bool {
+        if update.version.trim().is_empty() || update.app_bin_url.trim().is_empty() {
+            return false;
+        }
+        if update.version == config.firmware_version() {
+            return false;
+        }
+        if update.requires_vbus && power_sample.vbus_good != 1 {
+            return false;
+        }
+        if let Some(min_percent) = update.min_battery_percent
+            && power_sample.battery_percent >= 0
+            && power_sample.battery_percent < min_percent
+        {
+            return false;
+        }
+        true
+    }
+
+    fn upload_logs_if_requested(
+        &mut self,
+        config: &DeviceRuntimeConfig,
+        request: Option<&DeviceLogUploadRequest>,
+        uploaded_epoch: i64,
+    ) -> Result<bool, String> {
+        let Some(request) = request else {
+            return Ok(false);
+        };
+        let Some(payload) = self
+            .log_upload_provider
+            .collect_logs(config, request, uploaded_epoch)
+        else {
+            return Ok(false);
+        };
+        self.orchestrator.upload_logs(config, request, &payload)?;
+        Ok(true)
     }
 
     fn report_checkin(
@@ -491,6 +715,7 @@ where
             &config.preferred_image_origin,
             &config.image_url_template,
         );
+        let firmware_status = self.firmware_updater.current_status(config);
         let payload = DeviceCheckinRequest {
             device_id: config.device_id.clone(),
             checkin_epoch: self.clock.now_epoch(),
@@ -510,6 +735,11 @@ where
             battery_percent: power_sample.battery_percent,
             charging: power_sample.charging,
             vbus_good: power_sample.vbus_good,
+            running_partition: firmware_status.running_partition,
+            ota_state: firmware_status.ota_state,
+            ota_target_version: firmware_status.ota_target_version,
+            ota_last_error: firmware_status.ota_last_error,
+            ota_last_attempt_epoch: firmware_status.ota_last_attempt_epoch,
             reported_config: config.to_reported_config(),
         };
         self.orchestrator.report_checkin(&base_urls, &payload)?;

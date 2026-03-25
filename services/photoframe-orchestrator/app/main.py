@@ -77,6 +77,12 @@ def _detect_app_git_sha() -> str:
 
 APP_GIT_SHA = _detect_app_git_sha()
 DEVICE_CONFIG_MAX_HISTORY = 200
+DEVICE_LOG_UPLOAD_MAX_HISTORY = 200
+DEVICE_LOG_UPLOAD_STATUS_PENDING = "pending"
+DEVICE_LOG_UPLOAD_STATUS_COMPLETED = "completed"
+DEVICE_LOG_UPLOAD_STATUS_CANCELLED = "cancelled"
+DEVICE_LOG_UPLOAD_STATUS_EXPIRED = "expired"
+FIRMWARE_ARTIFACT_MAX_BYTES = 8 * 1024 * 1024
 POWER_SAMPLE_DEFAULT_DAYS = 30
 POWER_SAMPLE_RETENTION_DAYS = 365
 POWER_SAMPLE_RETENTION_SECONDS = POWER_SAMPLE_RETENTION_DAYS * 24 * 3600
@@ -409,6 +415,11 @@ def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
   _ensure_table_column(conn, "devices", "charging", "INTEGER NOT NULL DEFAULT -1")
   _ensure_table_column(conn, "devices", "vbus_good", "INTEGER NOT NULL DEFAULT -1")
   _ensure_table_column(conn, "devices", "sta_ip", "TEXT NOT NULL DEFAULT ''")
+  _ensure_table_column(conn, "devices", "running_partition", "TEXT NOT NULL DEFAULT ''")
+  _ensure_table_column(conn, "devices", "ota_state", "TEXT NOT NULL DEFAULT ''")
+  _ensure_table_column(conn, "devices", "ota_target_version", "TEXT NOT NULL DEFAULT ''")
+  _ensure_table_column(conn, "devices", "ota_last_error", "TEXT NOT NULL DEFAULT ''")
+  _ensure_table_column(conn, "devices", "ota_last_attempt_epoch", "INTEGER NOT NULL DEFAULT 0")
   _ensure_table_column(conn, "overrides", "dither_algorithm", f"TEXT NOT NULL DEFAULT '{OVERRIDE_DITHER_DEFAULT}'")
   _ensure_table_column(conn, "publish_history", "dither_algorithm", "TEXT NOT NULL DEFAULT ''")
 
@@ -432,6 +443,92 @@ def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
         value TEXT NOT NULL,
         updated_at INTEGER NOT NULL DEFAULT 0
       )
+      """
+  )
+  conn.execute(
+      """
+      CREATE TABLE IF NOT EXISTS device_log_upload_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        max_lines INTEGER NOT NULL DEFAULT 120,
+        max_bytes INTEGER NOT NULL DEFAULT 8192,
+        created_epoch INTEGER NOT NULL DEFAULT 0,
+        expires_epoch INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        completed_epoch INTEGER NOT NULL DEFAULT 0,
+        uploaded_line_count INTEGER NOT NULL DEFAULT 0,
+        uploaded_truncated INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
+      )
+      """
+  )
+  conn.execute(
+      """
+      CREATE INDEX IF NOT EXISTS idx_device_log_upload_requests_device_status
+        ON device_log_upload_requests (device_id, status, created_epoch DESC)
+      """
+  )
+  conn.execute(
+      """
+      CREATE TABLE IF NOT EXISTS device_log_uploads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id INTEGER NOT NULL,
+        device_id TEXT NOT NULL,
+        uploaded_epoch INTEGER NOT NULL DEFAULT 0,
+        received_epoch INTEGER NOT NULL DEFAULT 0,
+        line_count INTEGER NOT NULL DEFAULT 0,
+        truncated INTEGER NOT NULL DEFAULT 0,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL DEFAULT 0
+      )
+      """
+  )
+  conn.execute(
+      """
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_device_log_uploads_request_id
+        ON device_log_uploads (request_id)
+      """
+  )
+  conn.execute(
+      """
+      CREATE TABLE IF NOT EXISTS firmware_artifacts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        version TEXT NOT NULL,
+        asset_name TEXT NOT NULL,
+        asset_sha256 TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL DEFAULT 0,
+        note TEXT NOT NULL DEFAULT '',
+        created_epoch INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL DEFAULT 0
+      )
+      """
+  )
+  conn.execute(
+      """
+      CREATE INDEX IF NOT EXISTS idx_firmware_artifacts_version
+        ON firmware_artifacts (version, created_epoch DESC)
+      """
+  )
+  conn.execute(
+      """
+      CREATE TABLE IF NOT EXISTS firmware_rollouts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id TEXT NOT NULL,
+        artifact_id INTEGER NOT NULL,
+        min_battery_percent INTEGER NOT NULL DEFAULT 50,
+        requires_vbus INTEGER NOT NULL DEFAULT 0,
+        note TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_epoch INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL DEFAULT 0
+      )
+      """
+  )
+  conn.execute(
+      """
+      CREATE INDEX IF NOT EXISTS idx_firmware_rollouts_device_enabled
+        ON firmware_rollouts (device_id, enabled, created_epoch DESC)
       """
   )
 
@@ -461,6 +558,11 @@ def _init_db() -> None:
           battery_percent INTEGER NOT NULL DEFAULT -1,
           charging INTEGER NOT NULL DEFAULT -1,
           vbus_good INTEGER NOT NULL DEFAULT -1,
+          running_partition TEXT NOT NULL DEFAULT '',
+          ota_state TEXT NOT NULL DEFAULT '',
+          ota_target_version TEXT NOT NULL DEFAULT '',
+          ota_last_error TEXT NOT NULL DEFAULT '',
+          ota_last_attempt_epoch INTEGER NOT NULL DEFAULT 0,
           reported_config_json TEXT NOT NULL DEFAULT '{}',
           reported_config_epoch INTEGER NOT NULL DEFAULT 0,
           updated_at INTEGER NOT NULL DEFAULT 0
@@ -535,6 +637,68 @@ def _init_db() -> None:
           apply_error TEXT NOT NULL DEFAULT '',
           updated_at INTEGER NOT NULL DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS device_log_upload_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT NOT NULL,
+          reason TEXT NOT NULL DEFAULT '',
+          max_lines INTEGER NOT NULL DEFAULT 120,
+          max_bytes INTEGER NOT NULL DEFAULT 8192,
+          created_epoch INTEGER NOT NULL DEFAULT 0,
+          expires_epoch INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'pending',
+          completed_epoch INTEGER NOT NULL DEFAULT 0,
+          uploaded_line_count INTEGER NOT NULL DEFAULT 0,
+          uploaded_truncated INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_device_log_upload_requests_device_status
+          ON device_log_upload_requests (device_id, status, created_epoch DESC);
+
+        CREATE TABLE IF NOT EXISTS device_log_uploads (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          request_id INTEGER NOT NULL,
+          device_id TEXT NOT NULL,
+          uploaded_epoch INTEGER NOT NULL DEFAULT 0,
+          received_epoch INTEGER NOT NULL DEFAULT 0,
+          line_count INTEGER NOT NULL DEFAULT 0,
+          truncated INTEGER NOT NULL DEFAULT 0,
+          payload_json TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_device_log_uploads_request_id
+          ON device_log_uploads (request_id);
+
+        CREATE TABLE IF NOT EXISTS firmware_artifacts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          version TEXT NOT NULL,
+          asset_name TEXT NOT NULL,
+          asset_sha256 TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL DEFAULT 0,
+          note TEXT NOT NULL DEFAULT '',
+          created_epoch INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_firmware_artifacts_version
+          ON firmware_artifacts (version, created_epoch DESC);
+
+        CREATE TABLE IF NOT EXISTS firmware_rollouts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT NOT NULL,
+          artifact_id INTEGER NOT NULL,
+          min_battery_percent INTEGER NOT NULL DEFAULT 50,
+          requires_vbus INTEGER NOT NULL DEFAULT 0,
+          note TEXT NOT NULL DEFAULT '',
+          enabled INTEGER NOT NULL DEFAULT 1,
+          created_epoch INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_firmware_rollouts_device_enabled
+          ON firmware_rollouts (device_id, enabled, created_epoch DESC);
         """
     )
     _apply_schema_migrations(conn)
@@ -1306,6 +1470,135 @@ def _load_latest_device_config_plan(conn: sqlite3.Connection, device_id: str) ->
       """,
       (normalized, normalized),
   ).fetchone()
+
+
+def _expire_device_log_upload_requests(conn: sqlite3.Connection, now_ts: int) -> None:
+  conn.execute(
+      """
+      UPDATE device_log_upload_requests
+      SET status = ?, updated_at = ?
+      WHERE status = ?
+        AND expires_epoch > 0
+        AND expires_epoch <= ?
+      """,
+      (
+          DEVICE_LOG_UPLOAD_STATUS_EXPIRED,
+          int(now_ts),
+          DEVICE_LOG_UPLOAD_STATUS_PENDING,
+          int(now_ts),
+      ),
+  )
+
+
+def _active_device_log_upload_request(
+    conn: sqlite3.Connection,
+    device_id: str,
+    now_ts: int,
+) -> sqlite3.Row | None:
+  normalized = _normalize_device_id(device_id)
+  if normalized == "*":
+    return None
+  _expire_device_log_upload_requests(conn, now_ts)
+  return conn.execute(
+      """
+      SELECT *
+      FROM device_log_upload_requests
+      WHERE device_id = ?
+        AND status = ?
+        AND (expires_epoch <= 0 OR expires_epoch > ?)
+      ORDER BY created_epoch DESC, id DESC
+      LIMIT 1
+      """,
+      (
+          normalized,
+          DEVICE_LOG_UPLOAD_STATUS_PENDING,
+          int(now_ts),
+      ),
+  ).fetchone()
+
+
+def _device_log_upload_request_payload(row: sqlite3.Row | None) -> dict[str, Any] | None:
+  if row is None:
+    return None
+  expires_epoch = int(row["expires_epoch"])
+  return {
+      "request_id": int(row["id"]),
+      "max_lines": max(1, int(row["max_lines"])),
+      "max_bytes": max(256, int(row["max_bytes"])),
+      "reason": str(row["reason"] or "").strip() or None,
+      "created_epoch": int(row["created_epoch"]),
+      "expires_epoch": None if expires_epoch <= 0 else expires_epoch,
+  }
+
+
+def _store_firmware_artifact_bytes(raw: bytes) -> tuple[str, str, int]:
+  if not raw:
+    raise HTTPException(status_code=400, detail="empty firmware file")
+  if len(raw) > FIRMWARE_ARTIFACT_MAX_BYTES:
+    raise HTTPException(status_code=400, detail="firmware file too large")
+  sha256 = hashlib.sha256(raw).hexdigest()
+  asset_name = f"{sha256}.bin"
+  out_path = ASSET_DIR / asset_name
+  if not out_path.exists():
+    out_path.write_bytes(raw)
+  return asset_name, sha256, len(raw)
+
+
+def _active_firmware_rollout_for_device(conn: sqlite3.Connection, device_id: str) -> sqlite3.Row | None:
+  normalized = _normalize_device_id(device_id)
+  if normalized == "*":
+    return None
+  return conn.execute(
+      """
+      SELECT r.*, a.version, a.asset_name, a.asset_sha256, a.size_bytes
+      FROM firmware_rollouts r
+      JOIN firmware_artifacts a ON a.id = r.artifact_id
+      WHERE r.enabled = 1
+        AND (r.device_id = ? OR r.device_id = '*')
+      ORDER BY CASE WHEN r.device_id = ? THEN 0 ELSE 1 END, r.created_epoch DESC, r.id DESC
+      LIMIT 1
+      """,
+      (normalized, normalized),
+  ).fetchone()
+
+
+def _device_reported_firmware_version(conn: sqlite3.Connection, device_id: str) -> str:
+  row = conn.execute(
+      "SELECT reported_config_json FROM devices WHERE device_id = ? LIMIT 1",
+      (_normalize_device_id(device_id),),
+  ).fetchone()
+  if row is None:
+    return ""
+  config = _decode_config_json(str(row["reported_config_json"]))
+  return str(config.get("firmware_version") or "").strip()
+
+
+def _firmware_update_payload(
+    request: Request,
+    rollout: sqlite3.Row | None,
+    *,
+    device_id: str,
+    current_version: str,
+) -> dict[str, Any] | None:
+  if rollout is None:
+    return None
+  target_version = str(rollout["version"] or "").strip()
+  if target_version != "" and current_version == target_version:
+    return None
+  asset_name = str(rollout["asset_name"] or "").strip()
+  asset_sha256 = str(rollout["asset_sha256"] or "").strip()
+  if asset_name == "" or asset_sha256 == "":
+    return None
+  return {
+      "rollout_id": int(rollout["id"]),
+      "version": target_version,
+      "app_bin_url": f"{_public_base(request)}/api/v1/assets/{asset_name}{_asset_query(device_id=device_id)}",
+      "sha256": asset_sha256,
+      "size_bytes": max(0, int(rollout["size_bytes"])),
+      "min_battery_percent": max(0, int(rollout["min_battery_percent"])),
+      "requires_vbus": bool(int(rollout["requires_vbus"])),
+      "created_epoch": int(rollout["created_epoch"]),
+  }
 
 
 def _active_override_for_device(conn: sqlite3.Connection, now_ts: int, device_id: str) -> sqlite3.Row | None:
@@ -2225,6 +2518,11 @@ class DeviceCheckin(BaseModel):
   battery_percent: int = -1
   charging: int = -1
   vbus_good: int = -1
+  running_partition: str = Field(default="", max_length=32)
+  ota_state: str = Field(default="", max_length=32)
+  ota_target_version: str = Field(default="", max_length=128)
+  ota_last_error: str = Field(default="", max_length=512)
+  ota_last_attempt_epoch: int = 0
   reported_config: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -2240,6 +2538,31 @@ class DeviceConfigApplied(BaseModel):
   applied: bool = True
   error: str = Field(default="", max_length=512)
   applied_epoch: int | None = None
+
+
+class DeviceLogUploadRequestPublish(BaseModel):
+  device_id: str = Field(min_length=1, max_length=64)
+  reason: str = Field(default="", max_length=256)
+  max_lines: int = Field(default=120, ge=1, le=500)
+  max_bytes: int = Field(default=8192, ge=256, le=65536)
+  expires_in_minutes: int = Field(default=1440, ge=0, le=7 * 24 * 60)
+
+
+class DeviceLogUploadPayload(BaseModel):
+  device_id: str = Field(min_length=1, max_length=64)
+  request_id: int = Field(ge=1)
+  uploaded_epoch: int
+  line_count: int = Field(ge=0, le=500)
+  truncated: bool = False
+  lines: list[str] = Field(default_factory=list)
+
+
+class FirmwareRolloutPublish(BaseModel):
+  device_id: str = Field(min_length=1, max_length=64)
+  firmware_artifact_id: int = Field(ge=1)
+  min_battery_percent: int = Field(default=50, ge=0, le=100)
+  requires_vbus: bool = False
+  note: str = Field(default="", max_length=256)
 
 
 class DailyRenderConfigPayload(BaseModel):
@@ -2548,8 +2871,14 @@ def device_next(
   prefer_bmp = preferred_output_format == "bmp"
   prefer_jpeg = preferred_output_format == "jpg"
   conn = _ensure_db()
+  active_log_request: sqlite3.Row | None = None
+  firmware_rollout: sqlite3.Row | None = None
+  current_firmware_version = ""
 
   with DB_LOCK:
+    active_log_request = _active_device_log_upload_request(conn, device_id, now_ts)
+    firmware_rollout = _active_firmware_rollout_for_device(conn, device_id)
+    current_firmware_version = _device_reported_firmware_version(conn, device_id)
     conn.execute(
         """
         INSERT INTO devices (device_id, updated_at, failure_count)
@@ -2671,6 +3000,13 @@ def device_next(
       "poll_after_seconds": poll_sec,
       "default_poll_seconds": _clamp(default_poll_seconds, 60, 86400),
       "active_override_id": active_override_id,
+      "log_upload_request": _device_log_upload_request_payload(active_log_request),
+      "firmware_update": _firmware_update_payload(
+          request,
+          firmware_rollout,
+          device_id=device_id,
+          current_version=current_firmware_version,
+      ),
   }
 
 
@@ -2700,6 +3036,11 @@ def device_checkin(
   battery_percent = int(payload.battery_percent)
   charging = int(payload.charging)
   vbus_good = int(payload.vbus_good)
+  running_partition = str(payload.running_partition or "").strip()[:32]
+  ota_state = str(payload.ota_state or "").strip()[:32]
+  ota_target_version = str(payload.ota_target_version or "").strip()[:128]
+  ota_last_error = str(payload.ota_last_error or "").strip()[:512]
+  ota_last_attempt_epoch = int(payload.ota_last_attempt_epoch)
 
   conn = _ensure_db()
   with DB_LOCK:
@@ -2709,8 +3050,9 @@ def device_checkin(
           device_id, last_checkin_epoch, next_wakeup_epoch, sleep_seconds,
           poll_interval_seconds, failure_count, last_http_status, fetch_ok,
           image_changed, image_source, last_error, sta_ip, battery_mv, battery_percent,
-          charging, vbus_good, reported_config_json, reported_config_epoch, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          charging, vbus_good, running_partition, ota_state, ota_target_version,
+          ota_last_error, ota_last_attempt_epoch, reported_config_json, reported_config_epoch, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(device_id) DO UPDATE SET
           last_checkin_epoch = excluded.last_checkin_epoch,
           next_wakeup_epoch = excluded.next_wakeup_epoch,
@@ -2728,6 +3070,11 @@ def device_checkin(
           battery_percent = CASE WHEN excluded.battery_percent >= 0 THEN excluded.battery_percent ELSE battery_percent END,
           charging = CASE WHEN excluded.charging IN (0, 1) THEN excluded.charging ELSE charging END,
           vbus_good = CASE WHEN excluded.vbus_good IN (0, 1) THEN excluded.vbus_good ELSE vbus_good END,
+          running_partition = CASE WHEN excluded.running_partition <> '' THEN excluded.running_partition ELSE running_partition END,
+          ota_state = CASE WHEN excluded.ota_state <> '' THEN excluded.ota_state ELSE ota_state END,
+          ota_target_version = CASE WHEN excluded.ota_target_version <> '' THEN excluded.ota_target_version ELSE ota_target_version END,
+          ota_last_error = CASE WHEN excluded.ota_last_error <> '' THEN excluded.ota_last_error ELSE ota_last_error END,
+          ota_last_attempt_epoch = CASE WHEN excluded.ota_last_attempt_epoch > 0 THEN excluded.ota_last_attempt_epoch ELSE ota_last_attempt_epoch END,
           reported_config_json = excluded.reported_config_json,
           reported_config_epoch = excluded.reported_config_epoch,
           updated_at = excluded.updated_at
@@ -2749,6 +3096,11 @@ def device_checkin(
             battery_percent,
             charging,
             vbus_good,
+            running_partition,
+            ota_state,
+            ota_target_version,
+            ota_last_error,
+            ota_last_attempt_epoch,
             reported_config_json,
             checkin_epoch,
             now_ts,
@@ -2781,6 +3133,528 @@ def device_checkin(
   return {"ok": True}
 
 
+@app.get("/api/v1/device-log-requests")
+def device_log_requests(
+    device_id: str | None = Query(default=None),
+    status: str | None = Query(default=None, max_length=32),
+    limit: int = Query(default=50),
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  conn = _ensure_db()
+  now_ts = _now_epoch()
+  max_rows = _clamp(limit, 1, 200)
+
+  with DB_LOCK:
+    _expire_device_log_upload_requests(conn, now_ts)
+    conn.commit()
+
+  where_parts: list[str] = []
+  params: list[Any] = []
+  normalized_device = _normalize_device_id(device_id) if device_id is not None else None
+  if normalized_device and normalized_device != "*":
+    where_parts.append("device_id = ?")
+    params.append(normalized_device)
+  if status and status.strip():
+    where_parts.append("status = ?")
+    params.append(status.strip())
+  where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+
+  rows = conn.execute(
+      f"""
+      SELECT *
+      FROM device_log_upload_requests
+      {where_sql}
+      ORDER BY created_epoch DESC, id DESC
+      LIMIT ?
+      """,
+      (*params, max_rows),
+  ).fetchall()
+
+  items: list[dict[str, Any]] = []
+  for row in rows:
+    expires_epoch = int(row["expires_epoch"])
+    items.append(
+        {
+            "request_id": int(row["id"]),
+            "device_id": str(row["device_id"]),
+            "reason": str(row["reason"] or ""),
+            "max_lines": int(row["max_lines"]),
+            "max_bytes": int(row["max_bytes"]),
+            "created_epoch": int(row["created_epoch"]),
+            "expires_epoch": None if expires_epoch <= 0 else expires_epoch,
+            "status": str(row["status"]),
+            "completed_epoch": int(row["completed_epoch"]),
+            "uploaded_line_count": int(row["uploaded_line_count"]),
+            "uploaded_truncated": bool(row["uploaded_truncated"]),
+            "updated_at": int(row["updated_at"]),
+        }
+    )
+
+  return {"now_epoch": now_ts, "count": len(items), "items": items}
+
+
+@app.post("/api/v1/device-log-requests")
+def device_log_requests_create(
+    payload: DeviceLogUploadRequestPublish,
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  target_device = _normalize_device_id(payload.device_id)
+  if target_device == "*":
+    raise HTTPException(status_code=400, detail="device_id invalid")
+
+  now_ts = _now_epoch()
+  expires_epoch = 0
+  if int(payload.expires_in_minutes) > 0:
+    expires_epoch = now_ts + int(payload.expires_in_minutes) * 60
+
+  conn = _ensure_db()
+  with DB_LOCK:
+    _expire_device_log_upload_requests(conn, now_ts)
+    conn.execute(
+        """
+        UPDATE device_log_upload_requests
+        SET status = ?, updated_at = ?
+        WHERE device_id = ? AND status = ?
+        """,
+        (
+            DEVICE_LOG_UPLOAD_STATUS_CANCELLED,
+            now_ts,
+            target_device,
+            DEVICE_LOG_UPLOAD_STATUS_PENDING,
+        ),
+    )
+    cursor = conn.execute(
+        """
+        INSERT INTO device_log_upload_requests (
+          device_id, reason, max_lines, max_bytes, created_epoch, expires_epoch,
+          status, completed_epoch, uploaded_line_count, uploaded_truncated, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?)
+        """,
+        (
+            target_device,
+            str(payload.reason or ""),
+            int(payload.max_lines),
+            int(payload.max_bytes),
+            now_ts,
+            expires_epoch,
+            DEVICE_LOG_UPLOAD_STATUS_PENDING,
+            now_ts,
+        ),
+    )
+    conn.execute(
+        """
+        DELETE FROM device_log_upload_requests
+        WHERE id IN (
+          SELECT id FROM device_log_upload_requests
+          WHERE device_id = ?
+          ORDER BY id DESC
+          LIMIT -1 OFFSET ?
+        )
+        """,
+        (target_device, DEVICE_LOG_UPLOAD_MAX_HISTORY),
+    )
+    conn.commit()
+    request_id = int(cursor.lastrowid)
+
+  return {
+      "ok": True,
+      "request_id": request_id,
+      "device_id": target_device,
+      "created_epoch": now_ts,
+      "expires_epoch": None if expires_epoch <= 0 else expires_epoch,
+      "status": DEVICE_LOG_UPLOAD_STATUS_PENDING,
+  }
+
+
+@app.delete("/api/v1/device-log-requests/{request_id}")
+def device_log_requests_cancel(
+    request_id: int,
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  now_ts = _now_epoch()
+  conn = _ensure_db()
+  with DB_LOCK:
+    cur = conn.execute(
+        """
+        UPDATE device_log_upload_requests
+        SET status = ?, updated_at = ?
+        WHERE id = ? AND status = ?
+        """,
+        (
+            DEVICE_LOG_UPLOAD_STATUS_CANCELLED,
+            now_ts,
+            int(request_id),
+            DEVICE_LOG_UPLOAD_STATUS_PENDING,
+        ),
+    )
+    conn.commit()
+  if cur.rowcount == 0:
+    raise HTTPException(status_code=404, detail="pending device log request not found")
+  return {"ok": True, "request_id": int(request_id), "status": DEVICE_LOG_UPLOAD_STATUS_CANCELLED}
+
+
+@app.get("/api/v1/firmware-artifacts")
+def firmware_artifacts(
+    limit: int = Query(default=50),
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  conn = _ensure_db()
+  now_ts = _now_epoch()
+  max_rows = _clamp(limit, 1, 200)
+  rows = conn.execute(
+      """
+      SELECT *
+      FROM firmware_artifacts
+      ORDER BY created_epoch DESC, id DESC
+      LIMIT ?
+      """,
+      (max_rows,),
+  ).fetchall()
+  items: list[dict[str, Any]] = []
+  for row in rows:
+    items.append(
+        {
+            "id": int(row["id"]),
+            "version": str(row["version"]),
+            "asset_name": str(row["asset_name"]),
+            "asset_sha256": str(row["asset_sha256"]),
+            "size_bytes": int(row["size_bytes"]),
+            "note": str(row["note"] or ""),
+            "created_epoch": int(row["created_epoch"]),
+            "created_at": int(row["created_at"]),
+        }
+    )
+  return {"now_epoch": now_ts, "count": len(items), "items": items}
+
+
+@app.post("/api/v1/firmware-artifacts/upload")
+def firmware_artifact_upload(
+    file: UploadFile = File(...),
+    version: str = Form(...),
+    note: str = Form(default=""),
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  version_text = str(version or "").strip()
+  if version_text == "":
+    raise HTTPException(status_code=400, detail="version required")
+  raw = file.file.read()
+  asset_name, asset_sha256, size_bytes = _store_firmware_artifact_bytes(raw)
+  now_ts = _now_epoch()
+  conn = _ensure_db()
+  with DB_LOCK:
+    cursor = conn.execute(
+        """
+        INSERT INTO firmware_artifacts (
+          version, asset_name, asset_sha256, size_bytes, note, created_epoch, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            version_text,
+            asset_name,
+            asset_sha256,
+            size_bytes,
+            str(note or ""),
+            now_ts,
+            now_ts,
+        ),
+    )
+    conn.commit()
+    artifact_id = int(cursor.lastrowid)
+  return {
+      "ok": True,
+      "id": artifact_id,
+      "version": version_text,
+      "asset_name": asset_name,
+      "asset_sha256": asset_sha256,
+      "size_bytes": size_bytes,
+  }
+
+
+@app.get("/api/v1/firmware-rollouts")
+def firmware_rollouts(
+    device_id: str | None = Query(default=None),
+    limit: int = Query(default=50),
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  conn = _ensure_db()
+  now_ts = _now_epoch()
+  max_rows = _clamp(limit, 1, 200)
+  where_sql = ""
+  params: list[Any] = []
+  normalized_device = _normalize_device_id(device_id) if device_id is not None else None
+  if normalized_device and normalized_device != "*":
+    where_sql = "WHERE r.device_id = ?"
+    params.append(normalized_device)
+  rows = conn.execute(
+      f"""
+      SELECT r.*, a.version, a.asset_name, a.asset_sha256, a.size_bytes
+      FROM firmware_rollouts r
+      JOIN firmware_artifacts a ON a.id = r.artifact_id
+      {where_sql}
+      ORDER BY r.created_epoch DESC, r.id DESC
+      LIMIT ?
+      """,
+      (*params, max_rows),
+  ).fetchall()
+  items: list[dict[str, Any]] = []
+  for row in rows:
+    items.append(
+        {
+            "id": int(row["id"]),
+            "device_id": str(row["device_id"]),
+            "firmware_artifact_id": int(row["artifact_id"]),
+            "version": str(row["version"]),
+            "asset_name": str(row["asset_name"]),
+            "asset_sha256": str(row["asset_sha256"]),
+            "size_bytes": int(row["size_bytes"]),
+            "min_battery_percent": int(row["min_battery_percent"]),
+            "requires_vbus": bool(int(row["requires_vbus"])),
+            "note": str(row["note"] or ""),
+            "enabled": bool(int(row["enabled"])),
+            "created_epoch": int(row["created_epoch"]),
+            "created_at": int(row["created_at"]),
+        }
+    )
+  return {"now_epoch": now_ts, "count": len(items), "items": items}
+
+
+@app.post("/api/v1/firmware-rollouts")
+def firmware_rollout_create(
+    payload: FirmwareRolloutPublish,
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  target_device = _normalize_device_id(payload.device_id)
+  if target_device == "":
+    raise HTTPException(status_code=400, detail="device_id invalid")
+  now_ts = _now_epoch()
+  conn = _ensure_db()
+  with DB_LOCK:
+    artifact = conn.execute(
+        "SELECT * FROM firmware_artifacts WHERE id = ? LIMIT 1",
+        (int(payload.firmware_artifact_id),),
+    ).fetchone()
+    if artifact is None:
+      raise HTTPException(status_code=404, detail="firmware artifact not found")
+    conn.execute(
+        """
+        UPDATE firmware_rollouts
+        SET enabled = 0, created_at = created_at
+        WHERE enabled = 1 AND device_id = ?
+        """,
+        (target_device,),
+    )
+    cursor = conn.execute(
+        """
+        INSERT INTO firmware_rollouts (
+          device_id, artifact_id, min_battery_percent, requires_vbus,
+          note, enabled, created_epoch, created_at
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+        """,
+        (
+            target_device,
+            int(payload.firmware_artifact_id),
+            int(payload.min_battery_percent),
+            1 if payload.requires_vbus else 0,
+            str(payload.note or ""),
+            now_ts,
+            now_ts,
+        ),
+    )
+    conn.commit()
+    rollout_id = int(cursor.lastrowid)
+  return {"ok": True, "id": rollout_id, "device_id": target_device, "enabled": True}
+
+
+@app.delete("/api/v1/firmware-rollouts/{rollout_id}")
+def firmware_rollout_delete(
+    rollout_id: int,
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  conn = _ensure_db()
+  with DB_LOCK:
+    cur = conn.execute(
+        "UPDATE firmware_rollouts SET enabled = 0 WHERE id = ?",
+        (int(rollout_id),),
+    )
+    conn.commit()
+  if cur.rowcount == 0:
+    raise HTTPException(status_code=404, detail="firmware rollout not found")
+  return {"ok": True, "id": int(rollout_id), "enabled": False}
+
+
+@app.get("/api/v1/device-log-uploads")
+def device_log_uploads(
+    device_id: str | None = Query(default=None),
+    limit: int = Query(default=20),
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  conn = _ensure_db()
+  now_ts = _now_epoch()
+  max_rows = _clamp(limit, 1, 100)
+  where_sql = ""
+  params: list[Any] = []
+  normalized_device = _normalize_device_id(device_id) if device_id is not None else None
+  if normalized_device and normalized_device != "*":
+    where_sql = "WHERE u.device_id = ?"
+    params.append(normalized_device)
+
+  rows = conn.execute(
+      f"""
+      SELECT u.*, r.reason, r.created_epoch AS request_created_epoch
+      FROM device_log_uploads u
+      LEFT JOIN device_log_upload_requests r ON r.id = u.request_id
+      {where_sql}
+      ORDER BY u.received_epoch DESC, u.id DESC
+      LIMIT ?
+      """,
+      (*params, max_rows),
+  ).fetchall()
+  items: list[dict[str, Any]] = []
+  for row in rows:
+    try:
+      payload_json = json.loads(str(row["payload_json"] or "{}"))
+    except Exception:
+      payload_json = {}
+    items.append(
+        {
+            "id": int(row["id"]),
+            "request_id": int(row["request_id"]),
+            "device_id": str(row["device_id"]),
+            "reason": str(row["reason"] or ""),
+            "request_created_epoch": int(row["request_created_epoch"] or 0),
+            "uploaded_epoch": int(row["uploaded_epoch"]),
+            "received_epoch": int(row["received_epoch"]),
+            "line_count": int(row["line_count"]),
+            "truncated": bool(row["truncated"]),
+            "payload": payload_json,
+        }
+    )
+  return {"now_epoch": now_ts, "count": len(items), "items": items}
+
+
+@app.post("/api/v1/device/log-upload")
+def device_log_upload(
+    payload: DeviceLogUploadPayload,
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_device_token(payload.device_id, x_photoframe_token)
+  target_device = _normalize_device_id(payload.device_id)
+  now_ts = _now_epoch()
+  uploaded_epoch, _ = _coerce_device_epoch(int(payload.uploaded_epoch), now_ts)
+
+  lines: list[str] = []
+  total_bytes = 0
+  for raw in payload.lines[:500]:
+    text = str(raw or "").replace("\x00", "").strip()
+    if text == "":
+      continue
+    clipped = text[:240]
+    lines.append(clipped)
+    total_bytes += len(clipped.encode("utf-8"))
+    if total_bytes >= 65536:
+      break
+
+  conn = _ensure_db()
+  with DB_LOCK:
+    _expire_device_log_upload_requests(conn, now_ts)
+    request_row = conn.execute(
+        """
+        SELECT *
+        FROM device_log_upload_requests
+        WHERE id = ? AND device_id = ?
+        LIMIT 1
+        """,
+        (int(payload.request_id), target_device),
+    ).fetchone()
+    if request_row is None:
+      raise HTTPException(status_code=404, detail="device log request not found")
+    request_status = str(request_row["status"])
+    if request_status not in (DEVICE_LOG_UPLOAD_STATUS_PENDING, DEVICE_LOG_UPLOAD_STATUS_COMPLETED):
+      raise HTTPException(status_code=409, detail=f"device log request not uploadable: {request_status}")
+
+    serialized_payload = json.dumps(
+        {
+            "device_id": target_device,
+            "request_id": int(payload.request_id),
+            "uploaded_epoch": int(uploaded_epoch),
+            "line_count": len(lines),
+            "truncated": bool(payload.truncated),
+            "lines": lines,
+        },
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        INSERT INTO device_log_uploads (
+          request_id, device_id, uploaded_epoch, received_epoch,
+          line_count, truncated, payload_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(request_id) DO UPDATE SET
+          device_id = excluded.device_id,
+          uploaded_epoch = excluded.uploaded_epoch,
+          received_epoch = excluded.received_epoch,
+          line_count = excluded.line_count,
+          truncated = excluded.truncated,
+          payload_json = excluded.payload_json,
+          created_at = excluded.created_at
+        """,
+        (
+            int(payload.request_id),
+            target_device,
+            int(uploaded_epoch),
+            now_ts,
+            len(lines),
+            1 if payload.truncated else 0,
+            serialized_payload,
+            now_ts,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE device_log_upload_requests
+        SET status = ?,
+            completed_epoch = ?,
+            uploaded_line_count = ?,
+            uploaded_truncated = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            DEVICE_LOG_UPLOAD_STATUS_COMPLETED,
+            now_ts,
+            len(lines),
+            1 if payload.truncated else 0,
+            now_ts,
+            int(payload.request_id),
+        ),
+    )
+    conn.commit()
+
+  LOGGER.info(
+      "device log upload accepted: device_id=%s request_id=%s line_count=%s truncated=%s",
+      target_device,
+      int(payload.request_id),
+      len(lines),
+      1 if payload.truncated else 0,
+  )
+  return {
+      "ok": True,
+      "device_id": target_device,
+      "request_id": int(payload.request_id),
+      "line_count": len(lines),
+      "truncated": bool(payload.truncated),
+  }
+
+
 @app.get("/api/v1/device/config")
 def device_config_get(
     device_id: str = Query(..., min_length=1, max_length=64),
@@ -2798,6 +3672,7 @@ def device_config_get(
 
   with DB_LOCK:
     plan = _load_latest_device_config_plan(conn, target_device)
+    log_request = _active_device_log_upload_request(conn, target_device, server_now)
     seen_version = int(current_version)
     target_version = 0 if plan is None else int(plan["id"])
 
@@ -2862,6 +3737,7 @@ def device_config_get(
       "config_version": target_version,
       "config": config,
       "note": note,
+      "log_upload_request": _device_log_upload_request_payload(log_request),
   }
 
 
@@ -3105,6 +3981,11 @@ def devices(
             "battery_percent": int(row["battery_percent"]),
             "charging": int(row["charging"]),
             "vbus_good": int(row["vbus_good"]),
+            "running_partition": str(row["running_partition"] or ""),
+            "ota_state": str(row["ota_state"] or ""),
+            "ota_target_version": str(row["ota_target_version"] or ""),
+            "ota_last_error": str(row["ota_last_error"] or ""),
+            "ota_last_attempt_epoch": _device_epoch_for_view(int(row["ota_last_attempt_epoch"]), now_ts),
             "last_power_sample_epoch": (
                 None if last_power is None else _device_epoch_for_view(last_power["sample_epoch"], now_ts)
             ),

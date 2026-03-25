@@ -19,6 +19,11 @@ fn serializes_device_checkin_with_reported_config() {
         battery_percent: 71,
         charging: 0,
         vbus_good: 0,
+        running_partition: "ota_0".into(),
+        ota_state: "valid".into(),
+        ota_target_version: "0.1.0+abcdef12".into(),
+        ota_last_error: String::new(),
+        ota_last_attempt_epoch: 1_760_000_000,
         reported_config: ReportedConfig {
             firmware_version: "0.1.0+abcdef12".into(),
             orchestrator_enabled: 1,
@@ -58,4 +63,8 @@ fn serializes_device_checkin_with_reported_config() {
         json["reported_config"]["wifi_profiles"][0]["password_set"],
         true
     );
+    assert_eq!(json["running_partition"], "ota_0");
+    assert_eq!(json["ota_state"], "valid");
+    assert_eq!(json["ota_target_version"], "0.1.0+abcdef12");
+    assert_eq!(json["ota_last_attempt_epoch"], 1_760_000_000);
 }

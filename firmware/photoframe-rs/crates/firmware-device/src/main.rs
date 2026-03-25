@@ -1,4 +1,5 @@
 #![cfg_attr(not(target_os = "espidf"), allow(dead_code, unused_imports))]
+mod diag;
 mod jpeg;
 mod panel;
 mod portal;
@@ -16,7 +17,7 @@ use std::{
 
 #[cfg(target_os = "espidf")]
 use photoframe_app::{
-    BootContext, CycleExit, CycleRunner, DeviceRuntimeConfig, Display, PowerSample, Storage,
+    BootContext, CycleExit, CycleRunner, DeviceRuntimeConfig, Display, Storage,
 };
 #[cfg(target_os = "espidf")]
 use photoframe_contracts::DeviceConfigPayload;
@@ -303,10 +304,13 @@ impl Display for DeviceDisplay {
 #[cfg(target_os = "espidf")]
 fn main() {
     esp_idf_sys::link_patches();
+    diag::begin_boot_session();
+    photoframe_platform_espidf::register_diag_log_sink(diag::append_external);
 
     use crate::wifi::EspWifiManager;
     use photoframe_platform_espidf::{
-        EspIdfClock, EspIdfImageFetcher, EspIdfOrchestratorApi, EspIdfStorage,
+        EspIdfClock, EspIdfFirmwareUpdater, EspIdfImageFetcher, EspIdfOrchestratorApi,
+        EspIdfStorage,
     };
 
     configure_button_gpio();
@@ -379,8 +383,8 @@ fn main() {
 
     config.ensure_primary_wifi_in_profiles();
 
-    println!("photoframe-rs: panel warmup deferred until render");
-    println!("photoframe-rs: device_id={}", config.device_id);
+    crate::device_log!("INFO", "photoframe-rs: panel warmup deferred until render");
+    crate::device_log!("INFO", "photoframe-rs: device_id={}", config.device_id);
 
     if config != previous_config
         && let Err(err) = storage.save_config(&config)
@@ -389,7 +393,7 @@ fn main() {
     }
 
     if !config.has_wifi_credentials() {
-        println!("photoframe-rs: missing wifi credentials, entering AP portal");
+        crate::device_log!("WARN", "photoframe-rs: missing wifi credentials, entering AP portal");
         enter_ap_portal_or_idle();
     }
 
@@ -400,20 +404,22 @@ fn main() {
     };
 
     if let Err(err) = EspWifiManager::init_once(hostname) {
-        println!("photoframe-rs: wifi init failed: {err}");
+        crate::device_log!("ERROR", "photoframe-rs: wifi init failed: {err}");
         idle_forever();
     }
 
     let mut connected = false;
     for profile_index in config.wifi_connection_order() {
         let profile = &config.wifi_profiles[profile_index];
-        println!(
+        crate::device_log!(
+            "INFO",
             "photoframe-rs: wifi try idx={} ssid={}",
             profile_index, profile.ssid
         );
         match EspWifiManager::connect(hostname, &profile.ssid, &profile.password, 25, 5) {
             Ok(()) => {
-                println!(
+                crate::device_log!(
+                    "INFO",
                     "photoframe-rs: wifi connected idx={} ssid={} ip={}",
                     profile_index,
                     profile.ssid,
@@ -429,7 +435,8 @@ fn main() {
                 break;
             }
             Err(err) => {
-                println!(
+                crate::device_log!(
+                    "WARN",
                     "photoframe-rs: wifi connect failed idx={} err={}",
                     profile_index, err
                 );
@@ -448,7 +455,8 @@ fn main() {
         if let Err(err) = storage.save_config(&config) {
             println!("photoframe-rs: save wifi failure state failed: {err}");
         }
-        println!(
+        crate::device_log!(
+            "WARN",
             "photoframe-rs: wifi connect failed for all profiles, sleep={}s",
             decision.sleep_seconds
         );
@@ -467,10 +475,8 @@ fn main() {
             println!("photoframe-rs: save time sync epoch failed: {err}");
         }
     }
-    let mut portal_power_sample = PowerSample::default();
+    let power_sample = runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
     if matches!(long_press_action, LongPressAction::OpenStaPortalWindow) {
-        portal_power_sample =
-            runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
         if let Err(err) = portal::run_sta_portal_window(portal::PortalRuntimeStatus {
             wifi_connected: true,
             force_refresh: false,
@@ -478,17 +484,15 @@ fn main() {
             image_changed: false,
             image_source: "portal".into(),
             next_wakeup_epoch: 0,
-            battery_mv: portal_power_sample.battery_mv,
-            battery_percent: portal_power_sample.battery_percent,
-            charging: portal_power_sample.charging,
-            vbus_good: portal_power_sample.vbus_good,
+            battery_mv: power_sample.battery_mv,
+            battery_percent: power_sample.battery_percent,
+            charging: power_sample.charging,
+            vbus_good: power_sample.vbus_good,
             last_error: String::new(),
         }) {
-            println!("photoframe-rs: sta portal window failed: {err}");
+            crate::device_log!("WARN", "photoframe-rs: sta portal window failed: {err}");
         }
     }
-
-    let power_sample = portal_power_sample;
     let sta_ip = EspWifiManager::sta_ip_string();
 
     let clock = EspIdfClock;
@@ -499,24 +503,30 @@ fn main() {
         power_sample,
     };
 
-    let mut runner = CycleRunner::new(
+    let mut runner = CycleRunner::new_with_services(
         clock,
         storage,
         EspIdfOrchestratorApi,
         EspIdfImageFetcher,
         DeviceDisplay,
+        EspIdfFirmwareUpdater,
+        diag::DeviceLogUploadCollector,
     );
 
     match runner.run(boot) {
         Ok(report) => {
-            println!(
-                "photoframe-rs: cycle exit={:?} source={} checkin_reported={}",
-                report.exit, report.image_source, report.checkin_reported
+            crate::device_log!(
+                "INFO",
+                "photoframe-rs: cycle exit={:?} source={} checkin_reported={} logs_uploaded={}",
+                report.exit, report.image_source, report.checkin_reported, report.logs_uploaded
             );
             EspWifiManager::stop();
             match report.exit {
                 CycleExit::EnterApPortal => enter_ap_portal_or_idle(),
                 CycleExit::RebootForConfig => unsafe {
+                    esp_idf_sys::esp_restart();
+                },
+                CycleExit::RebootForFirmwareUpdate => unsafe {
                     esp_idf_sys::esp_restart();
                 },
                 CycleExit::Sleep {
@@ -535,7 +545,7 @@ fn main() {
             }
         }
         Err(err) => {
-            println!("photoframe-rs: cycle failed: {err}");
+            crate::device_log!("ERROR", "photoframe-rs: cycle failed: {err}");
             EspWifiManager::stop();
             let fallback_sleep_seconds = config.retry_base_minutes.max(1) as u64 * 60;
             let sleep_seconds = sleep_seconds_until_next_beijing_sync(system_now_epoch())
@@ -559,13 +569,13 @@ fn apply_timezone(timezone: &str) {
         return;
     }
     let key = CString::new("TZ").expect("TZ env key");
-    let value = match CString::new(timezone) {
-        Ok(value) => value,
-        Err(err) => {
-            println!("photoframe-rs: invalid timezone, skip apply: {err}");
-            return;
-        }
-    };
+        let value = match CString::new(timezone) {
+            Ok(value) => value,
+            Err(err) => {
+            crate::device_log!("WARN", "photoframe-rs: invalid timezone, skip apply: {err}");
+                return;
+            }
+        };
     unsafe {
         let _ = esp_idf_sys::setenv(key.as_ptr(), value.as_ptr(), 1);
         esp_idf_sys::tzset();
@@ -592,7 +602,7 @@ fn sync_time(timezone: &str) -> bool {
     for _ in 0..20 {
         let now = system_now_epoch();
         if now > 1_735_689_600 {
-            println!("photoframe-rs: time synced epoch={now}");
+            crate::device_log!("INFO", "photoframe-rs: time synced epoch={now}");
             unsafe {
                 esp_idf_sys::esp_sntp_stop();
             }
@@ -601,7 +611,10 @@ fn sync_time(timezone: &str) -> bool {
         thread::sleep(Duration::from_millis(500));
     }
 
-    println!("photoframe-rs: time sync timeout, continue with current rtc time");
+    crate::device_log!(
+        "WARN",
+        "photoframe-rs: time sync timeout, continue with current rtc time"
+    );
     unsafe {
         esp_idf_sys::esp_sntp_stop();
     }
@@ -642,7 +655,8 @@ fn hold_awake_before_sleep(
             if !usb_serial_connected && !usb_power_present {
                 return;
             }
-            println!(
+            crate::device_log!(
+                "INFO",
                 "photoframe-rs: usb present (serial={} vbus={}), skip {} deep sleep (planned {}s)",
                 i32::from(usb_serial_connected),
                 i32::from(usb_power_present),
@@ -651,7 +665,8 @@ fn hold_awake_before_sleep(
             );
         }
         PreSleepHoldMode::ManualSyncSerialGrace { wait_seconds } => {
-            println!(
+            crate::device_log!(
+                "INFO",
                 "photoframe-rs: manual sync complete, keep awake {}s for usb serial attach",
                 wait_seconds.max(1),
             );
@@ -698,7 +713,8 @@ fn hold_awake_before_sleep(
         }
 
         if last_log.elapsed() >= HOLD_LOG_PERIOD {
-            println!(
+            crate::device_log!(
+                "INFO",
                 "photoframe-rs: usb hold batt={}%%/{}mV charging={} vbus={} next_sleep={}s",
                 power_sample.battery_percent,
                 power_sample.battery_mv,
@@ -713,10 +729,10 @@ fn hold_awake_before_sleep(
 
     match hold_mode {
         PreSleepHoldMode::UsbOrSerial => {
-            println!("photoframe-rs: usb no longer present, resume deep sleep");
+            crate::device_log!("INFO", "photoframe-rs: usb no longer present, resume deep sleep");
         }
         PreSleepHoldMode::ManualSyncSerialGrace { .. } => {
-            println!("photoframe-rs: manual sync grace finished, resume deep sleep");
+            crate::device_log!("INFO", "photoframe-rs: manual sync grace finished, resume deep sleep");
         }
     }
 }
@@ -726,7 +742,7 @@ fn enter_ap_portal_or_idle() -> ! {
     match portal::run_ap_portal_forever() {
         Ok(()) => idle_forever(),
         Err(err) => {
-            println!("photoframe-rs: ap portal failed: {err}");
+            crate::device_log!("ERROR", "photoframe-rs: ap portal failed: {err}");
             idle_forever();
         }
     }

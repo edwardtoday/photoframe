@@ -7,6 +7,8 @@ Rust 重写中的新固件工程。
 - 已建立 Cargo workspace，并补齐 `domain` / `contracts` / `app` / `platform-espidf` / `drivers-ffi` / `firmware-device` 六层结构
 - 已有宿主机可验证策略：唤醒动作、长按语义、失败退避、URL 候选、配置应用、电源纠偏
 - 已接入真实设备主链：NVS 配置、设备身份、多 Wi‑Fi 轮询连接、SNTP 校时、orchestrator `device/config` / `device/next` / `device/checkin`、图片下载、BMP/JPEG 渲染、深睡
+- 已支持按需诊断日志上传：orchestrator 可下发一次性 `log_upload_request`，设备在下次唤醒的同轮主周期结束前 best-effort 上传最近一段环形日志
+- 已切换到 A/B OTA 目标分区布局（`ota_0` / `ota_1`）并打开 rollback 配置；设备侧已具备按 orchestrator 指令下载到 inactive slot、校验并切换启动分区的基础能力
 - 当前仓库内自研固件逻辑已迁为 Rust；`esp_new_jpeg` 以 vendored 静态库形式随本目录保留
 - 已能通过 Docker 工具链导出可刷机镜像；当前自研固件代码已完成 Rust 收口
 - 2026-03-09 已完成首轮真机 smoke：刷机启动、空 Wi‑Fi 场景进入 AP Portal、`GET /`、`GET /api/config`、`GET /api/wifi/scan`、`POST /api/config` 均已打通

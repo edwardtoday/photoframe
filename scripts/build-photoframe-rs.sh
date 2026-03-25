@@ -44,9 +44,9 @@ echo "[info] ELF 已生成: ${ELF_ABS}"
 
 BOOTLOADER_REL="$("${SCRIPT_DIR}/rust-idf-docker.sh" "find /work/firmware/photoframe-rs/target/xtensa-esp32s3-espidf/release/build -path '*/out/build/bootloader/bootloader.bin' | head -n 1" | tail -n 1)"
 if [[ -n "${BOOTLOADER_REL}" ]]; then
-  "${SCRIPT_DIR}/rust-idf-docker.sh" "espflash save-image --chip esp32s3 --merge --flash-mode dio --flash-size 16mb --flash-freq 80mhz --bootloader ${BOOTLOADER_REL} --partition-table ${PARTITIONS_CSV} --target-app-partition factory ${ELF_REL} /work/firmware/photoframe-rs/dist/photoframe-rs-fullchip.bin"
+  "${SCRIPT_DIR}/rust-idf-docker.sh" "espflash save-image --chip esp32s3 --merge --flash-mode dio --flash-size 16mb --flash-freq 80mhz --bootloader ${BOOTLOADER_REL} --partition-table ${PARTITIONS_CSV} --target-app-partition ota_0 ${ELF_REL} /work/firmware/photoframe-rs/dist/photoframe-rs-fullchip.bin"
   echo "[info] 整片镜像已生成: ${FULL_BIN_ABS}"
-  echo "[warn] 整片镜像会覆盖 NVS；仅限空片首刷，不要用于现场升级"
+  echo "[warn] 整片镜像会覆盖 NVS；仅限 A/B 分区迁移或空片首刷，不要用于现场 OTA 升级"
 else
   echo "[warn] 未找到 bootloader.bin，只生成应用镜像: ${APP_BIN_ABS}"
 fi

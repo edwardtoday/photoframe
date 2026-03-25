@@ -107,6 +107,15 @@ pub struct NormalizePowerOutcome {
     pub used_cache: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FirmwareRuntimeStatus {
+    pub running_partition: String,
+    pub ota_state: String,
+    pub ota_target_version: String,
+    pub ota_last_error: String,
+    pub ota_last_attempt_epoch: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ApplyRemoteConfigOutcome {
     pub display_config_changed: bool,
@@ -168,6 +177,9 @@ pub struct DeviceRuntimeConfig {
     pub last_time_sync_epoch: i64,
     pub failure_count: u32,
     pub remote_config_version: i32,
+    pub ota_target_version: String,
+    pub ota_last_error: String,
+    pub ota_last_attempt_epoch: i64,
 }
 
 const DEFAULT_IMAGE_URL_TEMPLATE: &str = "http://192.168.58.113:8000/image/480x800?date=%DATE%";
@@ -207,6 +219,9 @@ impl Default for DeviceRuntimeConfig {
             last_time_sync_epoch: 0,
             failure_count: 0,
             remote_config_version: 0,
+            ota_target_version: String::new(),
+            ota_last_error: String::new(),
+            ota_last_attempt_epoch: 0,
         }
     }
 }

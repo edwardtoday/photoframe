@@ -233,12 +233,13 @@ if [ ! -f "\${REMOTE_TAR}" ]; then
   echo "[error] remote tar not found: \${REMOTE_TAR}" >&2
   exit 1
 fi
+
+cd "\${REMOTE_DIR}"
+
 if [ ! -f "\${REMOTE_COMPOSE_FILE}" ]; then
   echo "[error] remote compose file not found: \${REMOTE_COMPOSE_FILE}" >&2
   exit 1
 fi
-
-cd "\${REMOTE_DIR}"
 
 if [ "\${NO_DB_BACKUP:-0}" != "1" ] && [ -f "./data/orchestrator.db" ]; then
   ts="\$(date +%Y%m%d-%H%M%S)"

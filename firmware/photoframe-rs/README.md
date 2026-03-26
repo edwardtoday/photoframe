@@ -60,6 +60,7 @@ scripts/build-photoframe-rs.sh
 - 串口抓日志可复用同一 Python 环境中的 `pyserial`，避免额外安装宿主机工具链
 - 串口监控建议用 `scripts/monitor-host.sh --once /dev/cu.usbmodem111201 115200`；如启用自动重连，反复打开串口会触发 `USB_UART_CHIP_RESET`，看起来像“重启循环”
 - OTA 故障注入/验收可用 `scripts/validate-ota-host.py`：支持上传 artifact、创建 rollout、可选请求设备日志、等待 `device-debug-stages` 中的 OTA 阶段并在指定阶段通过 USB 串口触发 reset
+- 推荐优先参考 `docs/runbooks/ota-hardware-validation.md`，其中已经整理好正向升级、日志采集、reset 注入、`requires_vbus`、低电量、SHA 错配、首启前回滚等真机验证步骤
 
 ## NVS 恢复
 

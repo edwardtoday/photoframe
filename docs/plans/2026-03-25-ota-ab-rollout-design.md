@@ -198,3 +198,8 @@
 2. 再完成 P1，让 orchestrator 能托管升级控制面。
 3. 再完成 P2/P3，做端到端 OTA。
 
+## 运行验证
+
+真机验证与故障注入流程已整理为 runbook：
+
+- `docs/runbooks/ota-hardware-validation.md`

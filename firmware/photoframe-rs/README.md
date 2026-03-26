@@ -50,10 +50,12 @@ scripts/build-photoframe-rs.sh
 ## 真机刷写与串口
 
 - 构建继续使用 Docker：`scripts/build-photoframe-rs.sh`
+- 如需产出带明确 OTA 版本号的镜像，可在构建前设置 `PHOTOFRAME_FIRMWARE_VERSION=0.1.0+<tag>`；脚本会把该环境变量传入 Docker 内部的 Rust 构建
 - 在 macOS 上，Docker Desktop 不能直接透传 USB 串口，因此真机刷写使用主机上**已存在**的 ESP Python 环境：`~/.espressif/python_env/.../bin/esptool.py`
 - 本轮验证使用端口：`/dev/cu.usbmodem111201`
 - 现场升级默认使用：`scripts/flash-photoframe-rs.sh /dev/cu.usbmodem111201 115200`（默认刷 `dist/photoframe-rs-app.bin`，分段刷写，保留 NVS）
 - 刷机脚本会校验：若 `dist/photoframe-rs-app.bin` 早于当前 ELF 产物，会直接报错并要求先执行 `scripts/build-photoframe-rs.sh`，避免静默刷入陈旧 app 镜像
+- 构建脚本会把 `ota_data_initial.bin` 同步到 `target/.../release/`；刷机脚本默认只引用 `release/bootloader.bin`、`release/partition-table.bin`、`release/ota_data_initial.bin` 与 `dist/photoframe-rs-app.bin`，避免误用旧的 `out/build/*` 产物
 - 仅空片首刷才使用整片镜像，例如：`~/.espressif/python_env/idf5.0_py3.13_env/bin/esptool.py --chip esp32s3 --port /dev/cu.usbmodem111201 --baud 115200 write_flash -z 0x0 firmware/photoframe-rs/dist/photoframe-rs-fullchip.bin`
 - 串口抓日志可复用同一 Python 环境中的 `pyserial`，避免额外安装宿主机工具链
 - 串口监控建议用 `scripts/monitor-host.sh --once /dev/cu.usbmodem111201 115200`；如启用自动重连，反复打开串口会触发 `USB_UART_CHIP_RESET`，看起来像“重启循环”

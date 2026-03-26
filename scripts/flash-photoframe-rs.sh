@@ -7,6 +7,10 @@ VENV_PY="${PHOTOFRAME_FLASH_VENV_PY_OVERRIDE:-${REPO_ROOT}/.venv-host-tools/bin/
 BUILD_ROOT="${PHOTOFRAME_FLASH_BUILD_ROOT_OVERRIDE:-${REPO_ROOT}/firmware/photoframe-rs/target/xtensa-esp32s3-espidf/release}"
 ELF_ABS="${PHOTOFRAME_FLASH_ELF_ABS_OVERRIDE:-${BUILD_ROOT}/photoframe-firmware-device}"
 DEFAULT_APP_BIN="${PHOTOFRAME_FLASH_DEFAULT_APP_BIN_OVERRIDE:-${REPO_ROOT}/firmware/photoframe-rs/dist/photoframe-rs-app.bin}"
+PARTITIONS_CSV="${PHOTOFRAME_FLASH_PARTITIONS_CSV_OVERRIDE:-${REPO_ROOT}/firmware/photoframe-rs/partitions.csv}"
+BOOTLOADER_BIN="${PHOTOFRAME_FLASH_BOOTLOADER_BIN_OVERRIDE:-${BUILD_ROOT}/bootloader.bin}"
+PARTITION_TABLE_BIN="${PHOTOFRAME_FLASH_PARTITION_TABLE_BIN_OVERRIDE:-${BUILD_ROOT}/partition-table.bin}"
+OTADATA_BIN="${PHOTOFRAME_FLASH_OTADATA_BIN_OVERRIDE:-${BUILD_ROOT}/ota_data_initial.bin}"
 
 PORT="${1:-}"
 shift || true
@@ -52,51 +56,28 @@ if [[ ! -x "${VENV_PY}" ]]; then
   exit 2
 fi
 
-FLASHER_ARGS="${PHOTOFRAME_FLASHER_ARGS_JSON_OVERRIDE:-}"
-if [[ -z "${FLASHER_ARGS}" ]]; then
-  FLASHER_ARGS="$(
-    python3 - "${BUILD_ROOT}" <<'PY'
-import pathlib
-import sys
-
-root = pathlib.Path(sys.argv[1]) / "build"
-matches = [path for path in root.glob("**/out/build/flasher_args.json") if path.is_file()]
-if matches:
-    newest = max(matches, key=lambda path: path.stat().st_mtime)
-    print(str(newest))
-PY
-  )"
-fi
-if [[ -z "${FLASHER_ARGS}" || ! -f "${FLASHER_ARGS}" ]]; then
-  echo "[error] 未找到 flasher_args.json；请先执行 scripts/build-photoframe-rs.sh" >&2
-  exit 3
-fi
-
-if [[ ! -f "${BUILD_ROOT}/bootloader.bin" || ! -f "${BUILD_ROOT}/partition-table.bin" ]]; then
+if [[ ! -f "${BOOTLOADER_BIN}" || ! -f "${PARTITION_TABLE_BIN}" || ! -f "${OTADATA_BIN}" ]]; then
   echo "[error] 缺少 release 刷写产物；请先执行 scripts/build-photoframe-rs.sh" >&2
   exit 4
 fi
 
-export PHOTOFRAME_FLASHER_ARGS_JSON="${FLASHER_ARGS}"
 export PHOTOFRAME_FLASH_PORT="${PORT}"
 export PHOTOFRAME_FLASH_BAUD="${BAUD}"
 export PHOTOFRAME_FLASH_DRY_RUN="${DRY_RUN}"
 export PHOTOFRAME_FLASH_APP_BIN="${APP_BIN_OVERRIDE}"
 export PHOTOFRAME_FLASH_DEFAULT_APP_BIN="${DEFAULT_APP_BIN}"
 export PHOTOFRAME_FLASH_ELF="${ELF_ABS}"
+export PHOTOFRAME_FLASH_PARTITIONS_CSV="${PARTITIONS_CSV}"
+export PHOTOFRAME_FLASH_BOOTLOADER_BIN="${BOOTLOADER_BIN}"
+export PHOTOFRAME_FLASH_PARTITION_TABLE_BIN="${PARTITION_TABLE_BIN}"
+export PHOTOFRAME_FLASH_OTADATA_BIN="${OTADATA_BIN}"
 
 "${VENV_PY}" - <<'PY'
-import json
 import os
 import pathlib
 import shlex
 import subprocess
 import sys
-
-flasher_args = pathlib.Path(os.environ["PHOTOFRAME_FLASHER_ARGS_JSON"]).resolve()
-build_dir = flasher_args.parent
-data = json.loads(flasher_args.read_text(encoding="utf-8"))
-extra = data.get("extra_esptool_args", {})
 
 
 def resolve_path(raw: str) -> pathlib.Path:
@@ -107,32 +88,58 @@ def resolve_path(raw: str) -> pathlib.Path:
         path = path.resolve()
     return path
 
+
+def parse_partitions_csv(path: pathlib.Path) -> tuple[str, str]:
+    app_offset = None
+    otadata_offset = None
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 5:
+            continue
+        _name, ptype, subtype, offset, _size = parts[:5]
+        if ptype == "data" and subtype == "ota" and not otadata_offset:
+            otadata_offset = offset
+        if ptype == "app" and not app_offset:
+            app_offset = offset
+    if not app_offset or not otadata_offset:
+        raise SystemExit(
+            "[error] 无法从 partitions.csv 解析 app/otadata offset；"
+            f"请检查 {path}"
+        )
+    return app_offset, otadata_offset
+
+
+partitions_csv = resolve_path(os.environ["PHOTOFRAME_FLASH_PARTITIONS_CSV"])
+bootloader_bin = resolve_path(os.environ["PHOTOFRAME_FLASH_BOOTLOADER_BIN"])
+partition_table_bin = resolve_path(os.environ["PHOTOFRAME_FLASH_PARTITION_TABLE_BIN"])
+otadata_bin = resolve_path(os.environ["PHOTOFRAME_FLASH_OTADATA_BIN"])
+app_offset, otadata_offset = parse_partitions_csv(partitions_csv)
+
 cmd = [
     sys.executable,
     "-m",
     "esptool",
     "--chip",
-    str(extra.get("chip") or "esp32s3"),
+    "esp32s3",
     "--port",
     os.environ["PHOTOFRAME_FLASH_PORT"],
     "--baud",
     os.environ["PHOTOFRAME_FLASH_BAUD"],
     "--before",
-    str(extra.get("before") or "default_reset"),
+    "default_reset",
     "--after",
-    str(extra.get("after") or "hard_reset"),
+    "hard_reset",
+    "write_flash",
+    "--flash_mode",
+    "dio",
+    "--flash_size",
+    "16MB",
+    "--flash_freq",
+    "80m",
 ]
-if extra.get("stub", True) is False:
-    cmd.append("--no-stub")
-
-cmd.append("write_flash")
-for item in data.get("write_flash_args", []):
-    cmd.append(str(item))
-
-flash_files = dict(data.get("flash_files", {}))
-app_offset = str((data.get("app") or {}).get("offset") or "")
-if not app_offset:
-    raise SystemExit("[error] flasher_args.json 缺少 app offset，无法确定应用分区")
 
 app_override = os.environ.get("PHOTOFRAME_FLASH_APP_BIN", "").strip()
 if app_override:
@@ -157,12 +164,18 @@ else:
         )
     print(f"[info] 默认使用 dist 应用镜像: {app_image}")
 
-flash_files[app_offset] = str(app_image)
-for offset, rel in sorted(flash_files.items(), key=lambda item: int(item[0], 0)):
-    path = pathlib.Path(rel)
-    if not path.is_absolute():
-        path = (build_dir / rel).resolve()
-    cmd.extend([offset, str(path)])
+cmd.extend(
+    [
+        "0x0",
+        str(bootloader_bin),
+        "0x8000",
+        str(partition_table_bin),
+        otadata_offset,
+        str(otadata_bin),
+        app_offset,
+        str(app_image),
+    ]
+)
 
 print("[info] 保留 NVS 的分段刷写命令：")
 print(" ".join(shlex.quote(part) for part in cmd))

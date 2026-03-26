@@ -811,16 +811,19 @@ impl FirmwareUpdater for EspIdfFirmwareUpdater {
                 ota_last_attempt_epoch: config.ota_last_attempt_epoch,
                 ..FirmwareRuntimeStatus::default()
             };
-            let running = sys::esp_ota_get_running_partition();
+            let running = normalize_running_partition(sys::esp_ota_get_running_partition());
             if running.is_null() {
                 return status;
             }
-            status.running_partition =
-                CStr::from_ptr((*running).label.as_ptr() as *const _).to_string_lossy().into_owned();
+            status.running_partition = partition_label(running);
             let mut state: sys::esp_ota_img_states_t = Default::default();
             let err = sys::esp_ota_get_state_partition(running, &mut state as *mut _);
             status.ota_state = if err == sys::ESP_ERR_NOT_SUPPORTED {
-                "factory".into()
+                if status.running_partition == "factory" {
+                    "factory".into()
+                } else {
+                    "baseline".into()
+                }
             } else if err == sys::ESP_ERR_NOT_FOUND {
                 "unknown".into()
             } else if check_esp(err, "esp_ota_get_state_partition").is_err() {
@@ -849,6 +852,8 @@ const PHOTOFRAME_TOKEN_HEADER: &str = "X-PhotoFrame-Token";
 const PHOTO_TOKEN_HEADER: &str = "X-Photo-Token";
 #[cfg(target_os = "espidf")]
 const MAX_HTTP_REDIRECTS: usize = 5;
+#[cfg(target_os = "espidf")]
+const HTTP_READ_RETRY_LIMIT: usize = 8;
 
 #[cfg(test)]
 fn resolve_redirect_url(current_url: &str, location: &str) -> Option<String> {
@@ -944,9 +949,90 @@ fn orchestrator_token_for_url(url: &str, config: &DeviceRuntimeConfig) -> Option
 }
 
 #[cfg(target_os = "espidf")]
+unsafe fn partition_label(partition: *const sys::esp_partition_t) -> String {
+    if partition.is_null() {
+        return String::new();
+    }
+    unsafe {
+        CStr::from_ptr((*partition).label.as_ptr() as *const _)
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+#[cfg(target_os = "espidf")]
+unsafe fn find_app_partition_by_subtype(
+    subtype: sys::esp_partition_subtype_t,
+) -> *const sys::esp_partition_t {
+    unsafe {
+        sys::esp_partition_find_first(
+            sys::esp_partition_type_t_ESP_PARTITION_TYPE_APP,
+            subtype,
+            ptr::null(),
+        )
+    }
+}
+
+#[cfg(target_os = "espidf")]
+unsafe fn find_ota_partition(slot: u32) -> *const sys::esp_partition_t {
+    unsafe {
+        find_app_partition_by_subtype(
+            sys::esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_APP_OTA_MIN + slot,
+        )
+    }
+}
+
+#[cfg(target_os = "espidf")]
+unsafe fn normalize_running_partition(
+    running: *const sys::esp_partition_t,
+) -> *const sys::esp_partition_t {
+    if running.is_null() || unsafe { partition_label(running) } != "factory" {
+        return running;
+    }
+
+    let factory = unsafe {
+        find_app_partition_by_subtype(
+            sys::esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_APP_FACTORY,
+        )
+    };
+    if !factory.is_null() {
+        return running;
+    }
+
+    let running_address = unsafe { (*running).address };
+    let ota0 = unsafe { find_ota_partition(0) };
+    if !ota0.is_null() && unsafe { (*ota0).address == running_address } {
+        return ota0;
+    }
+    let ota1 = unsafe { find_ota_partition(1) };
+    if !ota1.is_null() && unsafe { (*ota1).address == running_address } {
+        return ota1;
+    }
+    running
+}
+
+#[cfg(target_os = "espidf")]
+unsafe fn select_inactive_update_partition() -> *const sys::esp_partition_t {
+    let running = unsafe { normalize_running_partition(sys::esp_ota_get_running_partition()) };
+    let running_label = unsafe { partition_label(running) };
+    if running_label == "ota_0" {
+        let target = unsafe { find_ota_partition(1) };
+        if !target.is_null() {
+            return target;
+        }
+    } else if running_label == "ota_1" {
+        let target = unsafe { find_ota_partition(0) };
+        if !target.is_null() {
+            return target;
+        }
+    }
+    unsafe { sys::esp_ota_get_next_update_partition(ptr::null()) }
+}
+
+#[cfg(target_os = "espidf")]
 fn confirm_running_firmware_inner() -> Result<(), String> {
     unsafe {
-        let running = sys::esp_ota_get_running_partition();
+        let running = normalize_running_partition(sys::esp_ota_get_running_partition());
         if running.is_null() {
             return Ok(());
         }
@@ -1050,7 +1136,7 @@ fn install_firmware_inner(
                 ));
             }
 
-            let partition = sys::esp_ota_get_next_update_partition(ptr::null());
+            let partition = select_inactive_update_partition();
             if partition.is_null() {
                 sys::esp_http_client_close(client);
                 sys::esp_http_client_cleanup(client);
@@ -1069,21 +1155,52 @@ fn install_firmware_inner(
             let mut hasher = Sha256::new();
             let mut total = 0usize;
             let mut chunk = vec![0u8; 4096];
+            let mut transient_reads = 0usize;
             loop {
                 let read = sys::esp_http_client_read(
                     client,
                     chunk.as_mut_ptr() as *mut c_char,
                     chunk.len() as i32,
                 );
+                if read == -(sys::ESP_ERR_HTTP_EAGAIN as i32) {
+                    transient_reads = transient_reads.saturating_add(1);
+                    if transient_reads > HTTP_READ_RETRY_LIMIT {
+                        let _ = sys::esp_ota_abort(handle);
+                        sys::esp_http_client_close(client);
+                        sys::esp_http_client_cleanup(client);
+                        return Err(format!(
+                            "esp_http_client_read timed out repeatedly: retries={} bytes={}",
+                            transient_reads, total
+                        ));
+                    }
+                    continue;
+                }
                 if read < 0 {
                     let _ = sys::esp_ota_abort(handle);
                     sys::esp_http_client_close(client);
                     sys::esp_http_client_cleanup(client);
-                    return Err("esp_http_client_read failed".into());
+                    return Err(format!(
+                        "esp_http_client_read failed: code={} bytes={}",
+                        read, total
+                    ));
                 }
                 if read == 0 {
+                    if !sys::esp_http_client_is_complete_data_received(client) {
+                        transient_reads = transient_reads.saturating_add(1);
+                        if transient_reads > HTTP_READ_RETRY_LIMIT {
+                            let _ = sys::esp_ota_abort(handle);
+                            sys::esp_http_client_close(client);
+                            sys::esp_http_client_cleanup(client);
+                            return Err(format!(
+                                "firmware download incomplete after repeated empty reads: retries={} bytes={}",
+                                transient_reads, total
+                            ));
+                        }
+                        continue;
+                    }
                     break;
                 }
+                transient_reads = 0;
                 let size = read as usize;
                 let slice = &chunk[..size];
                 hasher.update(slice);
@@ -1525,6 +1642,7 @@ unsafe fn get_header_value(
 unsafe fn read_body_stream(client: sys::esp_http_client_handle_t) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     let mut chunk = vec![0u8; 1024];
+    let mut transient_reads = 0usize;
     loop {
         let read = unsafe {
             sys::esp_http_client_read(
@@ -1533,12 +1651,39 @@ unsafe fn read_body_stream(client: sys::esp_http_client_handle_t) -> Result<Vec<
                 chunk.len() as i32,
             )
         };
+        if read == -(sys::ESP_ERR_HTTP_EAGAIN as i32) {
+            transient_reads = transient_reads.saturating_add(1);
+            if transient_reads > HTTP_READ_RETRY_LIMIT {
+                return Err(format!(
+                    "esp_http_client_read timed out repeatedly while draining body: retries={} bytes={}",
+                    transient_reads,
+                    out.len()
+                ));
+            }
+            continue;
+        }
         if read < 0 {
-            return Err("esp_http_client_read failed".into());
+            return Err(format!(
+                "esp_http_client_read failed while draining body: code={} bytes={}",
+                read,
+                out.len()
+            ));
         }
         if read == 0 {
+            if unsafe { !sys::esp_http_client_is_complete_data_received(client) } {
+                transient_reads = transient_reads.saturating_add(1);
+                if transient_reads > HTTP_READ_RETRY_LIMIT {
+                    return Err(format!(
+                        "body read incomplete after repeated empty reads: retries={} bytes={}",
+                        transient_reads,
+                        out.len()
+                    ));
+                }
+                continue;
+            }
             break;
         }
+        transient_reads = 0;
         out.extend_from_slice(&chunk[..read as usize]);
     }
     Ok(out)

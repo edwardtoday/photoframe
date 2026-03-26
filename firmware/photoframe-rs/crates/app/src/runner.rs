@@ -389,31 +389,43 @@ where
             }
         }
 
-        if let Some(update) = firmware_update.as_ref()
-            && self.should_attempt_firmware_update(update, boot.power_sample, &config)
-        {
-            config.ota_target_version = update.version.clone();
-            config.ota_last_error.clear();
-            config.ota_last_attempt_epoch = now_epoch;
-            self.storage.save_config(&config)?;
+        if let Some(update) = firmware_update.as_ref() {
+            let should_attempt = self.should_attempt_firmware_update(update, boot.power_sample, &config);
+            println!(
+                "photoframe-rs/ota: directive version={} current={} batt={} charging={} vbus={} requires_vbus={} min_batt={:?} should_attempt={}",
+                update.version,
+                config.firmware_version(),
+                boot.power_sample.battery_percent,
+                boot.power_sample.charging,
+                boot.power_sample.vbus_good,
+                update.requires_vbus,
+                update.min_battery_percent,
+                should_attempt,
+            );
+            if should_attempt {
+                config.ota_target_version = update.version.clone();
+                config.ota_last_error.clear();
+                config.ota_last_attempt_epoch = now_epoch;
+                self.storage.save_config(&config)?;
 
-            match self.firmware_updater.install_update(&config, update) {
-                Ok(true) => {
-                    self.storage.save_config(&config)?;
-                    return Ok(CycleReport {
-                        exit: CycleExit::RebootForFirmwareUpdate,
-                        action,
-                        image_source: "firmware-update".into(),
-                        fetch_url_used: None,
-                        checkin_reported: false,
-                        portal_window_opened,
-                        logs_uploaded: false,
-                    });
-                }
-                Ok(false) => {}
-                Err(err) => {
-                    config.ota_last_error = err;
-                    self.storage.save_config(&config)?;
+                match self.firmware_updater.install_update(&config, update) {
+                    Ok(true) => {
+                        self.storage.save_config(&config)?;
+                        return Ok(CycleReport {
+                            exit: CycleExit::RebootForFirmwareUpdate,
+                            action,
+                            image_source: "firmware-update".into(),
+                            fetch_url_used: None,
+                            checkin_reported: false,
+                            portal_window_opened,
+                            logs_uploaded: false,
+                        });
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        config.ota_last_error = err;
+                        self.storage.save_config(&config)?;
+                    }
                 }
             }
         }
@@ -542,7 +554,14 @@ where
             let _ = self
                 .orchestrator
                 .report_debug_stage(&config, "after_save_ok");
-            let _ = self.firmware_updater.confirm_running_firmware(&config);
+            let confirm_ok = self.firmware_updater.confirm_running_firmware(&config).is_ok();
+            if confirm_ok
+                && config.ota_target_version == config.firmware_version()
+                && !config.ota_last_error.is_empty()
+            {
+                config.ota_last_error.clear();
+                self.storage.save_config(&config)?;
+            }
 
             let next_wakeup_epoch = now_epoch + success_sleep_seconds as i64;
             let _ = self

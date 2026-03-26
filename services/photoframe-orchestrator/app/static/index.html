@@ -811,6 +811,32 @@
           <p id="deviceTokensHint" class="muted"></p>
         </div>
 
+        <div class="card" data-workspace="config">
+          <h3>设备日志采集</h3>
+          <p class="help">只对“顶部当前设备”生效。创建后，设备会在下一次唤醒的同轮主周期结束前 best-effort 上传最近一段诊断日志，不阻塞正常拉图与休眠。</p>
+          <form id="deviceLogRequestForm">
+            <div class="row">
+              <label>原因
+                <input id="logRequestReason" placeholder="例如：定位 OTA 下载失败" />
+              </label>
+              <label>有效期（分钟）
+                <input id="logRequestExpiresMinutes" type="number" min="0" max="10080" value="1440" />
+              </label>
+            </div>
+            <div class="row">
+              <label>最大行数
+                <input id="logRequestMaxLines" type="number" min="1" max="500" value="120" />
+              </label>
+              <label>最大字节数
+                <input id="logRequestMaxBytes" type="number" min="256" max="65536" value="8192" />
+              </label>
+            </div>
+            <button type="submit">创建日志采集请求</button>
+          </form>
+          <p id="deviceLogRequestHint" class="muted">当前设备：-</p>
+          <pre id="deviceLogRequestResult"></pre>
+        </div>
+
         <div class="card" data-workspace="publish">
           <h3>创建插播</h3>
           <p class="help">目标设备使用顶部“当前设备”。若选择“全部设备(*)”，将创建全设备插播。</p>
@@ -1004,6 +1030,13 @@
           <div id="publishHistoryBody" class="timeline"></div>
           <p id="publishHistoryHint" class="muted"></p>
         </div>
+
+        <div class="card" data-workspace="history">
+          <h3>日志采集请求历史</h3>
+          <p class="help">展示管理端创建过的设备日志采集请求；`pending` 状态可手动取消。</p>
+          <div id="logRequestHistoryBody" class="timeline"></div>
+          <p id="logRequestHistoryHint" class="muted"></p>
+        </div>
       </div>
 
       <aside id="secondaryStack" class="stack">
@@ -1109,6 +1142,13 @@
           <p class="help">展示曾下发到设备的配置版本与内容。</p>
           <div id="configHistoryBody" class="timeline"></div>
           <p id="configHistoryHint" class="muted"></p>
+        </div>
+
+        <div class="card" data-workspace="history">
+          <h3>设备日志上传记录</h3>
+          <p class="help">展示设备已上传的诊断日志正文与接收时间。</p>
+          <div id="logUploadHistoryBody" class="timeline"></div>
+          <p id="logUploadHistoryHint" class="muted"></p>
         </div>
       </aside>
     </section>

@@ -402,6 +402,14 @@ function optionLabel(value, mapping) {
   return mapping[key] || key;
 }
 
+function selectedConcreteDeviceId() {
+  const value = (document.getElementById('deviceId')?.value || '').trim();
+  if (!value || value === '*') {
+    return '';
+  }
+  return value;
+}
+
 function ditherAlgorithmLabel(value) {
   return optionLabel(value, DITHER_ALGORITHM_LABELS);
 }
@@ -1449,6 +1457,17 @@ function updateDeviceContextBanner() {
   metaEl.textContent = `固件 ${firmware} · IP ${ip} · 电量 ${battery} · 下次唤醒 ${nextWakeup} · Wi‑Fi ${wifi}`;
 }
 
+function updateDeviceLogRequestHint() {
+  const hint = document.getElementById('deviceLogRequestHint');
+  if (!hint) return;
+  const deviceId = selectedConcreteDeviceId();
+  if (!deviceId) {
+    hint.textContent = '当前设备：请先在顶部选择具体设备，不能对“全部设备(*)”创建日志采集请求';
+    return;
+  }
+  hint.textContent = `当前设备：${deviceId} · 将在设备下次唤醒时触发一次性日志上传`;
+}
+
 function fillWifiEditorFromDevice(device) {
   const profiles = getReportedWifiProfiles(device).slice(0, 3);
   for (let i = 1; i <= 3; i++) {
@@ -1720,6 +1739,7 @@ async function loadDevices() {
 
   fillWifiEditorFromDevice(deviceMap.get(deviceSelect.value || '*'));
   updateConfigHints();
+  updateDeviceLogRequestHint();
   updateDeviceContextBanner();
   if (!powerAutoLoaded) {
     powerAutoLoaded = true;
@@ -1875,6 +1895,156 @@ async function loadPublishHistory() {
 
   const scope = selectedDevice === '*' ? '全部设备' : selectedDevice;
   document.getElementById('publishHistoryHint').textContent = `${scope} · 最近 ${items.length} 条`;
+}
+
+function renderLogRequestStatus(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'completed') return '<span class="tag active">completed</span>';
+  if (normalized === 'pending') return '<span class="tag upcoming">pending</span>';
+  if (normalized === 'cancelled') return '<span class="tag expired">cancelled</span>';
+  if (normalized === 'expired') return '<span class="tag expired">expired</span>';
+  return `<span class="tag">${escapeHtml(normalized || '-')}</span>`;
+}
+
+function formatLogPayloadLines(payload) {
+  const lines = Array.isArray(payload?.lines) ? payload.lines : [];
+  if (lines.length === 0) return '';
+  return lines.map((line) => escapeHtml(line)).join('\n');
+}
+
+function renderLogRequestItem(item) {
+  const requestId = Number(item.request_id);
+  const reason = escapeHtml(item.reason || '-');
+  const expiresText = item.expires_epoch ? fmtEpoch(item.expires_epoch) : '永不过期';
+  const actions = item.status === 'pending'
+    ? `<button type="button" class="secondary logRequestCancelBtn" data-request-id="${requestId}">取消请求</button>`
+    : '';
+  return `
+    <article class="release-item">
+      <div class="release-head">
+        <p class="release-title"><span class="tag">${escapeHtml(item.device_id)}</span> 请求 #${requestId}</p>
+        <span class="release-date">${fmtEpoch(item.created_epoch)}</span>
+      </div>
+      <p class="release-summary">${reason}</p>
+      <ul>
+        <li>status: ${renderLogRequestStatus(item.status)}</li>
+        <li>max_lines: ${escapeHtml(item.max_lines)}</li>
+        <li>max_bytes: ${escapeHtml(item.max_bytes)}</li>
+        <li>expires: ${escapeHtml(expiresText)}</li>
+        <li>completed: ${fmtEpoch(item.completed_epoch)}</li>
+        <li>uploaded: ${escapeHtml(item.uploaded_line_count)} lines / truncated=${escapeHtml(item.uploaded_truncated)}</li>
+      </ul>
+      ${actions}
+    </article>
+  `;
+}
+
+function renderLogUploadItem(item) {
+  const payloadText = formatLogPayloadLines(item.payload);
+  return `
+    <article class="release-item">
+      <div class="release-head">
+        <p class="release-title"><span class="tag">${escapeHtml(item.device_id)}</span> 上传 #${escapeHtml(item.id)}</p>
+        <span class="release-date">${fmtEpoch(item.received_epoch)}</span>
+      </div>
+      <p class="release-summary">${escapeHtml(item.reason || '-')}</p>
+      <ul>
+        <li>request_id: ${escapeHtml(item.request_id)}</li>
+        <li>uploaded_epoch: ${fmtEpoch(item.uploaded_epoch)}</li>
+        <li>line_count: ${escapeHtml(item.line_count)}</li>
+        <li>truncated: ${escapeHtml(item.truncated)}</li>
+      </ul>
+      ${payloadText ? `<pre>${payloadText}</pre>` : '<p class="muted">日志正文为空。</p>'}
+    </article>
+  `;
+}
+
+async function loadDeviceLogRequests() {
+  const selectedDevice = document.getElementById('deviceId').value || '*';
+  const query = selectedDevice !== '*'
+    ? `?device_id=${encodeURIComponent(selectedDevice)}&limit=40`
+    : '?limit=40';
+  const data = await fetchJson(`/api/v1/device-log-requests${query}`);
+
+  const items = data.items || [];
+  const body = document.getElementById('logRequestHistoryBody');
+  if (items.length === 0) {
+    body.innerHTML = '<p class="muted">暂无日志采集请求记录。</p>';
+  } else {
+    body.innerHTML = items.map(renderLogRequestItem).join('');
+  }
+  const scope = selectedDevice === '*' ? '全部设备' : selectedDevice;
+  document.getElementById('logRequestHistoryHint').textContent = `${scope} · 最近 ${items.length} 条`;
+
+  for (const btn of document.querySelectorAll('.logRequestCancelBtn')) {
+    btn.addEventListener('click', async () => {
+      const requestId = btn.getAttribute('data-request-id');
+      if (!requestId) return;
+      if (!confirm(`确认取消日志采集请求 #${requestId} ?`)) return;
+      try {
+        await fetchJson(`/api/v1/device-log-requests/${encodeURIComponent(requestId)}`, {
+          method: 'DELETE',
+        });
+        await refreshAll();
+      } catch (err) {
+        alert(`取消失败: ${err.message}`);
+      }
+    });
+  }
+}
+
+async function loadDeviceLogUploads() {
+  const selectedDevice = document.getElementById('deviceId').value || '*';
+  const query = selectedDevice !== '*'
+    ? `?device_id=${encodeURIComponent(selectedDevice)}&limit=20`
+    : '?limit=20';
+  const data = await fetchJson(`/api/v1/device-log-uploads${query}`);
+
+  const items = data.items || [];
+  const body = document.getElementById('logUploadHistoryBody');
+  if (items.length === 0) {
+    body.innerHTML = '<p class="muted">暂无设备日志上传记录。</p>';
+  } else {
+    body.innerHTML = items.map(renderLogUploadItem).join('');
+  }
+  const scope = selectedDevice === '*' ? '全部设备' : selectedDevice;
+  document.getElementById('logUploadHistoryHint').textContent = `${scope} · 最近 ${items.length} 条`;
+}
+
+async function submitDeviceLogRequest(ev) {
+  ev.preventDefault();
+  const deviceId = selectedConcreteDeviceId();
+  if (!deviceId) {
+    throw new Error('请先在顶部选择具体设备，不能对“全部设备(*)”创建日志采集请求');
+  }
+
+  const payload = {
+    device_id: deviceId,
+    reason: document.getElementById('logRequestReason').value.trim(),
+    max_lines: Number(document.getElementById('logRequestMaxLines').value || '120'),
+    max_bytes: Number(document.getElementById('logRequestMaxBytes').value || '8192'),
+    expires_in_minutes: Number(document.getElementById('logRequestExpiresMinutes').value || '1440'),
+  };
+
+  if (!Number.isInteger(payload.max_lines) || payload.max_lines < 1 || payload.max_lines > 500) {
+    throw new Error('最大行数必须是 1-500 的整数');
+  }
+  if (!Number.isInteger(payload.max_bytes) || payload.max_bytes < 256 || payload.max_bytes > 65536) {
+    throw new Error('最大字节数必须是 256-65536 的整数');
+  }
+  if (!Number.isInteger(payload.expires_in_minutes) || payload.expires_in_minutes < 0 || payload.expires_in_minutes > 10080) {
+    throw new Error('有效期必须是 0-10080 的整数分钟');
+  }
+
+  const data = await fetchJson('/api/v1/device-log-requests', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  document.getElementById('deviceLogRequestResult').textContent = JSON.stringify(data, null, 2);
+  document.getElementById('deviceLogRequestHint').textContent = `${deviceId} · 请求已创建，等待设备下次唤醒`;
+  await refreshAll();
 }
 
 async function loadOverviewPreview(force = false) {
@@ -2042,6 +2212,16 @@ async function refreshAll() {
     setTimelineMessage('publishHistoryBody', `发布历史加载失败: ${message}`);
     setText('publishHistoryHint', `发布历史加载失败: ${message}`);
   });
+  await runSection(loadDeviceLogRequests, (err) => {
+    const message = explainAdminLoadError(err);
+    setTimelineMessage('logRequestHistoryBody', `日志采集请求加载失败: ${message}`);
+    setText('logRequestHistoryHint', `日志采集请求加载失败: ${message}`);
+  });
+  await runSection(loadDeviceLogUploads, (err) => {
+    const message = explainAdminLoadError(err);
+    setTimelineMessage('logUploadHistoryBody', `日志上传记录加载失败: ${message}`);
+    setText('logUploadHistoryHint', `日志上传记录加载失败: ${message}`);
+  });
   await runSection(() => loadOverviewPreview(true), (err) => {
     setText('overviewPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);
   });
@@ -2069,6 +2249,14 @@ document.getElementById('deviceConfigForm').addEventListener('submit', async (ev
     await submitDeviceConfig(ev);
   } catch (err) {
     document.getElementById('configResult').textContent = `发布失败: ${err.message}`;
+  }
+});
+
+document.getElementById('deviceLogRequestForm').addEventListener('submit', async (ev) => {
+  try {
+    await submitDeviceLogRequest(ev);
+  } catch (err) {
+    document.getElementById('deviceLogRequestResult').textContent = `创建失败: ${err.message}`;
   }
 });
 
@@ -2188,10 +2376,21 @@ document.getElementById('deviceId').addEventListener('change', async () => {
   clearConfigPatchInputs();
   fillWifiEditorFromDevice(deviceMap.get(document.getElementById('deviceId').value || '*'));
   updateConfigHints();
+  updateDeviceLogRequestHint();
   await runSection(loadPublishHistory, (err) => {
     const message = explainAdminLoadError(err);
     setTimelineMessage('publishHistoryBody', `发布历史加载失败: ${message}`);
     setText('publishHistoryHint', `发布历史加载失败: ${message}`);
+  });
+  await runSection(loadDeviceLogRequests, (err) => {
+    const message = explainAdminLoadError(err);
+    setTimelineMessage('logRequestHistoryBody', `日志采集请求加载失败: ${message}`);
+    setText('logRequestHistoryHint', `日志采集请求加载失败: ${message}`);
+  });
+  await runSection(loadDeviceLogUploads, (err) => {
+    const message = explainAdminLoadError(err);
+    setTimelineMessage('logUploadHistoryBody', `日志上传记录加载失败: ${message}`);
+    setText('logUploadHistoryHint', `日志上传记录加载失败: ${message}`);
   });
   await runSection(() => loadOverviewPreview(true), (err) => {
     setText('overviewPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);

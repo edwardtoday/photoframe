@@ -298,6 +298,42 @@ Query:
 - `device_id`：可选
 - `limit`：可选，默认 20
 
+### 4.6 设备调试阶段历史
+
+`GET /api/v1/device-debug-stages`
+
+用途：
+
+- 查看设备通过 `/api/v1/device/debug-stage` 回传的阶段信标，便于 OTA 故障注入与阶段定位
+
+Query:
+
+- `device_id`：可选
+- `stage`：可选
+- `limit`：可选，默认 50
+
+Header:
+
+- `X-PhotoFrame-Token`
+
+Response:
+
+```json
+{
+  "now_epoch": 1770000000,
+  "count": 1,
+  "items": [
+    {
+      "id": 12,
+      "device_id": "pf-a1b2c3d4",
+      "stage": "ota_download_50",
+      "stage_epoch": 1770000000,
+      "created_at": 1770000000
+    }
+  ]
+}
+```
+
 ## 5) 固件 OTA 控制面
 
 说明：

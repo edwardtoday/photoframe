@@ -59,6 +59,7 @@ scripts/build-photoframe-rs.sh
 - 仅空片首刷才使用整片镜像，例如：`~/.espressif/python_env/idf5.0_py3.13_env/bin/esptool.py --chip esp32s3 --port /dev/cu.usbmodem111201 --baud 115200 write_flash -z 0x0 firmware/photoframe-rs/dist/photoframe-rs-fullchip.bin`
 - 串口抓日志可复用同一 Python 环境中的 `pyserial`，避免额外安装宿主机工具链
 - 串口监控建议用 `scripts/monitor-host.sh --once /dev/cu.usbmodem111201 115200`；如启用自动重连，反复打开串口会触发 `USB_UART_CHIP_RESET`，看起来像“重启循环”
+- OTA 故障注入/验收可用 `scripts/validate-ota-host.py`：支持上传 artifact、创建 rollout、可选请求设备日志、等待 `device-debug-stages` 中的 OTA 阶段并在指定阶段通过 USB 串口触发 reset
 
 ## NVS 恢复
 

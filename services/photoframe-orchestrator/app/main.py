@@ -78,6 +78,7 @@ def _detect_app_git_sha() -> str:
 APP_GIT_SHA = _detect_app_git_sha()
 DEVICE_CONFIG_MAX_HISTORY = 200
 DEVICE_LOG_UPLOAD_MAX_HISTORY = 200
+DEVICE_DEBUG_STAGE_MAX_HISTORY = 500
 DEVICE_LOG_UPLOAD_STATUS_PENDING = "pending"
 DEVICE_LOG_UPLOAD_STATUS_COMPLETED = "completed"
 DEVICE_LOG_UPLOAD_STATUS_CANCELLED = "cancelled"
@@ -531,6 +532,23 @@ def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
         ON firmware_rollouts (device_id, enabled, created_epoch DESC)
       """
   )
+  conn.execute(
+      """
+      CREATE TABLE IF NOT EXISTS device_debug_stages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        stage_epoch INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL DEFAULT 0
+      )
+      """
+  )
+  conn.execute(
+      """
+      CREATE INDEX IF NOT EXISTS idx_device_debug_stages_device_epoch
+        ON device_debug_stages (device_id, stage_epoch DESC, id DESC)
+      """
+  )
 
 
 def _init_db() -> None:
@@ -699,6 +717,17 @@ def _init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_firmware_rollouts_device_enabled
           ON firmware_rollouts (device_id, enabled, created_epoch DESC);
+
+        CREATE TABLE IF NOT EXISTS device_debug_stages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT NOT NULL,
+          stage TEXT NOT NULL,
+          stage_epoch INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_device_debug_stages_device_epoch
+          ON device_debug_stages (device_id, stage_epoch DESC, id DESC);
         """
     )
     _apply_schema_migrations(conn)
@@ -740,6 +769,35 @@ def _touch_device_seen(conn: sqlite3.Connection, device_id: str, seen_epoch: int
         (target, int(seen_epoch)),
     )
     conn.commit()
+
+
+def _record_device_debug_stage(
+    conn: sqlite3.Connection,
+    device_id: str,
+    stage: str,
+    stage_epoch: int,
+) -> int:
+  target = _normalize_device_id(device_id)
+  cursor = conn.execute(
+      """
+      INSERT INTO device_debug_stages (device_id, stage, stage_epoch, created_at)
+      VALUES (?, ?, ?, ?)
+      """,
+      (target, str(stage), int(stage_epoch), int(stage_epoch)),
+  )
+  conn.execute(
+      """
+      DELETE FROM device_debug_stages
+      WHERE id IN (
+        SELECT id FROM device_debug_stages
+        WHERE device_id = ?
+        ORDER BY id DESC
+        LIMIT -1 OFFSET ?
+      )
+      """,
+      (target, DEVICE_DEBUG_STAGE_MAX_HISTORY),
+  )
+  return int(cursor.lastrowid)
 
 
 def _record_public_daily_activity(conn: sqlite3.Connection, device_id: str, seen_epoch: int) -> None:
@@ -2644,13 +2702,68 @@ def device_debug_stage(
 ) -> dict[str, Any]:
   _require_device_token(device_id, x_photoframe_token)
   now_ts = _now_epoch()
+  conn = _ensure_db()
+  with DB_LOCK:
+    stage_id = _record_device_debug_stage(conn, device_id, stage, now_ts)
+    conn.commit()
   LOGGER.warning(
       "device debug stage: device_id=%s stage=%s server_epoch=%s",
       _normalize_device_id(device_id),
       stage,
       now_ts,
   )
-  return {"ok": True, "device_id": _normalize_device_id(device_id), "stage": stage, "server_epoch": now_ts}
+  return {
+      "ok": True,
+      "id": stage_id,
+      "device_id": _normalize_device_id(device_id),
+      "stage": stage,
+      "server_epoch": now_ts,
+  }
+
+
+@app.get("/api/v1/device-debug-stages")
+def device_debug_stages(
+    device_id: str | None = Query(default=None),
+    stage: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=50),
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  conn = _ensure_db()
+  now_ts = _now_epoch()
+  max_rows = _clamp(limit, 1, 500)
+  where_parts: list[str] = []
+  params: list[Any] = []
+  normalized_device = _normalize_device_id(device_id) if device_id is not None else None
+  if normalized_device and normalized_device != "*":
+    where_parts.append("device_id = ?")
+    params.append(normalized_device)
+  if stage and stage.strip():
+    where_parts.append("stage = ?")
+    params.append(stage.strip())
+  where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+  rows = conn.execute(
+      f"""
+      SELECT id, device_id, stage, stage_epoch, created_at
+      FROM device_debug_stages
+      {where_sql}
+      ORDER BY id DESC
+      LIMIT ?
+      """,
+      (*params, max_rows),
+  ).fetchall()
+  items: list[dict[str, Any]] = []
+  for row in rows:
+    items.append(
+        {
+            "id": int(row["id"]),
+            "device_id": str(row["device_id"]),
+            "stage": str(row["stage"]),
+            "stage_epoch": int(row["stage_epoch"]),
+            "created_at": int(row["created_at"]),
+        }
+    )
+  return {"now_epoch": now_ts, "count": len(items), "items": items}
 
 
 @app.get("/api/v1/assets/{asset_name}")
@@ -3031,6 +3144,7 @@ def device_checkin(
     next_wakeup_epoch = checkin_epoch + sleep_seconds
   reported_config = _sanitize_reported_device_config(payload.reported_config)
   reported_config_json = json.dumps(reported_config, ensure_ascii=False)
+  current_firmware_version = str(reported_config.get("firmware_version") or "").strip()[:128]
   sta_ip = (payload.sta_ip or "").strip()[:64]
   battery_mv = int(payload.battery_mv)
   battery_percent = int(payload.battery_percent)
@@ -3041,6 +3155,13 @@ def device_checkin(
   ota_target_version = str(payload.ota_target_version or "").strip()[:128]
   ota_last_error = str(payload.ota_last_error or "").strip()[:512]
   ota_last_attempt_epoch = int(payload.ota_last_attempt_epoch)
+  ota_error_should_clear = (
+      ota_last_error == ""
+      and ota_state == "valid"
+      and current_firmware_version != ""
+      and ota_target_version != ""
+      and current_firmware_version == ota_target_version
+  )
 
   conn = _ensure_db()
   with DB_LOCK:
@@ -3073,7 +3194,11 @@ def device_checkin(
           running_partition = CASE WHEN excluded.running_partition <> '' THEN excluded.running_partition ELSE running_partition END,
           ota_state = CASE WHEN excluded.ota_state <> '' THEN excluded.ota_state ELSE ota_state END,
           ota_target_version = CASE WHEN excluded.ota_target_version <> '' THEN excluded.ota_target_version ELSE ota_target_version END,
-          ota_last_error = CASE WHEN excluded.ota_last_error <> '' THEN excluded.ota_last_error ELSE ota_last_error END,
+          ota_last_error = CASE
+            WHEN ? = 1 THEN ''
+            WHEN excluded.ota_last_error <> '' THEN excluded.ota_last_error
+            ELSE ota_last_error
+          END,
           ota_last_attempt_epoch = CASE WHEN excluded.ota_last_attempt_epoch > 0 THEN excluded.ota_last_attempt_epoch ELSE ota_last_attempt_epoch END,
           reported_config_json = excluded.reported_config_json,
           reported_config_epoch = excluded.reported_config_epoch,
@@ -3104,6 +3229,7 @@ def device_checkin(
             reported_config_json,
             checkin_epoch,
             now_ts,
+            1 if ota_error_should_clear else 0,
         ),
     )
     # 记录电池采样历史，用于控制台曲线与续航估算。
@@ -3943,6 +4069,26 @@ def devices(
         "vbus_good": int(row["vbus_good"]),
     }
 
+  last_debug_rows = conn.execute(
+      """
+      SELECT s.device_id, s.stage, s.stage_epoch
+      FROM device_debug_stages s
+      JOIN (
+        SELECT device_id, MAX(id) AS max_id
+        FROM device_debug_stages
+        GROUP BY device_id
+      ) t
+        ON s.device_id = t.device_id
+       AND s.id = t.max_id
+      """
+  ).fetchall()
+  last_debug_map: dict[str, dict[str, Any]] = {}
+  for row in last_debug_rows:
+    last_debug_map[str(row["device_id"])] = {
+        "stage": str(row["stage"] or ""),
+        "stage_epoch": int(row["stage_epoch"]),
+    }
+
   items: list[dict[str, Any]] = []
   for row in rows:
     device_id = str(row["device_id"])
@@ -3960,6 +4106,7 @@ def devices(
     reported_config = _decode_config_json(str(row["reported_config_json"]))
     firmware_version = str(reported_config.get("firmware_version") or "").strip()
     last_power = last_power_map.get(device_id)
+    last_debug = last_debug_map.get(device_id)
     items.append(
         {
             "device_id": device_id,
@@ -3993,6 +4140,12 @@ def devices(
             "last_power_battery_percent": -1 if last_power is None else int(last_power["battery_percent"]),
             "last_power_charging": -1 if last_power is None else int(last_power["charging"]),
             "last_power_vbus_good": -1 if last_power is None else int(last_power["vbus_good"]),
+            "last_debug_stage": "" if last_debug is None else str(last_debug["stage"]),
+            "last_debug_stage_epoch": (
+                None
+                if last_debug is None
+                else _device_epoch_for_view(int(last_debug["stage_epoch"]), now_ts)
+            ),
             "reported_config_epoch": _device_epoch_for_view(int(row["reported_config_epoch"]), now_ts),
             "reported_config": _redact_reported_config_for_view(reported_config),
             "config_target_version": target_version,

@@ -775,20 +775,21 @@ impl FirmwareUpdater for EspIdfFirmwareUpdater {
                 return Ok(false);
             }
             let token = orchestrator_token_for_url(&directive.app_bin_url, config);
-            install_firmware_inner(&directive.app_bin_url, token.as_deref(), directive)
+            install_firmware_inner(&directive.app_bin_url, token.as_deref(), directive, config)
                 .map(|_| true)
         }
     }
 
-    fn confirm_running_firmware(&mut self, _config: &DeviceRuntimeConfig) -> Result<(), String> {
+    fn confirm_running_firmware(&mut self, config: &DeviceRuntimeConfig) -> Result<(), String> {
         #[cfg(not(target_os = "espidf"))]
         {
+            let _ = config;
             Ok(())
         }
 
         #[cfg(target_os = "espidf")]
         {
-            confirm_running_firmware_inner()
+            confirm_running_firmware_inner(config)
         }
     }
 
@@ -1030,7 +1031,7 @@ unsafe fn select_inactive_update_partition() -> *const sys::esp_partition_t {
 }
 
 #[cfg(target_os = "espidf")]
-fn confirm_running_firmware_inner() -> Result<(), String> {
+fn confirm_running_firmware_inner(config: &DeviceRuntimeConfig) -> Result<(), String> {
     unsafe {
         let running = normalize_running_partition(sys::esp_ota_get_running_partition());
         if running.is_null() {
@@ -1054,6 +1055,7 @@ fn confirm_running_firmware_inner() -> Result<(), String> {
                 "INFO",
                 "photoframe-rs/ota: marked running slot valid".to_string(),
             );
+            let _ = send_debug_stage_beacon(config, "ota_mark_valid");
         }
         Ok(())
     }
@@ -1064,20 +1066,22 @@ fn install_firmware_inner(
     url_text: &str,
     orchestrator_token: Option<&str>,
     directive: &FirmwareUpdateDirective,
+    config: &DeviceRuntimeConfig,
 ) -> Result<(), String> {
     use sha2::{Digest, Sha256};
 
     let url = CString::new(url_text).map_err(|err| err.to_string())?;
+    let _ = send_debug_stage_beacon(config, "ota_start");
     unsafe {
-        let mut config: sys::esp_http_client_config_t = std::mem::zeroed();
-        config.url = url.as_ptr();
-        config.timeout_ms = 60_000;
-        config.disable_auto_redirect = true;
+        let mut client_config: sys::esp_http_client_config_t = std::mem::zeroed();
+        client_config.url = url.as_ptr();
+        client_config.timeout_ms = 60_000;
+        client_config.disable_auto_redirect = true;
         if is_https_url(url_text) {
-            config.crt_bundle_attach = Some(sys::esp_crt_bundle_attach);
+            client_config.crt_bundle_attach = Some(sys::esp_crt_bundle_attach);
         }
 
-        let client = sys::esp_http_client_init(&config);
+        let client = sys::esp_http_client_init(&client_config);
         if client.is_null() {
             return Err("esp_http_client_init failed".into());
         }
@@ -1119,15 +1123,18 @@ fn install_firmware_inner(
                 continue;
             }
             if status_code != 200 {
+                let _ = send_debug_stage_beacon(config, "ota_fail_http");
                 let body = read_body_stream(client).unwrap_or_default();
                 sys::esp_http_client_close(client);
                 sys::esp_http_client_cleanup(client);
                 let preview = String::from_utf8_lossy(&body).chars().take(120).collect::<String>();
                 return Err(format!("firmware download status={status_code} url={url_text} body={preview}"));
             }
+            let _ = send_debug_stage_beacon(config, "ota_http_ok");
 
             let content_len = sys::esp_http_client_get_content_length(client);
             if directive.size_bytes > 0 && content_len > 0 && content_len as u64 != directive.size_bytes {
+                let _ = send_debug_stage_beacon(config, "ota_fail_size_header");
                 sys::esp_http_client_close(client);
                 sys::esp_http_client_cleanup(client);
                 return Err(format!(
@@ -1138,24 +1145,33 @@ fn install_firmware_inner(
 
             let partition = select_inactive_update_partition();
             if partition.is_null() {
+                let _ = send_debug_stage_beacon(config, "ota_fail_no_slot");
                 sys::esp_http_client_close(client);
                 sys::esp_http_client_cleanup(client);
                 return Err("esp_ota_get_next_update_partition returned null".into());
             }
+            let partition_stage = format!("ota_target_{}", partition_label(partition));
+            let _ = send_debug_stage_beacon(config, &partition_stage);
             let mut handle: sys::esp_ota_handle_t = Default::default();
             if let Err(err) = check_esp(
                 sys::esp_ota_begin(partition, sys::OTA_SIZE_UNKNOWN as usize, &mut handle),
                 "esp_ota_begin",
             ) {
+                let _ = send_debug_stage_beacon(config, "ota_fail_begin");
                 sys::esp_http_client_close(client);
                 sys::esp_http_client_cleanup(client);
                 return Err(err);
             }
+            let _ = send_debug_stage_beacon(config, "ota_begin_ok");
 
             let mut hasher = Sha256::new();
             let mut total = 0usize;
             let mut chunk = vec![0u8; 4096];
             let mut transient_reads = 0usize;
+            let mut stage_25 = false;
+            let mut stage_50 = false;
+            let mut stage_75 = false;
+            let mut stage_100 = false;
             loop {
                 let read = sys::esp_http_client_read(
                     client,
@@ -1165,6 +1181,7 @@ fn install_firmware_inner(
                 if read == -(sys::ESP_ERR_HTTP_EAGAIN as i32) {
                     transient_reads = transient_reads.saturating_add(1);
                     if transient_reads > HTTP_READ_RETRY_LIMIT {
+                        let _ = send_debug_stage_beacon(config, "ota_fail_read_timeout");
                         let _ = sys::esp_ota_abort(handle);
                         sys::esp_http_client_close(client);
                         sys::esp_http_client_cleanup(client);
@@ -1176,6 +1193,7 @@ fn install_firmware_inner(
                     continue;
                 }
                 if read < 0 {
+                    let _ = send_debug_stage_beacon(config, "ota_fail_read");
                     let _ = sys::esp_ota_abort(handle);
                     sys::esp_http_client_close(client);
                     sys::esp_http_client_cleanup(client);
@@ -1188,6 +1206,7 @@ fn install_firmware_inner(
                     if !sys::esp_http_client_is_complete_data_received(client) {
                         transient_reads = transient_reads.saturating_add(1);
                         if transient_reads > HTTP_READ_RETRY_LIMIT {
+                            let _ = send_debug_stage_beacon(config, "ota_fail_incomplete");
                             let _ = sys::esp_ota_abort(handle);
                             sys::esp_http_client_close(client);
                             sys::esp_http_client_cleanup(client);
@@ -1206,6 +1225,7 @@ fn install_firmware_inner(
                 hasher.update(slice);
                 total = total.saturating_add(size);
                 if directive.size_bytes > 0 && total > directive.size_bytes as usize {
+                    let _ = send_debug_stage_beacon(config, "ota_fail_size_exceed");
                     let _ = sys::esp_ota_abort(handle);
                     sys::esp_http_client_close(client);
                     sys::esp_http_client_cleanup(client);
@@ -1218,16 +1238,37 @@ fn install_firmware_inner(
                     sys::esp_ota_write(handle, slice.as_ptr() as *const _, size as _),
                     "esp_ota_write",
                 ) {
+                    let _ = send_debug_stage_beacon(config, "ota_fail_write");
                     let _ = sys::esp_ota_abort(handle);
                     sys::esp_http_client_close(client);
                     sys::esp_http_client_cleanup(client);
                     return Err(err);
+                }
+                if directive.size_bytes > 0 {
+                    let progress = total.saturating_mul(100) / directive.size_bytes as usize;
+                    if !stage_25 && progress >= 25 {
+                        stage_25 = true;
+                        let _ = send_debug_stage_beacon(config, "ota_download_25");
+                    }
+                    if !stage_50 && progress >= 50 {
+                        stage_50 = true;
+                        let _ = send_debug_stage_beacon(config, "ota_download_50");
+                    }
+                    if !stage_75 && progress >= 75 {
+                        stage_75 = true;
+                        let _ = send_debug_stage_beacon(config, "ota_download_75");
+                    }
+                    if !stage_100 && progress >= 100 {
+                        stage_100 = true;
+                        let _ = send_debug_stage_beacon(config, "ota_download_100");
+                    }
                 }
             }
             sys::esp_http_client_close(client);
             sys::esp_http_client_cleanup(client);
 
             if directive.size_bytes > 0 && total != directive.size_bytes as usize {
+                let _ = send_debug_stage_beacon(config, "ota_fail_size_final");
                 let _ = sys::esp_ota_abort(handle);
                 return Err(format!(
                     "firmware size mismatch after download: expected={} actual={}",
@@ -1240,17 +1281,21 @@ fn install_firmware_inner(
                 .map(|b| format!("{b:02x}"))
                 .collect::<String>();
             if !directive.sha256.eq_ignore_ascii_case(&actual_sha256) {
+                let _ = send_debug_stage_beacon(config, "ota_fail_sha");
                 let _ = sys::esp_ota_abort(handle);
                 return Err(format!(
                     "firmware sha256 mismatch: expected={} actual={}",
                     directive.sha256, actual_sha256
                 ));
             }
+            let _ = send_debug_stage_beacon(config, "ota_sha_ok");
             check_esp(sys::esp_ota_end(handle), "esp_ota_end")?;
+            let _ = send_debug_stage_beacon(config, "ota_end_ok");
             check_esp(
                 sys::esp_ota_set_boot_partition(partition),
                 "esp_ota_set_boot_partition",
             )?;
+            let _ = send_debug_stage_beacon(config, "ota_boot_set_ok");
             emit_diag_log(
                 "INFO",
                 format!(
@@ -1258,6 +1303,7 @@ fn install_firmware_inner(
                     directive.version, total, actual_sha256
                 ),
             );
+            let _ = send_debug_stage_beacon(config, "ota_ready_reboot");
             return Ok(());
         }
     }

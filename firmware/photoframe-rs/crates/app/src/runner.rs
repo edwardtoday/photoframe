@@ -554,9 +554,8 @@ where
             let _ = self
                 .orchestrator
                 .report_debug_stage(&config, "after_save_ok");
-            let confirm_ok = self.firmware_updater.confirm_running_firmware(&config).is_ok();
-            if confirm_ok
-                && config.ota_target_version == config.firmware_version()
+            let _ = self.firmware_updater.confirm_running_firmware(&config);
+            if config.ota_target_version == config.firmware_version()
                 && !config.ota_last_error.is_empty()
             {
                 config.ota_last_error.clear();

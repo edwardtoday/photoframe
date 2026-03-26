@@ -167,6 +167,15 @@ pub struct CycleRunner<C, S, O, I, D, F = NoopFirmwareUpdater, L = NoopLogUpload
     log_upload_provider: L,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FirmwareUpdateDecision {
+    Attempt,
+    SkipEmpty,
+    SkipSameVersion,
+    SkipRequiresVbus,
+    SkipBattery,
+}
+
 impl<C, S, O, I, D> CycleRunner<C, S, O, I, D, NoopFirmwareUpdater, NoopLogUploadProvider> {
     pub fn new(
         clock: C,
@@ -390,9 +399,9 @@ where
         }
 
         if let Some(update) = firmware_update.as_ref() {
-            let should_attempt = self.should_attempt_firmware_update(update, boot.power_sample, &config);
+            let decision = self.should_attempt_firmware_update(update, boot.power_sample, &config);
             println!(
-                "photoframe-rs/ota: directive version={} current={} batt={} charging={} vbus={} requires_vbus={} min_batt={:?} should_attempt={}",
+                "photoframe-rs/ota: directive version={} current={} batt={} charging={} vbus={} requires_vbus={} min_batt={:?} decision={:?}",
                 update.version,
                 config.firmware_version(),
                 boot.power_sample.battery_percent,
@@ -400,9 +409,17 @@ where
                 boot.power_sample.vbus_good,
                 update.requires_vbus,
                 update.min_battery_percent,
-                should_attempt,
+                decision,
             );
-            if should_attempt {
+            let ota_stage = match decision {
+                FirmwareUpdateDecision::Attempt => "ota_decision_attempt",
+                FirmwareUpdateDecision::SkipEmpty => "ota_skip_empty",
+                FirmwareUpdateDecision::SkipSameVersion => "ota_skip_same_version",
+                FirmwareUpdateDecision::SkipRequiresVbus => "ota_skip_requires_vbus",
+                FirmwareUpdateDecision::SkipBattery => "ota_skip_battery",
+            };
+            let _ = self.orchestrator.report_debug_stage(&config, ota_stage);
+            if decision == FirmwareUpdateDecision::Attempt {
                 config.ota_target_version = update.version.clone();
                 config.ota_last_error.clear();
                 config.ota_last_attempt_epoch = now_epoch;
@@ -666,23 +683,23 @@ where
         update: &FirmwareUpdateDirective,
         power_sample: PowerSample,
         config: &DeviceRuntimeConfig,
-    ) -> bool {
+    ) -> FirmwareUpdateDecision {
         if update.version.trim().is_empty() || update.app_bin_url.trim().is_empty() {
-            return false;
+            return FirmwareUpdateDecision::SkipEmpty;
         }
         if update.version == config.firmware_version() {
-            return false;
+            return FirmwareUpdateDecision::SkipSameVersion;
         }
         if update.requires_vbus && power_sample.vbus_good != 1 {
-            return false;
+            return FirmwareUpdateDecision::SkipRequiresVbus;
         }
         if let Some(min_percent) = update.min_battery_percent
             && power_sample.battery_percent >= 0
             && power_sample.battery_percent < min_percent
         {
-            return false;
+            return FirmwareUpdateDecision::SkipBattery;
         }
-        true
+        FirmwareUpdateDecision::Attempt
     }
 
     fn upload_logs_if_requested(

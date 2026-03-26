@@ -1,6 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-env-changed=PHOTOFRAME_BOOTSTRAP_CONFIG_JSON");
     println!("cargo:rerun-if-env-changed=PHOTOFRAME_DEBUG_STAGE_BEACON");
+    println!("cargo:rerun-if-env-changed=PHOTOFRAME_TEST_POWER_OVERRIDE_JSON");
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os == "espidf" {
         embuild::espidf::sysenv::output();

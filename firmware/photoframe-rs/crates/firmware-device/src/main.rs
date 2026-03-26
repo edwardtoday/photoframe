@@ -236,6 +236,40 @@ fn bootstrap_config_from_env() -> Option<DeviceConfigPayload> {
 }
 
 #[cfg(target_os = "espidf")]
+fn apply_test_power_override(sample: &mut photoframe_app::PowerSample) {
+    let Some(raw) = option_env!("PHOTOFRAME_TEST_POWER_OVERRIDE_JSON") else {
+        return;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(override_cfg) => {
+            if let Some(value) = override_cfg.get("battery_mv").and_then(|v| v.as_i64()) {
+                sample.battery_mv = value as i32;
+            }
+            if let Some(value) = override_cfg.get("battery_percent").and_then(|v| v.as_i64()) {
+                sample.battery_percent = value as i32;
+            }
+            if let Some(value) = override_cfg.get("charging").and_then(|v| v.as_i64()) {
+                sample.charging = value as i32;
+            }
+            if let Some(value) = override_cfg.get("vbus_good").and_then(|v| v.as_i64()) {
+                sample.vbus_good = value as i32;
+            }
+            println!(
+                "photoframe-rs: applied test power override battery_mv={} battery_percent={} charging={} vbus_good={}",
+                sample.battery_mv, sample.battery_percent, sample.charging, sample.vbus_good
+            );
+        }
+        Err(err) => {
+            println!("photoframe-rs: invalid test power override json: {err}");
+        }
+    }
+}
+
+#[cfg(target_os = "espidf")]
 fn current_wake_source() -> WakeSource {
     match unsafe { esp_idf_sys::esp_sleep_get_wakeup_cause() } {
         esp_idf_sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_TIMER => {
@@ -475,7 +509,8 @@ fn main() {
             println!("photoframe-rs: save time sync epoch failed: {err}");
         }
     }
-    let power_sample = runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
+    let mut power_sample = runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
+    apply_test_power_override(&mut power_sample);
     if matches!(long_press_action, LongPressAction::OpenStaPortalWindow) {
         if let Err(err) = portal::run_sta_portal_window(portal::PortalRuntimeStatus {
             wifi_connected: true,

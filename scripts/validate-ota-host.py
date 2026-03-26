@@ -158,6 +158,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--poll-interval-seconds", type=float, default=2.0)
     parser.add_argument("--timeout-seconds", type=float, default=600.0)
     parser.add_argument("--reset-stage", default="", help="等待该 debug stage 后执行 USB reset")
+    parser.add_argument("--expect-stage", default="", help="等待该 debug stage，并验证设备保持原版本/分区")
+    parser.add_argument(
+        "--expect-version-unchanged",
+        action="store_true",
+        help="配合 --expect-stage 使用，要求设备版本与分区保持初始状态",
+    )
     parser.add_argument("--log-reason", default="", help="同时创建日志采集请求")
     parser.add_argument("--log-max-lines", type=int, default=120)
     parser.add_argument("--log-max-bytes", type=int, default=8192)
@@ -374,6 +380,26 @@ def main() -> int:
                 poll_interval_seconds=args.poll_interval_seconds,
             )
             print_json("[device] recovered", recovered)
+        elif args.expect_stage.strip():
+            stage_item = wait_for_stage(
+                client,
+                args.device_id,
+                args.expect_stage.strip(),
+                after_id=latest_stage_id,
+                timeout_seconds=args.timeout_seconds,
+                poll_interval_seconds=args.poll_interval_seconds,
+            )
+            print_json("[debug-stage] matched", stage_item)
+            if args.expect_version_unchanged:
+                recovered = wait_for_reset_recovery(
+                    client,
+                    args.device_id,
+                    initial_version=str(initial.get("firmware_version") or ""),
+                    initial_partition=str(initial.get("running_partition") or ""),
+                    timeout_seconds=args.timeout_seconds,
+                    poll_interval_seconds=args.poll_interval_seconds,
+                )
+                print_json("[device] unchanged", recovered)
         else:
             final_row = wait_for_success(
                 client,

@@ -1,6 +1,6 @@
 use photoframe_contracts::{
-    DeviceCheckinRequest, DeviceLogUploadRequest, DeviceLogUploadRequestBody,
-    DeviceNextResponse, FirmwareUpdateDirective,
+    DeviceCheckinRequest, DeviceLogUploadRequest, DeviceLogUploadRequestBody, DeviceNextResponse,
+    FirmwareUpdateDirective,
 };
 use photoframe_domain::{
     CycleAction, FailureKind, LongPressAction, WakeSource, apply_cycle_outcome,
@@ -10,7 +10,8 @@ use photoframe_domain::{
 use crate::{
     DeviceRuntimeConfig, ImageArtifact, ImageFetchOutcome, ImageFetchPlan,
     build_checkin_base_url_candidates, build_dated_url, build_fetch_url_candidates,
-    model::{FirmwareRuntimeStatus, PowerSample}, split_url_origin_and_rest,
+    model::{FirmwareRuntimeStatus, PowerSample},
+    split_url_origin_and_rest,
 };
 
 pub trait Clock {
@@ -177,13 +178,7 @@ enum FirmwareUpdateDecision {
 }
 
 impl<C, S, O, I, D> CycleRunner<C, S, O, I, D, NoopFirmwareUpdater, NoopLogUploadProvider> {
-    pub fn new(
-        clock: C,
-        storage: S,
-        orchestrator: O,
-        image_fetcher: I,
-        display: D,
-    ) -> Self {
+    pub fn new(clock: C, storage: S, orchestrator: O, image_fetcher: I, display: D) -> Self {
         Self::new_with_services(
             clock,
             storage,
@@ -261,6 +256,10 @@ impl<C, S, O, I, D, F, L> CycleRunner<C, S, O, I, D, F, L> {
 
     pub fn orchestrator(&self) -> &O {
         &self.orchestrator
+    }
+
+    pub fn storage_mut(&mut self) -> &mut S {
+        &mut self.storage
     }
 
     pub fn image_fetcher(&self) -> &I {
@@ -711,13 +710,35 @@ where
         let Some(request) = request else {
             return Ok(false);
         };
+        println!(
+            "photoframe-rs/log-upload: request device_id={} request_id={} max_lines={} max_bytes={}",
+            config.device_id, request.request_id, request.max_lines, request.max_bytes
+        );
         let Some(payload) = self
             .log_upload_provider
             .collect_logs(config, request, uploaded_epoch)
         else {
+            println!(
+                "photoframe-rs/log-upload: skipped device_id={} request_id={} collector_returned_none",
+                config.device_id, request.request_id
+            );
             return Ok(false);
         };
-        self.orchestrator.upload_logs(config, request, &payload)?;
+        println!(
+            "photoframe-rs/log-upload: prepared device_id={} request_id={} line_count={} truncated={}",
+            config.device_id, request.request_id, payload.line_count, payload.truncated
+        );
+        if let Err(err) = self.orchestrator.upload_logs(config, request, &payload) {
+            println!(
+                "photoframe-rs/log-upload: failed device_id={} request_id={} err={}",
+                config.device_id, request.request_id, err
+            );
+            return Err(err);
+        }
+        println!(
+            "photoframe-rs/log-upload: completed device_id={} request_id={}",
+            config.device_id, request.request_id
+        );
         Ok(true)
     }
 

@@ -738,6 +738,7 @@ dependencies = [
  "cc",
  "embuild",
  "esp-idf-sys",
+ "libc",
  "photoframe-app",
  "photoframe-contracts",
  "photoframe-domain",

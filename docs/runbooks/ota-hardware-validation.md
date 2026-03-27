@@ -90,6 +90,23 @@ scripts/build-photoframe-rs.sh
 scripts/flash-photoframe-rs.sh "${PORT}" 115200
 ```
 
+## USB Debug Mode 说明
+
+- 设备检测到 USB Serial/JTAG 已接入时，一轮主周期结束后不会立即进入深睡，而会等待 5 秒后再跑下一轮联网/拉图/上报
+- 该模式只用于调试提速，不改变“仅 VBUS 供电但没有串口主机接入”时的省电语义
+- 真机观察建议：
+
+```bash
+MONITOR_AUTO_RECONNECT_ON_CLEAN_EXIT=1 \
+scripts/monitor-host.sh "${PORT}" 115200
+```
+
+判定标准：
+
+- 一轮成功后出现 `usb debug mode active, rerun cycle in 5s`
+- 约 5 秒后再次出现 `wifi try idx=...`
+- 设备不会在两轮之间进入深睡
+
 ## 通用 OTA 验证脚本
 
 ```bash
@@ -163,6 +180,43 @@ python3 scripts/validate-ota-host.py \
 - 正向升级成功
 - `/api/v1/device-log-requests` 中对应请求状态变为 `completed`
 - `/api/v1/device-log-uploads` 中出现对应上传记录
+
+## 附：TF 持久日志链路验收
+
+该项不属于 OTA 本身，但通常和 OTA/重启验证一起做，因为它依赖“受控重启前持久化，下一次 boot 后恢复”。
+
+建议步骤：
+
+1. 先在串口观察启动早期日志，确认 TF 已挂载，且不再出现坏 segment 报错。
+2. 通过 `POST /api/v1/device-config` 下发空配置，触发一次 `RebootForConfig`。
+3. 串口期望看到：
+   - `photoframe-rs: tf persist snapshot boot=<n> lines=<m> truncated=0`
+   - `photoframe-rs: tf persist success`
+4. 设备重启并重新联网后，创建一次日志采集请求：
+
+```bash
+curl -ksS -X POST \
+  -H "Content-Type: application/json" \
+  -H "X-PhotoFrame-Token: ${ADMIN_TOKEN}" \
+  "${BASE_URL}/api/v1/device-log-requests" \
+  --data '{
+    "device_id": "'"${DEVICE_ID}"'",
+    "reason": "tf history validation",
+    "max_lines": 200,
+    "max_bytes": 65536,
+    "expires_in_minutes": 30
+  }'
+```
+
+5. 在 `/api/v1/device-log-uploads` 中确认：
+   - 出现 `boot:1` 与 `boot:2` 两段日志
+   - 出现 `photoframe-rs: tf history ready blocks=1 ...`
+   - 出现 `photoframe-rs: preparing log upload history_blocks=1 ...`
+
+说明：
+
+- 当前真机已确认 TF 路径需使用 FAT 更稳妥的 8.3 文件名（例如 `pflog00.bin`）；更长文件名在该卡/挂载组合下会触发 `EINVAL`
+- 若 TF 不可用，设备仍会回退到 RTC 保留区快照，但那只能保留较小的一段尾部日志，不能替代 TF 环形持久化
 
 ## 场景 3：下载中途 reset
 

@@ -83,6 +83,13 @@ DEVICE_LOG_UPLOAD_STATUS_PENDING = "pending"
 DEVICE_LOG_UPLOAD_STATUS_COMPLETED = "completed"
 DEVICE_LOG_UPLOAD_STATUS_CANCELLED = "cancelled"
 DEVICE_LOG_UPLOAD_STATUS_EXPIRED = "expired"
+DEVICE_LOG_REQUEST_DEFAULT_MAX_LINES = 800
+DEVICE_LOG_REQUEST_DEFAULT_MAX_BYTES = 65536
+DEVICE_LOG_REQUEST_MAX_LINES = 2000
+DEVICE_LOG_REQUEST_MAX_BYTES = 262144
+DEVICE_LOG_UPLOAD_MAX_ACCEPTED_LINES = 2000
+DEVICE_LOG_UPLOAD_MAX_ACCEPTED_BYTES = 262144
+DEVICE_LOG_UPLOAD_MAX_LINE_CHARS = 384
 FIRMWARE_ARTIFACT_MAX_BYTES = 8 * 1024 * 1024
 POWER_SAMPLE_DEFAULT_DAYS = 30
 POWER_SAMPLE_RETENTION_DAYS = 365
@@ -452,8 +459,8 @@ def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         device_id TEXT NOT NULL,
         reason TEXT NOT NULL DEFAULT '',
-        max_lines INTEGER NOT NULL DEFAULT 120,
-        max_bytes INTEGER NOT NULL DEFAULT 8192,
+        max_lines INTEGER NOT NULL DEFAULT 800,
+        max_bytes INTEGER NOT NULL DEFAULT 65536,
         created_epoch INTEGER NOT NULL DEFAULT 0,
         expires_epoch INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'pending',
@@ -660,8 +667,8 @@ def _init_db() -> None:
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           device_id TEXT NOT NULL,
           reason TEXT NOT NULL DEFAULT '',
-          max_lines INTEGER NOT NULL DEFAULT 120,
-          max_bytes INTEGER NOT NULL DEFAULT 8192,
+          max_lines INTEGER NOT NULL DEFAULT 800,
+          max_bytes INTEGER NOT NULL DEFAULT 65536,
           created_epoch INTEGER NOT NULL DEFAULT 0,
           expires_epoch INTEGER NOT NULL DEFAULT 0,
           status TEXT NOT NULL DEFAULT 'pending',
@@ -2601,8 +2608,8 @@ class DeviceConfigApplied(BaseModel):
 class DeviceLogUploadRequestPublish(BaseModel):
   device_id: str = Field(min_length=1, max_length=64)
   reason: str = Field(default="", max_length=256)
-  max_lines: int = Field(default=120, ge=1, le=500)
-  max_bytes: int = Field(default=8192, ge=256, le=65536)
+  max_lines: int = Field(default=DEVICE_LOG_REQUEST_DEFAULT_MAX_LINES, ge=1, le=DEVICE_LOG_REQUEST_MAX_LINES)
+  max_bytes: int = Field(default=DEVICE_LOG_REQUEST_DEFAULT_MAX_BYTES, ge=256, le=DEVICE_LOG_REQUEST_MAX_BYTES)
   expires_in_minutes: int = Field(default=1440, ge=0, le=7 * 24 * 60)
 
 
@@ -2610,8 +2617,12 @@ class DeviceLogUploadPayload(BaseModel):
   device_id: str = Field(min_length=1, max_length=64)
   request_id: int = Field(ge=1)
   uploaded_epoch: int
-  line_count: int = Field(ge=0, le=500)
+  line_count: int = Field(ge=0, le=DEVICE_LOG_UPLOAD_MAX_ACCEPTED_LINES)
   truncated: bool = False
+  uploaded_bytes: int | None = Field(default=None, ge=0, le=DEVICE_LOG_UPLOAD_MAX_ACCEPTED_BYTES)
+  buffer_total_lines: int | None = Field(default=None, ge=0, le=DEVICE_LOG_UPLOAD_MAX_ACCEPTED_LINES)
+  buffer_total_bytes: int | None = Field(default=None, ge=0, le=DEVICE_LOG_UPLOAD_MAX_ACCEPTED_BYTES)
+  buffer_boot_id: int | None = Field(default=None, ge=0, le=1_000_000_000)
   lines: list[str] = Field(default_factory=list)
 
 
@@ -3679,14 +3690,14 @@ def device_log_upload(
 
   lines: list[str] = []
   total_bytes = 0
-  for raw in payload.lines[:500]:
+  for raw in payload.lines[:DEVICE_LOG_UPLOAD_MAX_ACCEPTED_LINES]:
     text = str(raw or "").replace("\x00", "").strip()
     if text == "":
       continue
-    clipped = text[:240]
+    clipped = text[:DEVICE_LOG_UPLOAD_MAX_LINE_CHARS]
     lines.append(clipped)
     total_bytes += len(clipped.encode("utf-8"))
-    if total_bytes >= 65536:
+    if total_bytes >= DEVICE_LOG_UPLOAD_MAX_ACCEPTED_BYTES:
       break
 
   conn = _ensure_db()
@@ -3714,6 +3725,10 @@ def device_log_upload(
             "uploaded_epoch": int(uploaded_epoch),
             "line_count": len(lines),
             "truncated": bool(payload.truncated),
+            "uploaded_bytes": int(payload.uploaded_bytes) if payload.uploaded_bytes is not None else total_bytes,
+            "buffer_total_lines": int(payload.buffer_total_lines) if payload.buffer_total_lines is not None else None,
+            "buffer_total_bytes": int(payload.buffer_total_bytes) if payload.buffer_total_bytes is not None else None,
+            "buffer_boot_id": int(payload.buffer_boot_id) if payload.buffer_boot_id is not None else None,
             "lines": lines,
         },
         ensure_ascii=False,
@@ -3766,11 +3781,14 @@ def device_log_upload(
     conn.commit()
 
   LOGGER.info(
-      "device log upload accepted: device_id=%s request_id=%s line_count=%s truncated=%s",
+      "device log upload accepted: device_id=%s request_id=%s line_count=%s bytes=%s truncated=%s buffer_lines=%s buffer_bytes=%s",
       target_device,
       int(payload.request_id),
       len(lines),
+      total_bytes,
       1 if payload.truncated else 0,
+      payload.buffer_total_lines if payload.buffer_total_lines is not None else -1,
+      payload.buffer_total_bytes if payload.buffer_total_bytes is not None else -1,
   )
   return {
       "ok": True,

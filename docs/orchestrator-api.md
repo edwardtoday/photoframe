@@ -48,8 +48,8 @@
   "active_override_id": 12,
   "log_upload_request": {
     "request_id": 21,
-    "max_lines": 120,
-    "max_bytes": 8192,
+    "max_lines": 800,
+    "max_bytes": 65536,
     "reason": "collect wake diagnostics",
     "created_epoch": 1760000000,
     "expires_epoch": 1760003600
@@ -235,8 +235,8 @@ Header:
 {
   "device_id": "pf-a1b2c3d4",
   "reason": "collect wake diagnostics",
-  "max_lines": 120,
-  "max_bytes": 8192,
+  "max_lines": 800,
+  "max_bytes": 65536,
   "expires_in_minutes": 1440
 }
 ```
@@ -275,6 +275,10 @@ Header:
   "uploaded_epoch": 1760000123,
   "line_count": 3,
   "truncated": false,
+  "uploaded_bytes": 412,
+  "buffer_total_lines": 97,
+  "buffer_total_bytes": 13884,
+  "buffer_boot_id": 8,
   "lines": [
     "[1760000001][boot:8][seq:1][INFO] photoframe-rs: wakeup cause=TIMER",
     "[1760000005][boot:8][seq:2][INFO] photoframe-rs: wifi connected idx=0 ssid=HomeWiFi ip=192.168.1.8",
@@ -288,6 +292,9 @@ Header:
 - 上传成功后，请求会被标记为 `completed`。
 - 相同 `request_id` 的重复上传按幂等更新处理。
 - 取消或过期请求会拒绝上传。
+- `uploaded_bytes` / `buffer_total_lines` / `buffer_total_bytes` / `buffer_boot_id` 用于判断本次上传拿到的是“整段”还是“环形缓冲尾部”。
+- 设备会优先把受控重启 / deep sleep 前的日志块写入 TF 卡 10 MiB 环形段（20 个 segment）；下一次 boot 会先恢复这些历史块，再继续追加新日志。
+- 若 TF 卡不可用，设备才退回到 RTC 保留区快照模式，因此日志上传仍可覆盖“上一轮睡前/重启前”的关键信息。
 
 ### 4.5 管理端查看已上传日志
 

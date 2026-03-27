@@ -161,5 +161,9 @@ pub struct DeviceLogUploadRequestBody {
     pub uploaded_epoch: i64,
     pub line_count: u32,
     pub truncated: bool,
+    pub uploaded_bytes: Option<u32>,
+    pub buffer_total_lines: Option<u32>,
+    pub buffer_total_bytes: Option<u32>,
+    pub buffer_boot_id: Option<u32>,
     pub lines: Vec<String>,
 }

@@ -6,7 +6,10 @@ mod portal;
 mod power;
 mod render_core;
 mod runtime_bridge;
+mod sdcard;
 mod wifi;
+
+const _: () = photoframe_firmware_device::LIB_TARGET_PRESENT;
 
 #[cfg(target_os = "espidf")]
 use std::{
@@ -16,9 +19,7 @@ use std::{
 };
 
 #[cfg(target_os = "espidf")]
-use photoframe_app::{
-    BootContext, CycleExit, CycleRunner, DeviceRuntimeConfig, Display, Storage,
-};
+use photoframe_app::{BootContext, CycleExit, CycleRunner, DeviceRuntimeConfig, Display, Storage};
 #[cfg(target_os = "espidf")]
 use photoframe_contracts::DeviceConfigPayload;
 use photoframe_domain::WakeSource;
@@ -54,6 +55,16 @@ enum PreSleepHoldMode {
     UsbOrSerial,
     ManualSyncSerialGrace { wait_seconds: u64 },
 }
+
+#[cfg(target_os = "espidf")]
+enum PreparedCycle {
+    Ready(BootContext),
+    EnterApPortal,
+    RetryLater { sleep_seconds: u64 },
+}
+
+#[cfg(target_os = "espidf")]
+const USB_DEBUG_POLL_SECONDS: u64 = 5;
 
 #[cfg(target_os = "espidf")]
 fn configure_button_gpio() {
@@ -338,7 +349,19 @@ impl Display for DeviceDisplay {
 #[cfg(target_os = "espidf")]
 fn main() {
     esp_idf_sys::link_patches();
-    diag::begin_boot_session();
+    let sd_history_ready = match sdcard::mount_if_available() {
+        Ok(ready) => {
+            if ready {
+                println!("photoframe-rs: sdcard log storage ready at {}", sdcard::mount_path());
+            }
+            ready
+        }
+        Err(err) => {
+            println!("photoframe-rs: sdcard mount unavailable: {err}");
+            false
+        }
+    };
+    diag::begin_boot_session(sd_history_ready);
     photoframe_platform_espidf::register_diag_log_sink(diag::append_external);
 
     use crate::wifi::EspWifiManager;
@@ -426,9 +449,143 @@ fn main() {
         println!("photoframe-rs: save bootstrap config failed: {err}");
     }
 
+    let clock = EspIdfClock;
+    let mut runner = CycleRunner::new_with_services(
+        clock,
+        storage,
+        EspIdfOrchestratorApi,
+        EspIdfImageFetcher,
+        DeviceDisplay,
+        EspIdfFirmwareUpdater,
+        diag::DeviceLogUploadCollector,
+    );
+
+    let mut cycle_wake_source = wake_source;
+    let mut cycle_long_press_action = long_press_action;
+    loop {
+        let prepared = match prepare_cycle(
+            runner.storage_mut(),
+            cycle_wake_source,
+            cycle_long_press_action,
+        ) {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                crate::device_log!("ERROR", "photoframe-rs: prepare cycle failed: {err}");
+                let fallback_sleep_seconds = 5 * 60;
+                if is_usb_serial_connected() {
+                    crate::device_log!(
+                        "INFO",
+                        "photoframe-rs: usb debug mode retry after prepare failure in {}s",
+                        USB_DEBUG_POLL_SECONDS
+                    );
+                    EspWifiManager::stop();
+                    thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
+                    cycle_wake_source = WakeSource::Other;
+                    cycle_long_press_action = LongPressAction::None;
+                    continue;
+                }
+                enter_deep_sleep(fallback_sleep_seconds, false, PreSleepHoldMode::UsbOrSerial);
+            }
+        };
+
+        let report = match prepared {
+            PreparedCycle::Ready(boot) => match runner.run(boot) {
+                Ok(report) => report,
+                Err(err) => {
+                    crate::device_log!("ERROR", "photoframe-rs: cycle failed: {err}");
+                    EspWifiManager::stop();
+                    let fallback_sleep_seconds = 5 * 60;
+                    if is_usb_serial_connected() {
+                        crate::device_log!(
+                            "INFO",
+                            "photoframe-rs: usb debug mode retry after cycle failure in {}s",
+                            USB_DEBUG_POLL_SECONDS
+                        );
+                        thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
+                        cycle_wake_source = WakeSource::Other;
+                        cycle_long_press_action = LongPressAction::None;
+                        continue;
+                    }
+                    enter_deep_sleep(fallback_sleep_seconds, false, PreSleepHoldMode::UsbOrSerial);
+                }
+            },
+            PreparedCycle::EnterApPortal => enter_ap_portal_or_idle(),
+            PreparedCycle::RetryLater { sleep_seconds } => {
+                EspWifiManager::stop();
+                if is_usb_serial_connected() {
+                    crate::device_log!(
+                        "INFO",
+                        "photoframe-rs: usb debug mode retry after wifi failure in {}s",
+                        USB_DEBUG_POLL_SECONDS
+                    );
+                    thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
+                    cycle_wake_source = WakeSource::Other;
+                    cycle_long_press_action = LongPressAction::None;
+                    continue;
+                }
+                enter_deep_sleep(sleep_seconds, false, PreSleepHoldMode::UsbOrSerial);
+            }
+        };
+
+        crate::device_log!(
+            "INFO",
+            "photoframe-rs: cycle exit={:?} source={} checkin_reported={} logs_uploaded={}",
+            report.exit,
+            report.image_source,
+            report.checkin_reported,
+            report.logs_uploaded
+        );
+        EspWifiManager::stop();
+        match report.exit {
+            CycleExit::EnterApPortal => enter_ap_portal_or_idle(),
+            CycleExit::RebootForConfig => restart_device(),
+            CycleExit::RebootForFirmwareUpdate => restart_device(),
+            CycleExit::Sleep {
+                seconds,
+                timer_only,
+            } => {
+                if is_usb_serial_connected() {
+                    crate::device_log!(
+                        "INFO",
+                        "photoframe-rs: usb debug mode active, rerun cycle in {}s (planned_sleep={}s)",
+                        USB_DEBUG_POLL_SECONDS,
+                        seconds
+                    );
+                    thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
+                    cycle_wake_source = WakeSource::Other;
+                    cycle_long_press_action = LongPressAction::None;
+                    continue;
+                }
+                let hold_mode = if matches!(report.action, CycleAction::ManualSync) {
+                    PreSleepHoldMode::ManualSyncSerialGrace {
+                        wait_seconds: MANUAL_SYNC_SERIAL_GRACE_SECONDS,
+                    }
+                } else {
+                    PreSleepHoldMode::UsbOrSerial
+                };
+                enter_deep_sleep(seconds, timer_only, hold_mode);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "espidf")]
+fn prepare_cycle<S: Storage>(
+    storage: &mut S,
+    wake_source: WakeSource,
+    long_press_action: LongPressAction,
+) -> Result<PreparedCycle, String> {
+    use crate::wifi::EspWifiManager;
+
+    let mut config = storage.load_config()?;
+    config.ensure_primary_wifi_in_profiles();
+
     if !config.has_wifi_credentials() {
-        crate::device_log!("WARN", "photoframe-rs: missing wifi credentials, entering AP portal");
-        enter_ap_portal_or_idle();
+        crate::device_log!(
+            "WARN",
+            "photoframe-rs: missing wifi credentials, entering AP portal"
+        );
+        return Ok(PreparedCycle::EnterApPortal);
     }
 
     let hostname = if config.device_id.is_empty() {
@@ -437,10 +594,7 @@ fn main() {
         &config.device_id
     };
 
-    if let Err(err) = EspWifiManager::init_once(hostname) {
-        crate::device_log!("ERROR", "photoframe-rs: wifi init failed: {err}");
-        idle_forever();
-    }
+    EspWifiManager::init_once(hostname)?;
 
     let mut connected = false;
     for profile_index in config.wifi_connection_order() {
@@ -448,7 +602,8 @@ fn main() {
         crate::device_log!(
             "INFO",
             "photoframe-rs: wifi try idx={} ssid={}",
-            profile_index, profile.ssid
+            profile_index,
+            profile.ssid
         );
         match EspWifiManager::connect(hostname, &profile.ssid, &profile.password, 25, 5) {
             Ok(()) => {
@@ -472,7 +627,8 @@ fn main() {
                 crate::device_log!(
                     "WARN",
                     "photoframe-rs: wifi connect failed idx={} err={}",
-                    profile_index, err
+                    profile_index,
+                    err
                 );
                 EspWifiManager::stop();
             }
@@ -496,7 +652,7 @@ fn main() {
         );
         let sleep_seconds = sleep_seconds_until_next_beijing_sync(system_now_epoch())
             .unwrap_or(decision.sleep_seconds);
-        enter_deep_sleep(sleep_seconds, false, PreSleepHoldMode::UsbOrSerial);
+        return Ok(PreparedCycle::RetryLater { sleep_seconds });
     }
 
     apply_timezone(&config.timezone);
@@ -509,7 +665,8 @@ fn main() {
             println!("photoframe-rs: save time sync epoch failed: {err}");
         }
     }
-    let mut power_sample = runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
+    let mut power_sample =
+        runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
     apply_test_power_override(&mut power_sample);
     if matches!(long_press_action, LongPressAction::OpenStaPortalWindow) {
         if let Err(err) = portal::run_sta_portal_window(portal::PortalRuntimeStatus {
@@ -530,64 +687,12 @@ fn main() {
     }
     let sta_ip = EspWifiManager::sta_ip_string();
 
-    let clock = EspIdfClock;
-    let boot = BootContext {
+    Ok(PreparedCycle::Ready(BootContext {
         wake_source,
         long_press_action,
         sta_ip,
         power_sample,
-    };
-
-    let mut runner = CycleRunner::new_with_services(
-        clock,
-        storage,
-        EspIdfOrchestratorApi,
-        EspIdfImageFetcher,
-        DeviceDisplay,
-        EspIdfFirmwareUpdater,
-        diag::DeviceLogUploadCollector,
-    );
-
-    match runner.run(boot) {
-        Ok(report) => {
-            crate::device_log!(
-                "INFO",
-                "photoframe-rs: cycle exit={:?} source={} checkin_reported={} logs_uploaded={}",
-                report.exit, report.image_source, report.checkin_reported, report.logs_uploaded
-            );
-            EspWifiManager::stop();
-            match report.exit {
-                CycleExit::EnterApPortal => enter_ap_portal_or_idle(),
-                CycleExit::RebootForConfig => unsafe {
-                    esp_idf_sys::esp_restart();
-                },
-                CycleExit::RebootForFirmwareUpdate => unsafe {
-                    esp_idf_sys::esp_restart();
-                },
-                CycleExit::Sleep {
-                    seconds,
-                    timer_only,
-                } => {
-                    let hold_mode = if matches!(report.action, CycleAction::ManualSync) {
-                        PreSleepHoldMode::ManualSyncSerialGrace {
-                            wait_seconds: MANUAL_SYNC_SERIAL_GRACE_SECONDS,
-                        }
-                    } else {
-                        PreSleepHoldMode::UsbOrSerial
-                    };
-                    enter_deep_sleep(seconds, timer_only, hold_mode);
-                }
-            }
-        }
-        Err(err) => {
-            crate::device_log!("ERROR", "photoframe-rs: cycle failed: {err}");
-            EspWifiManager::stop();
-            let fallback_sleep_seconds = config.retry_base_minutes.max(1) as u64 * 60;
-            let sleep_seconds = sleep_seconds_until_next_beijing_sync(system_now_epoch())
-                .unwrap_or(fallback_sleep_seconds);
-            enter_deep_sleep(sleep_seconds, false, PreSleepHoldMode::UsbOrSerial);
-        }
-    }
+    }))
 }
 
 #[cfg(target_os = "espidf")]
@@ -604,13 +709,13 @@ fn apply_timezone(timezone: &str) {
         return;
     }
     let key = CString::new("TZ").expect("TZ env key");
-        let value = match CString::new(timezone) {
-            Ok(value) => value,
-            Err(err) => {
+    let value = match CString::new(timezone) {
+        Ok(value) => value,
+        Err(err) => {
             crate::device_log!("WARN", "photoframe-rs: invalid timezone, skip apply: {err}");
-                return;
-            }
-        };
+            return;
+        }
+    };
     unsafe {
         let _ = esp_idf_sys::setenv(key.as_ptr(), value.as_ptr(), 1);
         esp_idf_sys::tzset();
@@ -764,10 +869,16 @@ fn hold_awake_before_sleep(
 
     match hold_mode {
         PreSleepHoldMode::UsbOrSerial => {
-            crate::device_log!("INFO", "photoframe-rs: usb no longer present, resume deep sleep");
+            crate::device_log!(
+                "INFO",
+                "photoframe-rs: usb no longer present, resume deep sleep"
+            );
         }
         PreSleepHoldMode::ManualSyncSerialGrace { .. } => {
-            crate::device_log!("INFO", "photoframe-rs: manual sync grace finished, resume deep sleep");
+            crate::device_log!(
+                "INFO",
+                "photoframe-rs: manual sync grace finished, resume deep sleep"
+            );
         }
     }
 }
@@ -786,6 +897,7 @@ fn enter_ap_portal_or_idle() -> ! {
 #[cfg(target_os = "espidf")]
 fn enter_deep_sleep(seconds: u64, timer_only: bool, hold_mode: PreSleepHoldMode) -> ! {
     hold_awake_before_sleep(seconds, timer_only, hold_mode);
+    diag::persist_for_next_boot();
     runtime_bridge::EspRuntimeBridge::prepare_for_sleep();
 
     unsafe {
@@ -812,6 +924,14 @@ fn enter_deep_sleep(seconds: u64, timer_only: bool, hold_mode: PreSleepHoldMode)
 
         thread::sleep(Duration::from_millis(150));
         esp_idf_sys::esp_deep_sleep_start()
+    }
+}
+
+#[cfg(target_os = "espidf")]
+fn restart_device() -> ! {
+    diag::persist_for_next_boot();
+    unsafe {
+        esp_idf_sys::esp_restart();
     }
 }
 

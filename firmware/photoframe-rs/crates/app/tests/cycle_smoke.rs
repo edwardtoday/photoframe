@@ -936,6 +936,10 @@ fn successful_cycle_uploads_logs_when_requested() {
         uploaded_epoch: 1_760_000_000,
         line_count: 2,
         truncated: false,
+        uploaded_bytes: Some(12),
+        buffer_total_lines: Some(4),
+        buffer_total_bytes: Some(24),
+        buffer_boot_id: Some(8),
         lines: vec!["line-1".into(), "line-2".into()],
     };
 

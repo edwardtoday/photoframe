@@ -361,6 +361,13 @@ function fmtDuration(seconds) {
   return rest ? `${h}h ${rest}m` : `${h}h`;
 }
 
+function fmtBytes(bytes) {
+  if (bytes == null || bytes < 0) return '-';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes >= 10 * 1024 ? 0 : 1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
 function startPolicyLabel(policy) {
   if (policy === 'next_wakeup') return '按设备下次唤醒';
   if (policy === 'explicit') return '按指定开始时间';
@@ -1941,6 +1948,7 @@ function renderLogRequestItem(item) {
 
 function renderLogUploadItem(item) {
   const payloadText = formatLogPayloadLines(item.payload);
+  const payload = item.payload || {};
   return `
     <article class="release-item">
       <div class="release-head">
@@ -1951,7 +1959,8 @@ function renderLogUploadItem(item) {
       <ul>
         <li>request_id: ${escapeHtml(item.request_id)}</li>
         <li>uploaded_epoch: ${fmtEpoch(item.uploaded_epoch)}</li>
-        <li>line_count: ${escapeHtml(item.line_count)}</li>
+        <li>uploaded: ${escapeHtml(item.line_count)} lines / ${escapeHtml(fmtBytes(payload.uploaded_bytes))}</li>
+        <li>buffer: boot ${escapeHtml(payload.buffer_boot_id ?? '-')} · ${escapeHtml(payload.buffer_total_lines ?? '-')} lines / ${escapeHtml(fmtBytes(payload.buffer_total_bytes))}</li>
         <li>truncated: ${escapeHtml(item.truncated)}</li>
       </ul>
       ${payloadText ? `<pre>${payloadText}</pre>` : '<p class="muted">日志正文为空。</p>'}
@@ -2021,16 +2030,16 @@ async function submitDeviceLogRequest(ev) {
   const payload = {
     device_id: deviceId,
     reason: document.getElementById('logRequestReason').value.trim(),
-    max_lines: Number(document.getElementById('logRequestMaxLines').value || '120'),
-    max_bytes: Number(document.getElementById('logRequestMaxBytes').value || '8192'),
+    max_lines: Number(document.getElementById('logRequestMaxLines').value || '800'),
+    max_bytes: Number(document.getElementById('logRequestMaxBytes').value || '65536'),
     expires_in_minutes: Number(document.getElementById('logRequestExpiresMinutes').value || '1440'),
   };
 
-  if (!Number.isInteger(payload.max_lines) || payload.max_lines < 1 || payload.max_lines > 500) {
-    throw new Error('最大行数必须是 1-500 的整数');
+  if (!Number.isInteger(payload.max_lines) || payload.max_lines < 1 || payload.max_lines > 2000) {
+    throw new Error('最大行数必须是 1-2000 的整数');
   }
-  if (!Number.isInteger(payload.max_bytes) || payload.max_bytes < 256 || payload.max_bytes > 65536) {
-    throw new Error('最大字节数必须是 256-65536 的整数');
+  if (!Number.isInteger(payload.max_bytes) || payload.max_bytes < 256 || payload.max_bytes > 262144) {
+    throw new Error('最大字节数必须是 256-262144 的整数');
   }
   if (!Number.isInteger(payload.expires_in_minutes) || payload.expires_in_minutes < 0 || payload.expires_in_minutes > 10080) {
     throw new Error('有效期必须是 0-10080 的整数分钟');

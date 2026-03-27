@@ -23,10 +23,12 @@
 - Web 上传插播图并设置播放窗口：`POST /api/v1/overrides/upload`
   - 上传时可选服务端 dither：`Bayer / Floyd-Steinberg / Jarvis / Stucki / Lab + CIEDE2000 / Atkinson / Sierra`
   - 选中后，服务端会先按相框 6 色调色板生成实际下发的 BMP/JPEG 资产
+  - 管理页“快速送图”复用同一接口：默认面向顶部当前设备、开始时间留空、推荐使用 `sierra`，降低临时送图操作成本
 - 管理插播列表：`GET /api/v1/overrides`、`DELETE /api/v1/overrides/{id}`
 - 图片下发历史：`GET /api/v1/publish-history`
 - 管理页预览当前下发图：`GET /api/v1/preview/current.bmp`
   - 管理页可直接使用 `PHOTOFRAME_TOKEN` 预览，不要求再填设备 token
+  - 若上游是 `immich-featured-today`，预览响应会透传 `X-IFT-*` 元数据（asset/layout/crop/display_score），控制台可直接看到当前成片来自哪张图、用的什么构图策略
 - 公网日图代理：`GET /public/daily.bmp` / `GET /public/daily.jpg`（token 保护，且优先返回当前生效插播）
 - Web 管理页：`GET /`（含图片发布历史 + 设备配置发布历史 + 当前下发预览 + 设备 token 审批）
 - 设备状态页会直接显示设备最近一次 checkin 上报的 `firmware_version`
@@ -129,6 +131,7 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 
 - 控制台“当前下发预览”支持选择并保存 Daily Dither 算法；预览会即时试算，保存后 `/public/daily.*` 与 `/api/v1/preview/current.*` 会统一使用该算法。
 - Daily 链路现在默认从上游 JPG 抓图，服务端会统一裁剪到 `480x800`，再量化到设备 6 色调色板并生成 `.bmp` / `.jpg` 缓存。
+- 若上游响应带 `X-IFT-*` 元数据头，Daily 缓存会一并记录并在预览接口透传，便于控制台确认当前 full-bleed 布局、crop 策略和上游 asset_id。
 - Daily 缓存会记住上游 `ETag` / `Last-Modified`；到达 `DAILY_UPSTREAM_REVALIDATE_SECONDS` 后会做条件回源。若上游未变，或虽回源成功但最终渲染结果字节不变，则不会重写本地文件，便于设备继续命中稳定 ETag。
 - 控制台“创建插播”也支持选择服务端 dither 算法。
 - `保持原图`：维持当前行为，只做裁剪缩放，不做服务端预抖动。

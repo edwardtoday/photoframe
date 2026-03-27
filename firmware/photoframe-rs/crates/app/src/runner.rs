@@ -478,11 +478,14 @@ where
         let orchestrator_origin =
             split_url_origin_and_rest(&config.orchestrator_base_url).map(|(origin, _)| origin);
 
+        let _ = self.orchestrator.report_debug_stage(&config, "before_fetch");
         for candidate in fetch_urls {
             let orchestrator_token =
                 orchestrator_token_for_url(orchestrator_origin.as_deref(), &candidate, &config);
             let result = self.image_fetcher.fetch(&ImageFetchPlan {
+                device_id: config.device_id.clone(),
                 url: candidate.clone(),
+                debug_stage_base_url: config.orchestrator_base_url.clone(),
                 previous_sha256: config.last_image_sha256.clone(),
                 photo_token: config.photo_token.clone(),
                 orchestrator_token,
@@ -505,7 +508,9 @@ where
             let orchestrator_token =
                 orchestrator_token_for_url(orchestrator_origin.as_deref(), &fallback_url, &config);
             let result = self.image_fetcher.fetch(&ImageFetchPlan {
+                device_id: config.device_id.clone(),
                 url: fallback_url.clone(),
+                debug_stage_base_url: config.orchestrator_base_url.clone(),
                 previous_sha256: config.last_image_sha256.clone(),
                 photo_token: config.photo_token.clone(),
                 orchestrator_token,

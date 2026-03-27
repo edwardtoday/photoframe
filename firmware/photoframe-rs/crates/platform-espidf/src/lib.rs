@@ -718,27 +718,59 @@ pub fn send_debug_stage_beacon(config: &DeviceRuntimeConfig, stage: &str) -> Res
             return Ok(());
         }
 
-        let url = format!(
-            "{}/api/v1/device/debug-stage?device_id={}&stage={}",
-            trim_trailing_slash(&config.orchestrator_base_url),
-            url_encode_component(&config.device_id),
-            url_encode_component(stage),
-        );
-        match http_get_bytes(
-            &url,
-            Some((&PHOTOFRAME_TOKEN_HEADER, &config.orchestrator_token)),
-        ) {
-            Ok(_) => Ok(()),
-            Err(err) => {
-                println!(
-                    "photoframe-rs/debug-stage: failed device_id={} stage={} err={}",
-                    config.device_id, stage, err
-                );
-                Err(err)
-            }
+        send_debug_stage_beacon_inner(
+            &config.orchestrator_base_url,
+            &config.device_id,
+            &config.orchestrator_token,
+            stage,
+        )
+    }
+}
+
+#[cfg(target_os = "espidf")]
+fn send_debug_stage_beacon_inner(
+    base_url: &str,
+    device_id: &str,
+    token: &str,
+    stage: &str,
+) -> Result<(), String> {
+    if option_env!("PHOTOFRAME_DEBUG_STAGE_BEACON").is_none()
+        || base_url.is_empty()
+        || device_id.is_empty()
+    {
+        return Ok(());
+    }
+
+    let url = format!(
+        "{}/api/v1/device/debug-stage?device_id={}&stage={}",
+        trim_trailing_slash(base_url),
+        url_encode_component(device_id),
+        url_encode_component(stage),
+    );
+    match http_get_bytes(&url, Some((&PHOTOFRAME_TOKEN_HEADER, token))) {
+        Ok(_) => Ok(()),
+        Err(err) => {
+            println!(
+                "photoframe-rs/debug-stage: failed device_id={} stage={} err={}",
+                device_id, stage, err
+            );
+            Err(err)
         }
     }
 }
+
+#[cfg(target_os = "espidf")]
+fn send_fetch_debug_stage(plan: &ImageFetchPlan, stage: &str) {
+    let _ = send_debug_stage_beacon_inner(
+        &plan.debug_stage_base_url,
+        &plan.device_id,
+        &plan.orchestrator_token,
+        stage,
+    );
+}
+
+#[cfg(not(target_os = "espidf"))]
+fn send_fetch_debug_stage(_plan: &ImageFetchPlan, _stage: &str) {}
 
 pub struct EspIdfDisplay;
 impl Display for EspIdfDisplay {
@@ -884,7 +916,7 @@ fn is_redirect_status(status: i32) -> bool {
 }
 
 #[cfg(target_os = "espidf")]
-fn current_reset_reason_label() -> &'static str {
+pub fn current_reset_reason_label() -> &'static str {
     match unsafe { sys::esp_reset_reason() } {
         sys::esp_reset_reason_t_ESP_RST_UNKNOWN => "unknown",
         sys::esp_reset_reason_t_ESP_RST_POWERON => "poweron",
@@ -1357,6 +1389,7 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
 
         let mut redirect_count = 0usize;
         loop {
+            send_fetch_debug_stage(plan, "fetch_http_open");
             let open_start = Instant::now();
             if let Err(err) =
                 check_esp(sys::esp_http_client_open(client, 0), "esp_http_client_open")
@@ -1367,6 +1400,7 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
             let _ = sys::esp_http_client_fetch_headers(client);
             let status_code = sys::esp_http_client_get_status_code(client);
             let headers_ms = open_start.elapsed().as_millis();
+            send_fetch_debug_stage(plan, "fetch_headers_ok");
 
             if is_redirect_status(status_code) {
                 if redirect_count >= MAX_HTTP_REDIRECTS {
@@ -1447,6 +1481,7 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
                 }
             };
             let body_ms = body_start.elapsed().as_millis();
+            send_fetch_debug_stage(plan, "fetch_body_ok");
             sys::esp_http_client_close(client);
             sys::esp_http_client_cleanup(client);
 
@@ -1739,10 +1774,11 @@ unsafe fn read_body_stream(client: sys::esp_http_client_handle_t) -> Result<Vec<
 unsafe fn read_body_exact(
     client: sys::esp_http_client_handle_t,
     content_len: usize,
-    _url: &str,
+    url: &str,
 ) -> Result<Vec<u8>, String> {
     let mut out = vec![0u8; content_len];
     let mut offset = 0usize;
+    let mut transient_reads = 0usize;
     const READ_CHUNK: usize = 1024;
     while offset < content_len {
         let remaining = content_len - offset;
@@ -1754,13 +1790,40 @@ unsafe fn read_body_exact(
                 request_len as i32,
             )
         };
-        if read <= 0 {
+        if read == -(sys::ESP_ERR_HTTP_EAGAIN as i32) {
+            transient_reads = transient_reads.saturating_add(1);
+            if transient_reads > HTTP_READ_RETRY_LIMIT {
+                return Err(format!(
+                    "esp_http_client_read timed out repeatedly: retries={} bytes={}/{} url={}",
+                    transient_reads, offset, content_len, url
+                ));
+            }
+            continue;
+        }
+        if read < 0 {
+            return Err(format!(
+                "esp_http_client_read failed: code={} bytes={}/{} url={}",
+                read, offset, content_len, url
+            ));
+        }
+        if read == 0 {
+            if unsafe { !sys::esp_http_client_is_complete_data_received(client) } {
+                transient_reads = transient_reads.saturating_add(1);
+                if transient_reads > HTTP_READ_RETRY_LIMIT {
+                    return Err(format!(
+                        "body read incomplete after repeated empty reads: retries={} bytes={}/{} url={}",
+                        transient_reads, offset, content_len, url
+                    ));
+                }
+                continue;
+            }
             break;
         }
+        transient_reads = 0;
         offset += read as usize;
     }
     if offset != content_len {
-        return Err(format!("incomplete body: {offset}/{content_len}"));
+        return Err(format!("incomplete body: {offset}/{content_len} url={url}"));
     }
     Ok(out)
 }

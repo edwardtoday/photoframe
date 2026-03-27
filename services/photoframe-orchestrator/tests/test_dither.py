@@ -202,7 +202,7 @@ class DitherAlgorithmTests(unittest.TestCase):
     original_render = ORCH._resolve_current_payload_for_device
     ORCH.TOKEN = "admin-secret"
     ORCH._DEVICE_TOKEN_MAP_PARSED = {"pf-demo": "device-secret"}
-    ORCH._resolve_current_payload_for_device = lambda *_args, **_kwargs: (b"BMstub", "daily", "jarvis")
+    ORCH._resolve_current_payload_for_device = lambda *_args, **_kwargs: (b"BMstub", "daily", "jarvis", {"ift_asset_id": "asset-1"})
     try:
       response = ORCH.preview_current_bmp(device_id="pf-demo", x_photoframe_token="admin-secret")
       self.assertIsNotNone(response)

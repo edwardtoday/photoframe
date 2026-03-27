@@ -3,6 +3,8 @@
 const PANEL_WIDTH: usize = 800;
 const PANEL_HEIGHT: usize = 480;
 const DISPLAY_LEN: usize = (PANEL_WIDTH * PANEL_HEIGHT) / 2;
+const RENDER_SERVICE_ROW_INTERVAL: usize = 64;
+const RENDER_PROGRESS_ROW_INTERVAL: usize = 96;
 
 const COLOR_BLACK: u8 = 0;
 const COLOR_WHITE: u8 = 1;
@@ -159,13 +161,51 @@ fn get_packed_pixel(buf: &[u8], width: usize, x: usize, y: usize) -> u8 {
     }
 }
 
-fn rotate_buffer(display: &[u8], rotation: u8) -> Vec<u8> {
+#[cfg(target_os = "espidf")]
+fn service_render_loop(stage: Option<&str>, phase: &str, row: usize, total_rows: usize) {
+    if row > 0 && row % RENDER_SERVICE_ROW_INTERVAL == 0 {
+        unsafe {
+            let _ = esp_idf_sys::esp_task_wdt_reset();
+            esp_idf_sys::vTaskDelay(1);
+        }
+    }
+
+    if let Some(stage) = stage
+        && row > 0
+        && row % RENDER_PROGRESS_ROW_INTERVAL == 0
+    {
+        let percent = row * 100 / total_rows.max(1);
+        crate::device_log!(
+            "INFO",
+            "photoframe-rs/render: {stage} {phase} row={row}/{total_rows} ({percent}%)"
+        );
+    }
+}
+
+#[cfg(not(target_os = "espidf"))]
+fn service_render_loop(_stage: Option<&str>, _phase: &str, _row: usize, _total_rows: usize) {}
+
+#[cfg(target_os = "espidf")]
+fn finish_render_loop(stage: Option<&str>, phase: &str, total_rows: usize) {
+    if let Some(stage) = stage {
+        crate::device_log!(
+            "INFO",
+            "photoframe-rs/render: {stage} {phase} row={total_rows}/{total_rows} (100%)"
+        );
+    }
+}
+
+#[cfg(not(target_os = "espidf"))]
+fn finish_render_loop(_stage: Option<&str>, _phase: &str, _total_rows: usize) {}
+
+fn rotate_buffer(display: &[u8], rotation: u8, stage: Option<&str>) -> Vec<u8> {
     let rotation = rotation % 4;
     if rotation == 0 {
         return display.to_vec();
     }
     let mut out = vec![0u8; DISPLAY_LEN];
     for y in 0..PANEL_HEIGHT {
+        service_render_loop(stage, "rotate", y, PANEL_HEIGHT);
         for x in 0..PANEL_WIDTH {
             let px = get_packed_pixel(display, PANEL_WIDTH, x, y);
             let nx = PANEL_WIDTH - 1 - x;
@@ -173,10 +213,11 @@ fn rotate_buffer(display: &[u8], rotation: u8) -> Vec<u8> {
             set_packed_pixel(&mut out, PANEL_WIDTH, nx, ny, px);
         }
     }
+    finish_render_loop(stage, "rotate", PANEL_HEIGHT);
     out
 }
 
-fn render_pixels<F>(options: RenderOptions, mut get_rgb: F) -> PackedImage
+fn render_pixels<F>(options: RenderOptions, stage: Option<&str>, mut get_rgb: F) -> PackedImage
 where
     F: FnMut(usize, usize) -> (u8, u8, u8),
 {
@@ -187,6 +228,7 @@ where
     let use_dither = !treat_as_six_color && dithering_mode == 1;
     let mut display = vec![((COLOR_WHITE << 4) | COLOR_WHITE) as u8; DISPLAY_LEN];
     for y in 0..PANEL_HEIGHT {
+        service_render_loop(stage, "quantize", y, PANEL_HEIGHT);
         for x in 0..PANEL_WIDTH {
             let (mut r, mut g, mut b) = get_rgb(x, y);
             if use_dither {
@@ -197,11 +239,12 @@ where
             set_packed_pixel(&mut display, PANEL_WIDTH, x, y, code);
         }
     }
+    finish_render_loop(stage, "quantize", PANEL_HEIGHT);
 
     PackedImage {
         width: PANEL_WIDTH,
         height: PANEL_HEIGHT,
-        bytes: rotate_buffer(&display, options.panel_rotation),
+        bytes: rotate_buffer(&display, options.panel_rotation, stage),
     }
 }
 
@@ -217,7 +260,7 @@ pub fn render_rgb888_to_packed(
         return Err(format!("unsupported rgb dimension: {width}x{height}"));
     }
     let row_stride = width * 3;
-    Ok(render_pixels(options, |x, y| {
+    Ok(render_pixels(options, Some("rgb_pack"), |x, y| {
         let (sx, sy) = if width == PANEL_WIDTH && height == PANEL_HEIGHT {
             (x, y)
         } else {
@@ -260,7 +303,7 @@ pub fn render_bmp24_to_packed(bmp: &[u8], options: RenderOptions) -> Result<Pack
         return Err("bmp size mismatch".into());
     }
     let pixels = &bmp[file.offset as usize..];
-    Ok(render_pixels(options, |x, y| {
+    Ok(render_pixels(options, Some("bmp_pack"), |x, y| {
         let (sx, sy) = if width as usize == PANEL_WIDTH && height_abs as usize == PANEL_HEIGHT {
             (x, y)
         } else {

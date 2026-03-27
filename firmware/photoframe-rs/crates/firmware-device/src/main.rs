@@ -284,7 +284,7 @@ fn apply_test_power_override(sample: &mut photoframe_app::PowerSample) {
 fn current_wake_source() -> WakeSource {
     match unsafe { esp_idf_sys::esp_sleep_get_wakeup_cause() } {
         esp_idf_sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_TIMER => {
-            println!("photoframe-rs: wakeup cause=TIMER");
+            crate::device_log!("INFO", "photoframe-rs: wakeup cause=TIMER");
             WakeSource::Timer
         }
         esp_idf_sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_EXT1 => {
@@ -313,7 +313,8 @@ fn current_wake_source() -> WakeSource {
                 }
             }
 
-            println!(
+            crate::device_log!(
+                "INFO",
                 "photoframe-rs: wakeup cause=EXT1 pins=0x{pins:x} key={} boot={} seen_low(key={} boot={})",
                 key_level,
                 boot_level,
@@ -324,7 +325,7 @@ fn current_wake_source() -> WakeSource {
             wake_source_from_ext1_state(boot_pin, key_pin, boot_seen_low, key_seen_low)
         }
         other => {
-            println!("photoframe-rs: wakeup cause=OTHER({other})");
+            crate::device_log!("INFO", "photoframe-rs: wakeup cause=OTHER({other})");
             WakeSource::Other
         }
     }
@@ -371,9 +372,14 @@ fn main() {
     };
 
     configure_button_gpio();
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs: reset reason={}",
+        photoframe_platform_espidf::current_reset_reason_label()
+    );
     let wake_source = current_wake_source();
     if let Some(stage) = runtime_bridge::take_render_trace() {
-        println!("photoframe-rs: previous render trace={stage}");
+        crate::device_log!("INFO", "photoframe-rs: previous render trace={stage}");
     }
     let long_press_action = detect_long_press_action();
 

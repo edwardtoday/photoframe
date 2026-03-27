@@ -99,6 +99,31 @@ try:
 except Exception:
   DAILY_ASSET_RETENTION_DAYS = 14
 DAILY_ASSET_NAME_RE = re.compile(r"^daily-(\d{4}-\d{2}-\d{2})-.*\.(bmp|jpg)$", re.IGNORECASE)
+DAILY_UPSTREAM_METADATA_HEADER_MAP = {
+    "ift_asset_id": "X-IFT-Asset-Id",
+    "ift_layout_mode": "X-IFT-Layout-Mode",
+    "ift_crop_strategy": "X-IFT-Crop-Strategy",
+    "ift_crop_focus_x": "X-IFT-Crop-Focus-X",
+    "ift_crop_focus_y": "X-IFT-Crop-Focus-Y",
+    "ift_orchestration_strategy": "X-IFT-Orchestration-Strategy",
+    "ift_display_score": "X-IFT-Display-Score",
+    "ift_frame_fit": "X-IFT-Frame-Fit",
+    "ift_render_variant": "X-IFT-Render-Variant",
+    "ift_render_date": "X-IFT-Render-Date",
+}
+PHOTOFRAME_DAILY_METADATA_RESPONSE_HEADERS = {
+    "ift_asset_id": "X-PhotoFrame-Upstream-Asset-Id",
+    "ift_layout_mode": "X-PhotoFrame-Upstream-Layout-Mode",
+    "ift_crop_strategy": "X-PhotoFrame-Upstream-Crop-Strategy",
+    "ift_crop_focus_x": "X-PhotoFrame-Upstream-Crop-Focus-X",
+    "ift_crop_focus_y": "X-PhotoFrame-Upstream-Crop-Focus-Y",
+    "ift_orchestration_strategy": "X-PhotoFrame-Upstream-Orchestration-Strategy",
+    "ift_display_score": "X-PhotoFrame-Upstream-Display-Score",
+    "ift_frame_fit": "X-PhotoFrame-Upstream-Frame-Fit",
+    "ift_render_variant": "X-PhotoFrame-Upstream-Render-Variant",
+    "ift_render_date": "X-PhotoFrame-Upstream-Render-Date",
+    "url": "X-PhotoFrame-Upstream-Url",
+}
 # 设备在未校时/时钟漂移严重时可能上报 1970 或未来时间，服务端需要兜底。
 MIN_VALID_DEVICE_EPOCH = int(os.getenv("MIN_VALID_DEVICE_EPOCH", "1609459200"))  # 2021-01-01 UTC
 MAX_FUTURE_DEVICE_SKEW_SECONDS = int(os.getenv("MAX_FUTURE_DEVICE_SKEW_SECONDS", str(7 * 24 * 3600)))
@@ -1274,10 +1299,35 @@ def _daily_upstream_header(resp: Any, name: str) -> str:
 
 
 def _daily_upstream_cache_headers(resp: Any) -> dict[str, str]:
-  return {
+  headers = {
       "etag": _daily_upstream_header(resp, "ETag"),
       "last_modified": _daily_upstream_header(resp, "Last-Modified"),
   }
+  for key, header_name in DAILY_UPSTREAM_METADATA_HEADER_MAP.items():
+    value = _daily_upstream_header(resp, header_name)
+    if value:
+      headers[key] = value
+  return headers
+
+
+def _daily_upstream_metadata_from_cache_headers(cache_headers: dict[str, str], url: str) -> dict[str, str]:
+  metadata: dict[str, str] = {}
+  if str(url or "").strip():
+    metadata["url"] = str(url).strip()
+  for key in DAILY_UPSTREAM_METADATA_HEADER_MAP:
+    value = str(cache_headers.get(key) or "").strip()
+    if value:
+      metadata[key] = value
+  return metadata
+
+
+def _daily_metadata_response_headers(metadata: dict[str, Any]) -> dict[str, str]:
+  headers: dict[str, str] = {}
+  for key, header_name in PHOTOFRAME_DAILY_METADATA_RESPONSE_HEADERS.items():
+    value = str(metadata.get(key) or "").strip()
+    if value:
+      headers[header_name] = value
+  return headers
 
 
 def _fetch_daily_source(
@@ -1705,7 +1755,7 @@ def _resolve_current_payload_for_device(
     daily_dither_algorithm: str | None = None,
     palette_profile: str | None = None,
     fresh_daily_source: bool = False,
-) -> tuple[bytes, str, str]:
+) -> tuple[bytes, str, str, dict[str, Any]]:
   active = _active_override_for_device(conn, now_ts, target_device)
   if active is not None:
     asset_name = str(active["asset_name"])
@@ -1715,15 +1765,27 @@ def _resolve_current_payload_for_device(
       if asset_sha256 and _asset_path_candidates(candidate)[1].exists():
         asset_name = candidate
     path = _locate_asset_path(asset_name)
-    return path.read_bytes(), "override", _normalize_override_dither_algorithm(active["dither_algorithm"])
+    return path.read_bytes(), "override", _normalize_override_dither_algorithm(active["dither_algorithm"]), {}
 
   upstream_url = _daily_image_url(now_ts)
   picked = _normalize_daily_dither_algorithm(daily_dither_algorithm or _get_daily_dither_algorithm())
   if fresh_daily_source:
-    payload = _render_daily_payload_fresh(now_ts, upstream_url, output_format, picked, palette_profile=palette_profile)
+    payload, metadata = _render_daily_payload_fresh_with_metadata(
+        now_ts,
+        upstream_url,
+        output_format,
+        picked,
+        palette_profile=palette_profile,
+    )
   else:
-    payload = _render_daily_payload(now_ts, upstream_url, output_format, picked, palette_profile=palette_profile)
-  return payload, "daily", picked
+    payload, metadata = _render_daily_payload_with_metadata(
+        now_ts,
+        upstream_url,
+        output_format,
+        picked,
+        palette_profile=palette_profile,
+    )
+  return payload, "daily", picked, metadata
 
 
 def _public_base(request: Request) -> str:
@@ -2007,6 +2069,7 @@ def _ensure_daily_assets(
               "upstream_last_modified": cache_headers.get("last_modified") or upstream_last_modified,
           }
       )
+      metadata.update(_daily_upstream_metadata_from_cache_headers(cache_headers, url))
       _write_json_atomic(metadata_path, metadata)
       return bmp_name, jpg_name
 
@@ -2027,6 +2090,7 @@ def _ensure_daily_assets(
         "rendered_bmp_sha256": hashlib.sha256(bmp_data).hexdigest(),
         "rendered_jpg_sha256": hashlib.sha256(jpg_data).hexdigest(),
     }
+    metadata.update(_daily_upstream_metadata_from_cache_headers(cache_headers, url))
     _write_json_atomic(metadata_path, metadata)
     _cleanup_daily_assets(now_ts)
     if bmp_changed or jpg_changed:
@@ -2052,6 +2116,20 @@ def _ensure_daily_assets(
   return bmp_name, jpg_name
 
 
+def _render_daily_payload_with_metadata(
+    now_ts: int,
+    url: str,
+    output_format: str,
+    dither_algorithm: str,
+    *,
+    palette_profile: str | None = None,
+) -> tuple[bytes, dict[str, Any]]:
+  bmp_name, jpg_name = _ensure_daily_assets(now_ts, url, dither_algorithm, palette_profile=palette_profile)
+  target_name = bmp_name if output_format == "bmp" else jpg_name
+  metadata = _read_daily_cache_metadata(_daily_cache_metadata_path(jpg_name))
+  return _locate_asset_path(target_name).read_bytes(), metadata
+
+
 def _render_daily_payload(
     now_ts: int,
     url: str,
@@ -2060,9 +2138,41 @@ def _render_daily_payload(
     *,
     palette_profile: str | None = None,
 ) -> bytes:
-  bmp_name, jpg_name = _ensure_daily_assets(now_ts, url, dither_algorithm, palette_profile=palette_profile)
-  target_name = bmp_name if output_format == "bmp" else jpg_name
-  return _locate_asset_path(target_name).read_bytes()
+  payload, _metadata = _render_daily_payload_with_metadata(
+      now_ts,
+      url,
+      output_format,
+      dither_algorithm,
+      palette_profile=palette_profile,
+  )
+  return payload
+
+
+def _render_daily_payload_fresh_with_metadata(
+    now_ts: int,
+    url: str,
+    output_format: str,
+    dither_algorithm: str,
+    *,
+    palette_profile: str | None = None,
+) -> tuple[bytes, dict[str, Any]]:
+  del now_ts  # 仅用于与缓存版签名对齐；fresh 路径直接基于当前上游字节渲染。
+  status, source_bytes, cache_headers = _fetch_daily_source(url)
+  if status != 200 or source_bytes is None:
+    raise HTTPException(status_code=502, detail=f"daily upstream status={status}")
+  fitted = _fit_daily_source_image(source_bytes)
+  bmp_data, jpg_data = _render_override_assets(
+      fitted,
+      dither_algorithm,
+      palette_profile=_resolve_palette_profile(palette_profile),
+  )
+  return (
+      bmp_data if output_format == "bmp" else jpg_data,
+      {
+          "upstream_sha256": hashlib.sha256(source_bytes).hexdigest(),
+          **_daily_upstream_metadata_from_cache_headers(cache_headers, url),
+      },
+  )
 
 
 def _render_daily_payload_fresh(
@@ -2073,15 +2183,14 @@ def _render_daily_payload_fresh(
     *,
     palette_profile: str | None = None,
 ) -> bytes:
-  del now_ts  # 仅用于与缓存版签名对齐；fresh 路径直接基于当前上游字节渲染。
-  source_bytes = _fetch_daily_source_bytes(url)
-  fitted = _fit_daily_source_image(source_bytes)
-  bmp_data, jpg_data = _render_override_assets(
-      fitted,
+  payload, _metadata = _render_daily_payload_fresh_with_metadata(
+      now_ts,
+      url,
+      output_format,
       dither_algorithm,
-      palette_profile=_resolve_palette_profile(palette_profile),
+      palette_profile=palette_profile,
   )
-  return bmp_data if output_format == "bmp" else jpg_data
+  return payload
 
 
 def _clamp_channel(value: float) -> int:
@@ -2818,7 +2927,7 @@ def public_daily_bmp(
   conn = _ensure_db()
 
   _record_public_daily_activity(conn, target_device, now_ts)
-  payload, source, dither_algorithm = _resolve_current_payload_for_device(
+  payload, source, dither_algorithm, upstream_metadata = _resolve_current_payload_for_device(
       conn,
       now_ts,
       target_device,
@@ -2834,6 +2943,7 @@ def public_daily_bmp(
   }
   if dither_algorithm:
     headers["X-PhotoFrame-Dither"] = dither_algorithm
+  headers.update(_daily_metadata_response_headers(upstream_metadata if source == "daily" else {}))
 
   inm = (request.headers.get("if-none-match") or "").strip()
   if inm:
@@ -2865,7 +2975,7 @@ def public_daily_jpg(
   conn = _ensure_db()
 
   _record_public_daily_activity(conn, target_device, now_ts)
-  jpg_bytes, source, dither_algorithm = _resolve_current_payload_for_device(
+  jpg_bytes, source, dither_algorithm, upstream_metadata = _resolve_current_payload_for_device(
       conn,
       now_ts,
       target_device,
@@ -2882,6 +2992,7 @@ def public_daily_jpg(
   }
   if dither_algorithm:
     headers["X-PhotoFrame-Dither"] = dither_algorithm
+  headers.update(_daily_metadata_response_headers(upstream_metadata if source == "daily" else {}))
   inm = (request.headers.get("if-none-match") or "").strip()
   if inm:
     candidates = [part.strip() for part in inm.split(",") if part.strip()]
@@ -2913,7 +3024,7 @@ def preview_current_bmp(
   _require_admin_or_device_token(target_device, x_photoframe_token)
   conn = _ensure_db()
 
-  payload, source, dither_algorithm = _resolve_current_payload_for_device(
+  payload, source, dither_algorithm, upstream_metadata = _resolve_current_payload_for_device(
       conn,
       now_ts,
       target_device,
@@ -2929,6 +3040,7 @@ def preview_current_bmp(
   }
   if dither_algorithm:
     headers["X-PhotoFrame-Dither"] = dither_algorithm
+  headers.update(_daily_metadata_response_headers(upstream_metadata if source == "daily" else {}))
   return Response(
       content=payload,
       media_type="image/bmp",
@@ -2950,7 +3062,7 @@ def preview_current_jpg(
   _require_admin_or_device_token(target_device, x_photoframe_token)
   conn = _ensure_db()
 
-  jpg_bytes, source, dither_algorithm = _resolve_current_payload_for_device(
+  jpg_bytes, source, dither_algorithm, upstream_metadata = _resolve_current_payload_for_device(
       conn,
       now_ts,
       target_device,
@@ -2967,6 +3079,7 @@ def preview_current_jpg(
   }
   if dither_algorithm:
     headers["X-PhotoFrame-Dither"] = dither_algorithm
+  headers.update(_daily_metadata_response_headers(upstream_metadata if source == "daily" else {}))
 
   return Response(
       content=jpg_bytes,

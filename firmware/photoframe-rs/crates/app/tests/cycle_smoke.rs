@@ -723,6 +723,7 @@ fn successful_cycle_reports_debug_stages_in_order() {
     assert_eq!(
         runner.orchestrator().debug_stages,
         vec![
+            "before_fetch".to_string(),
             "after_fetch_ok".to_string(),
             "after_render_ok".to_string(),
             "after_save_ok".to_string(),

@@ -1282,6 +1282,17 @@ async function fetchCurrentPreviewForAlgorithm(
     source: resp.headers.get('X-PhotoFrame-Source') || 'daily',
     target: resp.headers.get('X-PhotoFrame-Device') || selectedDevice,
     dither: resp.headers.get('X-PhotoFrame-Dither') || algorithm,
+    upstreamUrl: resp.headers.get('X-PhotoFrame-Upstream-Url') || '',
+    upstreamAssetId: resp.headers.get('X-PhotoFrame-Upstream-Asset-Id') || '',
+    upstreamLayoutMode: resp.headers.get('X-PhotoFrame-Upstream-Layout-Mode') || '',
+    upstreamCropStrategy: resp.headers.get('X-PhotoFrame-Upstream-Crop-Strategy') || '',
+    upstreamCropFocusX: resp.headers.get('X-PhotoFrame-Upstream-Crop-Focus-X') || '',
+    upstreamCropFocusY: resp.headers.get('X-PhotoFrame-Upstream-Crop-Focus-Y') || '',
+    upstreamOrchestrationStrategy: resp.headers.get('X-PhotoFrame-Upstream-Orchestration-Strategy') || '',
+    upstreamDisplayScore: resp.headers.get('X-PhotoFrame-Upstream-Display-Score') || '',
+    upstreamFrameFit: resp.headers.get('X-PhotoFrame-Upstream-Frame-Fit') || '',
+    upstreamRenderVariant: resp.headers.get('X-PhotoFrame-Upstream-Render-Variant') || '',
+    upstreamRenderDate: resp.headers.get('X-PhotoFrame-Upstream-Render-Date') || '',
   };
   if (!freshDailySource) {
     setPreviewCacheEntry(cacheKey, preview);
@@ -2064,7 +2075,15 @@ async function loadOverviewPreview(force = false) {
   const preview = await fetchCurrentPreviewForAlgorithm(selectedDevice, algorithm, paletteProfile, { force });
 
   setImageBlob('overviewPreviewImage', preview.blobUrl);
-  meta.textContent = `设备 ${preview.target} · 当前来源 ${preview.source} · 当前算法 ${ditherAlgorithmLabel(preview.dither || algorithm)} · Palette ${paletteProfile} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
+  const upstreamBits = [];
+  if (preview.upstreamAssetId) upstreamBits.push(`asset ${preview.upstreamAssetId}`);
+  if (preview.upstreamLayoutMode) upstreamBits.push(`layout ${preview.upstreamLayoutMode}`);
+  if (preview.upstreamCropStrategy) upstreamBits.push(`crop ${preview.upstreamCropStrategy}`);
+  if (preview.upstreamCropFocusX || preview.upstreamCropFocusY) upstreamBits.push(`focus ${preview.upstreamCropFocusX || '-'},${preview.upstreamCropFocusY || '-'}`);
+  if (preview.upstreamOrchestrationStrategy) upstreamBits.push(`strategy ${preview.upstreamOrchestrationStrategy}`);
+  if (preview.upstreamDisplayScore) upstreamBits.push(`score ${preview.upstreamDisplayScore}`);
+  if (preview.upstreamRenderVariant) upstreamBits.push(`variant ${preview.upstreamRenderVariant}`);
+  meta.textContent = `设备 ${preview.target} · 当前来源 ${preview.source} · 当前算法 ${ditherAlgorithmLabel(preview.dither || algorithm)} · Palette ${paletteProfile}${upstreamBits.length ? ` · ${upstreamBits.join(' · ')}` : ''} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
 }
 
 async function loadPublishPreview(force = false) {
@@ -2097,7 +2116,13 @@ async function loadPublishPreview(force = false) {
   leftLabel.textContent = ditherAlgorithmLabel(leftPreview.dither || leftAlgorithm);
   rightLabel.textContent = ditherAlgorithmLabel(rightPreview.dither || rightAlgorithm);
 
-  meta.textContent = `设备 ${leftPreview.target} · 当前来源 ${leftPreview.source} · Palette ${paletteProfile} · 左 ${ditherAlgorithmLabel(leftAlgorithm)} / 右 ${ditherAlgorithmLabel(rightAlgorithm)} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
+  const upstreamBits = [];
+  if (leftPreview.upstreamAssetId) upstreamBits.push(`asset ${leftPreview.upstreamAssetId}`);
+  if (leftPreview.upstreamLayoutMode) upstreamBits.push(`layout ${leftPreview.upstreamLayoutMode}`);
+  if (leftPreview.upstreamCropStrategy) upstreamBits.push(`crop ${leftPreview.upstreamCropStrategy}`);
+  if (leftPreview.upstreamCropFocusX || leftPreview.upstreamCropFocusY) upstreamBits.push(`focus ${leftPreview.upstreamCropFocusX || '-'},${leftPreview.upstreamCropFocusY || '-'}`);
+  if (leftPreview.upstreamOrchestrationStrategy) upstreamBits.push(`strategy ${leftPreview.upstreamOrchestrationStrategy}`);
+  meta.textContent = `设备 ${leftPreview.target} · 当前来源 ${leftPreview.source} · Palette ${paletteProfile}${upstreamBits.length ? ` · ${upstreamBits.join(' · ')}` : ''} · 左 ${ditherAlgorithmLabel(leftAlgorithm)} / 右 ${ditherAlgorithmLabel(rightAlgorithm)} · ${fmtEpoch(Math.floor(Date.now() / 1000))}`;
   updateCompareSliderUi();
   updateDailyDitherHint(currentDailyDitherAlgorithm);
 }
@@ -2135,9 +2160,15 @@ async function loadDeviceConfigs() {
   document.getElementById('configHistoryHint').textContent = `${scope} · 最近 ${items.length} 条`;
 }
 
-async function submitOverride(ev) {
-  ev.preventDefault();
-  const fileInput = document.getElementById('imageFile');
+async function submitOverrideFromForm({
+  fileInputId,
+  durationId,
+  startsAtId,
+  noteId,
+  ditherAlgorithm,
+  resultElementId,
+}) {
+  const fileInput = document.getElementById(fileInputId);
   if (!fileInput.files || fileInput.files.length === 0) {
     alert('请先选择图片');
     return;
@@ -2146,10 +2177,10 @@ async function submitOverride(ev) {
   const fd = new FormData();
   fd.append('file', fileInput.files[0]);
   fd.append('device_id', document.getElementById('deviceId').value);
-  fd.append('duration_minutes', document.getElementById('duration').value);
-  fd.append('starts_at', document.getElementById('startsAt').value || '');
-  fd.append('note', document.getElementById('note').value || '');
-  fd.append('dither_algorithm', document.getElementById('overrideDitherAlgorithm').value || 'none');
+  fd.append('duration_minutes', document.getElementById(durationId).value);
+  fd.append('starts_at', startsAtId ? (document.getElementById(startsAtId).value || '') : '');
+  fd.append('note', document.getElementById(noteId).value || '');
+  fd.append('dither_algorithm', ditherAlgorithm || 'none');
 
   const headers = authHeaders();
   const resp = await fetch('/api/v1/overrides/upload', {
@@ -2170,8 +2201,37 @@ async function submitOverride(ev) {
     throw new Error(msg);
   }
 
-  document.getElementById('createResult').textContent = formatOverrideCreateResult(data);
+  document.getElementById(resultElementId).textContent = formatOverrideCreateResult(data);
+  fileInput.value = '';
   await refreshAll();
+}
+
+async function submitOverride(ev) {
+  ev.preventDefault();
+  return submitOverrideFromForm({
+    fileInputId: 'imageFile',
+    durationId: 'duration',
+    startsAtId: 'startsAt',
+    noteId: 'note',
+    ditherAlgorithm: document.getElementById('overrideDitherAlgorithm').value || 'none',
+    resultElementId: 'createResult',
+  });
+}
+
+async function submitQuickSend(ev) {
+  ev.preventDefault();
+  const selectedDevice = document.getElementById('deviceId').value || '*';
+  if (selectedDevice === '*') {
+    throw new Error('快速送图只支持单设备；请先在顶部选择具体设备');
+  }
+  return submitOverrideFromForm({
+    fileInputId: 'quickImageFile',
+    durationId: 'quickDuration',
+    startsAtId: '',
+    noteId: 'quickNote',
+    ditherAlgorithm: 'sierra',
+    resultElementId: 'quickSendResult',
+  });
 }
 
 async function submitDeviceConfig(ev) {
@@ -2250,6 +2310,14 @@ document.getElementById('overrideForm').addEventListener('submit', async (ev) =>
     await submitOverride(ev);
   } catch (err) {
     document.getElementById('createResult').textContent = `提交失败: ${err.message}`;
+  }
+});
+
+document.getElementById('quickSendForm').addEventListener('submit', async (ev) => {
+  try {
+    await submitQuickSend(ev);
+  } catch (err) {
+    document.getElementById('quickSendResult').textContent = `提交失败: ${err.message}`;
   }
 });
 

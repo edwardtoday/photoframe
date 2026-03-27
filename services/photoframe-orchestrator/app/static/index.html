@@ -838,6 +838,31 @@
         </div>
 
         <div class="card" data-workspace="publish">
+          <h3>快速送图</h3>
+          <p class="help">面向“立刻把一张图送到当前设备”的低心智负担入口。默认开始时间留空，单设备会自动按下次唤醒生效。</p>
+          <form id="quickSendForm">
+            <div class="row">
+              <label>持续分钟
+                <select id="quickDuration">
+                  <option value="15">15</option>
+                  <option value="30" selected>30</option>
+                  <option value="60">60</option>
+                  <option value="180">180</option>
+                </select>
+              </label>
+              <label>备注
+                <input id="quickNote" placeholder="例如：刚拍好的合影" />
+              </label>
+            </div>
+            <label>图片
+              <input id="quickImageFile" type="file" accept="image/*" required />
+            </label>
+            <button type="submit">立即送到当前设备</button>
+          </form>
+          <pre id="quickSendResult"></pre>
+        </div>
+
+        <div class="card" data-workspace="publish">
           <h3>创建插播</h3>
           <p class="help">目标设备使用顶部“当前设备”。若选择“全部设备(*)”，将创建全设备插播。</p>
           <form id="overrideForm">

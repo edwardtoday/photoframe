@@ -25,7 +25,9 @@ pub struct ImageArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageFetchPlan {
+    pub device_id: String,
     pub url: String,
+    pub debug_stage_base_url: String,
     pub previous_sha256: String,
     pub photo_token: String,
     pub orchestrator_token: String,

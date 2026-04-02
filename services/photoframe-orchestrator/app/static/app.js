@@ -638,6 +638,7 @@ function redrawPowerChartIfReady() {
   drawPowerChart(canvas, powerChartCache.items, {
     fromEpoch: powerChartCache.from_epoch,
     toEpoch: powerChartCache.to_epoch,
+    alerts: powerChartCache.alerts,
   });
   return true;
 }
@@ -758,6 +759,7 @@ function drawPowerChart(canvas, items, opts) {
   const { ctx, width, height } = prepareHiDPICanvas(canvas);
   ctx.clearRect(0, 0, width, height);
   bindPowerChartHover(canvas);
+  const alerts = Array.isArray(opts?.alerts) ? opts.alerts : [];
 
   const pad = { l: 54, r: 68, t: 26, b: 30 };
   const x0 = pad.l;
@@ -900,6 +902,56 @@ function drawPowerChart(canvas, items, opts) {
     ctx.fillRect(sx, y0, Math.max(0, ex - sx), chargeBarH);
   }
 
+  const alertLabelRows = [y0 + chargeBarH + 6, y0 + chargeBarH + 22];
+  ctx.save();
+  ctx.setLineDash([5, 4]);
+  ctx.lineWidth = 1;
+  ctx.font = '10px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  alerts.forEach((alert, index) => {
+    const startedEpoch = Number(alert?.started_epoch);
+    const endedEpochRaw = Number(alert?.ended_epoch);
+    if (!Number.isFinite(startedEpoch)) return;
+
+    const endedEpoch = Number.isFinite(endedEpochRaw) ? endedEpochRaw : startedEpoch;
+    const startTs = Math.max(xMin, Math.min(xMax, Math.min(startedEpoch, endedEpoch)));
+    const endTs = Math.max(xMin, Math.min(xMax, Math.max(startedEpoch, endedEpoch)));
+    const sx = xScale(startTs);
+    const ex = xScale(endTs);
+    const visual = powerAlertVisual(alert);
+
+    ctx.fillStyle = visual.fill;
+    ctx.fillRect(sx, y0, Math.max(2, ex - sx), y1 - y0);
+
+    ctx.strokeStyle = visual.stroke;
+    ctx.beginPath();
+    ctx.moveTo(sx, y0);
+    ctx.lineTo(sx, y1);
+    if (Math.abs(ex - sx) >= 3) {
+      ctx.moveTo(ex, y0);
+      ctx.lineTo(ex, y1);
+    }
+    ctx.stroke();
+
+    const label = String(alert?.title || alert?.code || '告警');
+    const labelPaddingX = 6;
+    const labelHeight = 14;
+    const textWidth = ctx.measureText(label).width;
+    const labelWidth = textWidth + labelPaddingX * 2;
+    const rowY = alertLabelRows[index % alertLabelRows.length];
+    let labelX = sx + 4;
+    if (labelX + labelWidth > x1 - 2) {
+      labelX = Math.max(x0 + 2, x1 - labelWidth - 2);
+    }
+
+    ctx.fillStyle = visual.labelBg;
+    ctx.fillRect(labelX, rowY - labelHeight / 2, labelWidth, labelHeight);
+    ctx.fillStyle = visual.labelText;
+    ctx.fillText(label, labelX + labelPaddingX, rowY);
+  });
+  ctx.restore();
+
   // 网格：百分比 0/25/50/75/100
   ctx.strokeStyle = 'rgba(230, 233, 240, 1)';
   ctx.lineWidth = 1;
@@ -1033,6 +1085,9 @@ async function loadPowerSamples() {
   const items = data.items || [];
   const interval = estimateSampleIntervalSeconds(items);
   const intervalText = interval ? `采样间隔≈${fmtDuration(interval)}（估算误差不超过一个采样周期）` : '采样间隔：-';
+  const device = deviceMap.get(deviceId);
+  const powerAlertSummary = powerAlertSummaryText(device);
+  const chartAlerts = Array.isArray(device?.power_alerts) ? device.power_alerts : [];
 
   const discharge = analyzeLatestDischarge(items, threshold);
   if (!discharge.ok) {
@@ -1068,7 +1123,7 @@ async function loadPowerSamples() {
 
   setText(
     'powerHint',
-    `${items.length} 点 · ${fmtEpoch(data.from_epoch)} ~ ${fmtEpoch(data.to_epoch)} · ${intervalText}`
+    `${items.length} 点 · ${fmtEpoch(data.from_epoch)} ~ ${fmtEpoch(data.to_epoch)} · ${intervalText}${powerAlertSummary ? ` · ${powerAlertSummary}` : ''}`
   );
 
   const canvas = document.getElementById('powerCanvas');
@@ -1078,6 +1133,7 @@ async function loadPowerSamples() {
       from_epoch: data.from_epoch,
       to_epoch: data.to_epoch,
       items,
+      alerts: chartAlerts,
     };
     if (!redrawPowerChartIfReady()) {
       // 当前工作区可能隐藏了画布，切回可见区后自动按真实尺寸重绘。
@@ -1366,6 +1422,56 @@ function renderFetchStatus(device) {
   return '<span class="tag">-</span>';
 }
 
+function powerAlertTagClass(alert) {
+  const severity = String(alert?.severity || '').trim();
+  if (severity === 'danger') return 'danger';
+  if (severity === 'warning') return 'warn';
+  return '';
+}
+
+function renderPowerAlerts(device) {
+  const alerts = Array.isArray(device?.power_alerts) ? device.power_alerts : [];
+  if (alerts.length === 0) {
+    return '<span class="tag active">normal</span>';
+  }
+
+  const tags = alerts.map((alert) => {
+    const title = escapeHtml(alert?.title || alert?.code || 'alert');
+    const summary = escapeHtml(alert?.summary || title);
+    const tagClass = powerAlertTagClass(alert);
+    return `<span class="tag ${tagClass}" title="${summary}">${title}</span>`;
+  });
+  return `<div class="tag-stack">${tags.join('')}</div>`;
+}
+
+function powerAlertSummaryText(device) {
+  const alerts = Array.isArray(device?.power_alerts) ? device.power_alerts : [];
+  if (alerts.length === 0) return '';
+  return alerts.map((alert) => {
+    const title = String(alert?.title || alert?.code || '告警');
+    const summary = String(alert?.summary || '').trim();
+    return summary ? `${title}: ${summary}` : title;
+  }).join('；');
+}
+
+function powerAlertVisual(alert) {
+  const severity = String(alert?.severity || '').trim();
+  if (severity === 'danger') {
+    return {
+      fill: 'rgba(204, 61, 61, 0.08)',
+      stroke: 'rgba(204, 61, 61, 0.48)',
+      labelBg: 'rgba(204, 61, 61, 0.14)',
+      labelText: '#a53030',
+    };
+  }
+  return {
+    fill: 'rgba(212, 133, 28, 0.08)',
+    stroke: 'rgba(212, 133, 28, 0.50)',
+    labelBg: 'rgba(212, 133, 28, 0.16)',
+    labelText: '#8d5808',
+  };
+}
+
 function appendDeviceOption(select, value) {
   const op = document.createElement('option');
   op.value = value;
@@ -1471,8 +1577,9 @@ function updateDeviceContextBanner() {
   const nextWakeup = fmtEpoch(device.next_wakeup_epoch);
   const wifi = formatReportedWifiProfiles(device, '-');
   const firmware = firmwareVersionForDevice(device);
+  const powerAlertSummary = powerAlertSummaryText(device);
   titleEl.textContent = `当前设备：${selectedDevice}`;
-  metaEl.textContent = `固件 ${firmware} · IP ${ip} · 电量 ${battery} · 下次唤醒 ${nextWakeup} · Wi‑Fi ${wifi}`;
+  metaEl.textContent = `固件 ${firmware} · IP ${ip} · 电量 ${battery} · 下次唤醒 ${nextWakeup} · Wi‑Fi ${wifi}${powerAlertSummary ? ` · 告警 ${powerAlertSummary}` : ''}`;
 }
 
 function updateDeviceLogRequestHint() {
@@ -1727,6 +1834,7 @@ async function loadDevices() {
       <td>${renderFetchStatus(d)}</td>
       <td>${escapeHtml(batteryStatusText(d))}</td>
       <td>${escapeHtml(powerSourceText(d))}</td>
+      <td>${renderPowerAlerts(d)}</td>
       <td title="${escapeHtml(otaStatusText(d))}">${escapeHtml(shorten(otaStatusText(d), 48))}</td>
       <td title="${escapeHtml(wifiSummary)}">${escapeHtml(shorten(wifiSummary, 48))}</td>
       <td>${escapeHtml(d.sta_ip || '-')}</td>

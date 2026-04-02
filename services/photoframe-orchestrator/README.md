@@ -32,6 +32,7 @@
 - 公网日图代理：`GET /public/daily.bmp` / `GET /public/daily.jpg`（token 保护，且优先返回当前生效插播）
 - Web 管理页：`GET /`（含图片发布历史 + 设备配置发布历史 + 当前下发预览 + 设备 token 审批）
 - 设备状态页会直接显示设备最近一次 checkin 上报的 `firmware_version`
+- 设备状态页会给出电源告警：区分 `USB debug mode` 导致的连续高频活跃，与“电池下平均电流偏高”的待机底流异常
 - 控制台顶部会显示 orchestrator 自身的服务版本与 git sha，便于确认当前部署的是哪次构建
 - 设备配置“填空式表单”：不再手写 JSON，灰字提示来自设备最近上报配置
 - 设备配置页提供 daily.bmp/daily.jpg URL 快捷填入（当前服务 / 公网示例）
@@ -125,6 +126,10 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 - `DAILY_FETCH_TIMEOUT_SECONDS`：公网日图代理拉取上游超时（秒，默认 10）
 - `DAILY_UPSTREAM_REVALIDATE_SECONDS`：daily 缓存向上游做条件校验的最小间隔（秒，默认 300）；到期后会带 `If-None-Match` / `If-Modified-Since` 回源确认是否变更
 - `DAILY_ASSET_RETENTION_DAYS`：Daily 静态缓存保留天数（默认 14；仅清理 `daily-*.bmp/.jpg`）
+- `POWER_ALERT_BATTERY_CAPACITY_MAH`：控制台估算电池平均电流时使用的电池容量假设（默认 1500）
+- `POWER_ALERT_HIGH_STANDBY_MA`：判定“待机底流偏高”的平均电流阈值（默认 3.0mA）
+- `POWER_ALERT_ACTIVE_GAP_SECONDS`：判定“连续活跃窗口”的相邻下发最大间隔（默认 120 秒）
+- `POWER_ALERT_ACTIVE_RECENT_SECONDS`：仅当最近一次高频活跃仍落在这个窗口内时，控制台才显示连续活跃告警（默认 1800 秒）
 - `TZ`：服务端时区
 
 ## 服务端 Dither（Daily + 插播）

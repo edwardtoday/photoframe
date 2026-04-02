@@ -280,6 +280,159 @@ class DitherAlgorithmTests(unittest.TestCase):
       self.assertEqual(data["devices"][0]["ota_state"], "valid")
       self.assertEqual(data["devices"][0]["ota_target_version"], "0.1.0+abcdef12")
 
+  def test_devices_surface_high_standby_drain_alert(self) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_root = Path(tmp_dir)
+      original_data_dir = ORCH.DATA_DIR
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_db_path = ORCH.DB_PATH
+      original_db = ORCH.DB
+      original_now_epoch = ORCH._now_epoch
+
+      ORCH.DATA_DIR = tmp_root
+      ORCH.ASSET_DIR = tmp_root / "assets"
+      ORCH.DAILY_CACHE_DIR = ORCH.ASSET_DIR / "daily-cache"
+      ORCH.DB_PATH = tmp_root / "orchestrator.db"
+      ORCH.DB = None
+      ORCH._now_epoch = lambda: 1774937604
+      try:
+        ORCH._init_db()
+        ORCH.device_checkin(
+            ORCH.DeviceCheckin(
+                device_id="pf-demo",
+                checkin_epoch=1774937604,
+                next_wakeup_epoch=1774944000,
+                sleep_seconds=6400,
+                poll_interval_seconds=3600,
+                failure_count=0,
+                last_http_status=200,
+                fetch_ok=True,
+                image_changed=False,
+                image_source="daily",
+                last_error="",
+                sta_ip="192.168.1.9",
+                battery_mv=4114,
+                battery_percent=92,
+                charging=1,
+                vbus_good=1,
+                reported_config={"firmware_version": "0.1.0+test"},
+            )
+        )
+        conn = ORCH._ensure_db()
+        battery_points = [
+            (1774608262, 4193, 100),
+            (1774645625, 4172, 96),
+            (1774684898, 4162, 95),
+            (1774731703, 4144, 92),
+            (1774771300, 4104, 84),
+            (1774818096, 4110, 86),
+            (1774857697, 4085, 81),
+            (1774904497, 4039, 71),
+        ]
+        for sample_epoch, battery_mv, battery_percent in battery_points:
+          conn.execute(
+              """
+              INSERT INTO device_power_samples (
+                device_id, sample_epoch, received_epoch, battery_mv, battery_percent, charging, vbus_good
+              ) VALUES (?, ?, ?, ?, ?, 0, 0)
+              """,
+              ("pf-demo", sample_epoch, sample_epoch, battery_mv, battery_percent),
+          )
+        conn.commit()
+        data = ORCH.devices()
+      finally:
+        ORCH._now_epoch = original_now_epoch
+        if ORCH.DB is not None:
+          ORCH.DB.close()
+          ORCH.DB = None
+        ORCH.DATA_DIR = original_data_dir
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.DB_PATH = original_db_path
+        ORCH.DB = original_db
+
+      device = data["devices"][0]
+      alerts = {item["code"]: item for item in device["power_alerts"]}
+      self.assertIn("high_standby_drain", alerts)
+      self.assertGreaterEqual(alerts["high_standby_drain"]["avg_current_ma"], 5.0)
+      self.assertEqual(device["power_diagnostics"]["latest_battery_window"]["percent_drop"], 29)
+
+  def test_devices_surface_usb_debug_loop_alert(self) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_root = Path(tmp_dir)
+      original_data_dir = ORCH.DATA_DIR
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_db_path = ORCH.DB_PATH
+      original_db = ORCH.DB
+      original_now_epoch = ORCH._now_epoch
+
+      ORCH.DATA_DIR = tmp_root
+      ORCH.ASSET_DIR = tmp_root / "assets"
+      ORCH.DAILY_CACHE_DIR = ORCH.ASSET_DIR / "daily-cache"
+      ORCH.DB_PATH = tmp_root / "orchestrator.db"
+      ORCH.DB = None
+      ORCH._now_epoch = lambda: 1774937604
+      try:
+        ORCH._init_db()
+        ORCH.device_checkin(
+            ORCH.DeviceCheckin(
+                device_id="pf-demo",
+                checkin_epoch=1774937604,
+                next_wakeup_epoch=1774944017,
+                sleep_seconds=6420,
+                poll_interval_seconds=3600,
+                failure_count=0,
+                last_http_status=200,
+                fetch_ok=True,
+                image_changed=False,
+                image_source="daily",
+                last_error="",
+                sta_ip="192.168.1.9",
+                battery_mv=4114,
+                battery_percent=92,
+                charging=1,
+                vbus_good=1,
+                reported_config={"firmware_version": "0.1.0+test"},
+            )
+        )
+        conn = ORCH._ensure_db()
+        for issued_epoch in (1774937304, 1774937364, 1774937424, 1774937484, 1774937544, 1774937604):
+          conn.execute(
+              """
+              INSERT INTO publish_history (
+                device_id, issued_epoch, source, image_url, override_id,
+                poll_after_seconds, valid_until_epoch, created_at, dither_algorithm
+              ) VALUES (?, ?, 'daily', ?, NULL, 3600, ?, ?, '')
+              """,
+              (
+                  "pf-demo",
+                  issued_epoch,
+                  "https://example.com/daily.bmp",
+                  issued_epoch + 3600,
+                  issued_epoch,
+              ),
+          )
+        conn.commit()
+        data = ORCH.devices()
+      finally:
+        ORCH._now_epoch = original_now_epoch
+        if ORCH.DB is not None:
+          ORCH.DB.close()
+          ORCH.DB = None
+        ORCH.DATA_DIR = original_data_dir
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.DB_PATH = original_db_path
+        ORCH.DB = original_db
+
+      device = data["devices"][0]
+      alerts = {item["code"]: item for item in device["power_alerts"]}
+      self.assertIn("usb_debug_loop", alerts)
+      self.assertEqual(alerts["usb_debug_loop"]["cycle_count"], 6)
+      self.assertEqual(alerts["usb_debug_loop"]["median_gap_seconds"], 60)
+
   def test_preferred_output_format_prefers_bmp_when_device_supports_both(self) -> None:
     self.assertEqual(ORCH._preferred_output_format("jpeg,bmp"), "bmp")
     self.assertEqual(ORCH._preferred_output_format("bmp,jpeg"), "bmp")

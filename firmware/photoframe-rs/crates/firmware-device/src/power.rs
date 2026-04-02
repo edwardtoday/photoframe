@@ -63,6 +63,12 @@ const REG_LDO_VOL3_CTRL: u8 = 0x95;
 const EXPECTED_CHIP_ID: u8 = 0x4A;
 #[cfg(target_os = "espidf")]
 const LDO_CODE_3300: u8 = 0x1C;
+#[cfg(target_os = "espidf")]
+const LDO_ENABLE_ALDO3: u8 = 1u8 << 2;
+#[cfg(target_os = "espidf")]
+const LDO_ENABLE_ALDO4: u8 = 1u8 << 3;
+#[cfg(target_os = "espidf")]
+const LDO_ENABLE_ALL: u8 = 0x0F;
 
 #[cfg(target_os = "espidf")]
 struct PowerRuntime {
@@ -346,7 +352,7 @@ fn configure_display_power_rails(state: &mut PowerRuntime) -> bool {
     .into_iter()
     .all(|reg| update_reg_bits(state, reg, 0x1F, LDO_CODE_3300));
     let rail_enable_ok = enable_reg_bits(state, REG_DCDC_ON_OFF_CTRL, 1u8 << 0)
-        && enable_reg_bits(state, REG_LDO_ON_OFF_CTRL0, 0x0F);
+        && enable_reg_bits(state, REG_LDO_ON_OFF_CTRL0, LDO_ENABLE_ALL);
     ext_en_ok && dcdc1_ok && ldo_ok && rail_enable_ok
 }
 
@@ -538,6 +544,12 @@ pub fn prepare_for_sleep() {
     if !state.ready {
         return;
     }
+    // 深睡前切掉 EPD 相关外围 LDO，避免显示链路在睡眠期继续吃静态电流。
+    let _ = disable_reg_bits(
+        &mut state,
+        REG_LDO_ON_OFF_CTRL0,
+        LDO_ENABLE_ALDO3 | LDO_ENABLE_ALDO4,
+    );
     let _ = disable_reg_bits(&mut state, REG_ADC_CHANNEL_CTRL, 0x01);
     let _ = disable_reg_bits(&mut state, REG_BATT_DET_CTRL, 0x01);
 }

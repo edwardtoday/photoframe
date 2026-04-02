@@ -328,6 +328,13 @@
     .tag.active { background: #eaf8f1; color: var(--ok); border-color: #c9edd9; }
     .tag.upcoming { background: #fff6e8; color: var(--warn); border-color: #fde3ba; }
     .tag.expired { background: #f5f6fa; color: #6d7486; border-color: #e4e7f0; }
+    .tag.warn { background: #fff4dd; color: #a15d00; border-color: #f7d08b; }
+    .tag.danger { background: #fdeaea; color: var(--danger); border-color: #f3c4c4; }
+    .tag-stack {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
 
     pre {
       margin: 10px 0 0;
@@ -651,6 +658,7 @@
     .swatch.not-charging { background: rgba(58, 66, 87, 0.25); }
     .swatch.percent-line { background: rgba(53, 88, 229, 0.95); border-color: rgba(53, 88, 229, 0.95); }
     .swatch.mv-line { background: rgba(212, 133, 28, 0.95); border-color: rgba(212, 133, 28, 0.95); }
+    .swatch.alert-window { background: rgba(204, 61, 61, 0.12); border-color: rgba(204, 61, 61, 0.38); }
 
     @media (max-width: 980px) {
       .grid { grid-template-columns: 1fr; }
@@ -726,6 +734,7 @@
                   <th>sync</th>
                   <th>battery</th>
                   <th>power</th>
+                  <th>alerts</th>
                   <th>ota</th>
                   <th>wifi</th>
                   <th>ip</th>
@@ -766,6 +775,7 @@
             <span><span class="swatch battery"></span>电池供电</span>
             <span><span class="swatch charging"></span>充电中</span>
             <span><span class="swatch not-charging"></span>未充电</span>
+            <span><span class="swatch alert-window"></span>告警时间窗</span>
           </div>
         </div>
 

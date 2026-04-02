@@ -95,6 +95,25 @@ POWER_SAMPLE_DEFAULT_DAYS = 30
 POWER_SAMPLE_RETENTION_DAYS = 365
 POWER_SAMPLE_RETENTION_SECONDS = POWER_SAMPLE_RETENTION_DAYS * 24 * 3600
 try:
+  POWER_ALERT_BATTERY_CAPACITY_MAH = max(100.0, float(os.getenv("POWER_ALERT_BATTERY_CAPACITY_MAH", "1500")))
+except Exception:
+  POWER_ALERT_BATTERY_CAPACITY_MAH = 1500.0
+try:
+  POWER_ALERT_HIGH_STANDBY_MA = max(0.1, float(os.getenv("POWER_ALERT_HIGH_STANDBY_MA", "3.0")))
+except Exception:
+  POWER_ALERT_HIGH_STANDBY_MA = 3.0
+try:
+  POWER_ALERT_ACTIVE_GAP_SECONDS = max(15, int(os.getenv("POWER_ALERT_ACTIVE_GAP_SECONDS", "120")))
+except Exception:
+  POWER_ALERT_ACTIVE_GAP_SECONDS = 120
+try:
+  POWER_ALERT_ACTIVE_RECENT_SECONDS = max(300, int(os.getenv("POWER_ALERT_ACTIVE_RECENT_SECONDS", "1800")))
+except Exception:
+  POWER_ALERT_ACTIVE_RECENT_SECONDS = 1800
+POWER_ALERT_ACTIVE_MIN_CYCLES = 3
+POWER_ALERT_HIGH_STANDBY_MIN_DURATION_SECONDS = 6 * 3600
+POWER_ALERT_HIGH_STANDBY_MIN_PERCENT_DROP = 5
+try:
   DAILY_ASSET_RETENTION_DAYS = max(1, int(os.getenv("DAILY_ASSET_RETENTION_DAYS", "14")))
 except Exception:
   DAILY_ASSET_RETENTION_DAYS = 14
@@ -950,6 +969,289 @@ def _device_epoch_for_view(device_epoch: int | None, now_epoch: int) -> int | No
 
 def _clamp(v: int, low: int, high: int) -> int:
   return max(low, min(high, v))
+
+
+def _normalize_power_flag(value: Any) -> int | None:
+  try:
+    parsed = int(value)
+  except Exception:
+    return None
+  if parsed in (0, 1):
+    return parsed
+  return None
+
+
+def _median_int(values: list[int]) -> int | None:
+  if not values:
+    return None
+  ordered = sorted(values)
+  return int(ordered[len(ordered) // 2])
+
+
+def _power_alert_view_epoch(ts: int | None, now_epoch: int) -> int | None:
+  if ts is None:
+    return None
+  return _device_epoch_for_view(int(ts), now_epoch)
+
+
+def _current_power_source(
+    charging: int,
+    vbus_good: int,
+    last_power: dict[str, int] | None,
+) -> str:
+  current_vbus = _normalize_power_flag(vbus_good)
+  current_charging = _normalize_power_flag(charging)
+  if current_vbus == 1:
+    return "usb"
+  if current_vbus == 0 and current_charging == 0:
+    return "battery"
+
+  if last_power is None:
+    return "unknown"
+
+  last_vbus = _normalize_power_flag(last_power.get("vbus_good"))
+  last_charging = _normalize_power_flag(last_power.get("charging"))
+  if last_vbus == 1:
+    return "usb"
+  if last_vbus == 0 and last_charging == 0:
+    return "battery"
+  return "unknown"
+
+
+def _analyze_recent_publish_activity(
+    conn: sqlite3.Connection,
+    device_id: str,
+    now_epoch: int,
+    power_source: str,
+) -> dict[str, Any] | None:
+  rows = conn.execute(
+      """
+      SELECT issued_epoch
+      FROM publish_history
+      WHERE device_id = ?
+      ORDER BY issued_epoch DESC
+      LIMIT 32
+      """,
+      (device_id,),
+  ).fetchall()
+  if not rows:
+    return None
+
+  latest_epoch = int(rows[0]["issued_epoch"])
+  if latest_epoch <= 0 or (now_epoch - latest_epoch) > POWER_ALERT_ACTIVE_RECENT_SECONDS:
+    return None
+
+  cluster_epochs: list[int] = [latest_epoch]
+  previous_epoch = latest_epoch
+  for row in rows[1:]:
+    issued_epoch = int(row["issued_epoch"])
+    gap_seconds = previous_epoch - issued_epoch
+    if gap_seconds <= 0 or gap_seconds > POWER_ALERT_ACTIVE_GAP_SECONDS:
+      break
+    cluster_epochs.append(issued_epoch)
+    previous_epoch = issued_epoch
+
+  if len(cluster_epochs) < POWER_ALERT_ACTIVE_MIN_CYCLES:
+    return None
+
+  gap_values = [
+      cluster_epochs[index] - cluster_epochs[index + 1]
+      for index in range(len(cluster_epochs) - 1)
+      if cluster_epochs[index] > cluster_epochs[index + 1]
+  ]
+  start_epoch = cluster_epochs[-1]
+  end_epoch = cluster_epochs[0]
+  if start_epoch <= 0 or end_epoch < start_epoch:
+    return None
+
+  if power_source == "usb":
+    code = "usb_debug_loop"
+    severity = "warning"
+    title = "USB 连续活跃"
+    summary = (
+        f"最近 {len(cluster_epochs)} 轮下发间隔约 {_median_int(gap_values) or '-'}s，"
+        "当前为 USB 供电，疑似 USB debug mode 持续重跑"
+    )
+  elif power_source == "battery":
+    code = "battery_active_loop"
+    severity = "danger"
+    title = "电池下连续活跃"
+    summary = (
+        f"最近 {len(cluster_epochs)} 轮下发间隔约 {_median_int(gap_values) or '-'}s，"
+        "当前仍处于电池供电，疑似异常频繁唤醒"
+    )
+  else:
+    code = "active_loop"
+    severity = "warning"
+    title = "连续活跃"
+    summary = f"最近 {len(cluster_epochs)} 轮下发间隔约 {_median_int(gap_values) or '-'}s，设备仍在持续活跃"
+
+  return {
+      "code": code,
+      "severity": severity,
+      "title": title,
+      "summary": summary,
+      "power_source": power_source,
+      "cycle_count": len(cluster_epochs),
+      "median_gap_seconds": _median_int(gap_values),
+      "started_epoch": start_epoch,
+      "ended_epoch": end_epoch,
+      "duration_seconds": max(0, end_epoch - start_epoch),
+      "ongoing": True,
+  }
+
+
+def _analyze_latest_battery_window(
+    conn: sqlite3.Connection,
+    device_id: str,
+) -> dict[str, Any] | None:
+  rows = conn.execute(
+      """
+      SELECT sample_epoch, battery_mv, battery_percent, charging, vbus_good
+      FROM device_power_samples
+      WHERE device_id = ?
+      ORDER BY sample_epoch DESC
+      LIMIT 512
+      """,
+      (device_id,),
+  ).fetchall()
+  if not rows:
+    return None
+
+  samples = list(reversed(rows))
+  last_battery_index = -1
+  for index in range(len(samples) - 1, -1, -1):
+    if _normalize_power_flag(samples[index]["vbus_good"]) == 0:
+      last_battery_index = index
+      break
+  if last_battery_index < 0:
+    return None
+
+  start_index = last_battery_index
+  while start_index > 0 and _normalize_power_flag(samples[start_index - 1]["vbus_good"]) == 0:
+    start_index -= 1
+
+  window = samples[start_index:last_battery_index + 1]
+  valid = [row for row in window if int(row["battery_percent"]) >= 0]
+  if len(valid) < 2:
+    return None
+
+  start_row = valid[0]
+  end_row = valid[-1]
+  start_epoch = int(start_row["sample_epoch"])
+  end_epoch = int(end_row["sample_epoch"])
+  duration_seconds = max(0, end_epoch - start_epoch)
+  start_percent = int(start_row["battery_percent"])
+  end_percent = int(end_row["battery_percent"])
+  percent_drop = start_percent - end_percent
+  avg_current_ma: float | None = None
+  if duration_seconds > 0 and percent_drop > 0:
+    avg_current_ma = round(
+        POWER_ALERT_BATTERY_CAPACITY_MAH * (percent_drop / 100.0) / (duration_seconds / 3600.0),
+        2,
+    )
+
+  return {
+      "started_epoch": start_epoch,
+      "ended_epoch": end_epoch,
+      "duration_seconds": duration_seconds,
+      "sample_count": len(window),
+      "start_percent": start_percent,
+      "end_percent": end_percent,
+      "percent_drop": percent_drop,
+      "start_battery_mv": int(start_row["battery_mv"]),
+      "end_battery_mv": int(end_row["battery_mv"]),
+      "avg_current_ma": avg_current_ma,
+      "capacity_mah": round(POWER_ALERT_BATTERY_CAPACITY_MAH, 2),
+  }
+
+
+def _build_power_alerts(
+    conn: sqlite3.Connection,
+    device_id: str,
+    now_epoch: int,
+    charging: int,
+    vbus_good: int,
+    last_power: dict[str, int] | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+  alerts: list[dict[str, Any]] = []
+  diagnostics: dict[str, Any] = {
+      "latest_battery_window": None,
+      "recent_activity_window": None,
+      "current_power_source": _current_power_source(
+          charging,
+          vbus_good,
+          last_power,
+      ),
+  }
+
+  activity = _analyze_recent_publish_activity(
+      conn,
+      device_id,
+      now_epoch,
+      diagnostics["current_power_source"],
+  )
+  if activity is not None:
+    diagnostics["recent_activity_window"] = activity
+    alerts.append(activity.copy())
+
+  battery_window = _analyze_latest_battery_window(conn, device_id)
+  if battery_window is not None:
+    diagnostics["latest_battery_window"] = battery_window
+    avg_current_ma = battery_window.get("avg_current_ma")
+    if (
+        avg_current_ma is not None
+        and float(avg_current_ma) >= POWER_ALERT_HIGH_STANDBY_MA
+        and int(battery_window["duration_seconds"]) >= POWER_ALERT_HIGH_STANDBY_MIN_DURATION_SECONDS
+        and int(battery_window["percent_drop"]) >= POWER_ALERT_HIGH_STANDBY_MIN_PERCENT_DROP
+        and not any(alert["code"] == "battery_active_loop" for alert in alerts)
+    ):
+      capacity_mah = float(battery_window["capacity_mah"])
+      capacity_label = str(int(capacity_mah)) if capacity_mah.is_integer() else str(capacity_mah)
+      alerts.append(
+          {
+              "code": "high_standby_drain",
+              "severity": "danger",
+              "title": "待机底流偏高",
+              "summary": (
+                  f"最近一次电池窗口 {int(battery_window['percent_drop'])}% / "
+                  f"{int(battery_window['duration_seconds']) // 3600}h，"
+                  f"按 {capacity_label}mAh 估算均流约 {avg_current_ma:.2f}mA"
+              ),
+              "started_epoch": int(battery_window["started_epoch"]),
+              "ended_epoch": int(battery_window["ended_epoch"]),
+              "duration_seconds": int(battery_window["duration_seconds"]),
+              "avg_current_ma": float(avg_current_ma),
+              "capacity_mah": float(battery_window["capacity_mah"]),
+              "percent_drop": int(battery_window["percent_drop"]),
+          }
+      )
+
+  for alert in alerts:
+    if "started_epoch" in alert:
+      alert["started_epoch"] = _power_alert_view_epoch(alert.get("started_epoch"), now_epoch)
+    if "ended_epoch" in alert:
+      alert["ended_epoch"] = _power_alert_view_epoch(alert.get("ended_epoch"), now_epoch)
+
+  if diagnostics["recent_activity_window"] is not None:
+    diagnostics["recent_activity_window"] = diagnostics["recent_activity_window"].copy()
+    diagnostics["recent_activity_window"]["started_epoch"] = _power_alert_view_epoch(
+        diagnostics["recent_activity_window"].get("started_epoch"), now_epoch
+    )
+    diagnostics["recent_activity_window"]["ended_epoch"] = _power_alert_view_epoch(
+        diagnostics["recent_activity_window"].get("ended_epoch"), now_epoch
+    )
+
+  if diagnostics["latest_battery_window"] is not None:
+    diagnostics["latest_battery_window"] = diagnostics["latest_battery_window"].copy()
+    diagnostics["latest_battery_window"]["started_epoch"] = _power_alert_view_epoch(
+        diagnostics["latest_battery_window"].get("started_epoch"), now_epoch
+    )
+    diagnostics["latest_battery_window"]["ended_epoch"] = _power_alert_view_epoch(
+        diagnostics["latest_battery_window"].get("ended_epoch"), now_epoch
+    )
+
+  return alerts, diagnostics
 
 
 def _parse_device_token_map() -> dict[str, str]:
@@ -4238,6 +4540,14 @@ def devices(
     firmware_version = str(reported_config.get("firmware_version") or "").strip()
     last_power = last_power_map.get(device_id)
     last_debug = last_debug_map.get(device_id)
+    power_alerts, power_diagnostics = _build_power_alerts(
+        conn,
+        device_id,
+        now_ts,
+        int(row["charging"]),
+        int(row["vbus_good"]),
+        last_power,
+    )
     items.append(
         {
             "device_id": device_id,
@@ -4271,6 +4581,8 @@ def devices(
             "last_power_battery_percent": -1 if last_power is None else int(last_power["battery_percent"]),
             "last_power_charging": -1 if last_power is None else int(last_power["charging"]),
             "last_power_vbus_good": -1 if last_power is None else int(last_power["vbus_good"]),
+            "power_alerts": power_alerts,
+            "power_diagnostics": power_diagnostics,
             "last_debug_stage": "" if last_debug is None else str(last_debug["stage"]),
             "last_debug_stage_epoch": (
                 None

@@ -440,6 +440,8 @@ DAILY_CACHE_LOCK = threading.Lock()
 DB: sqlite3.Connection | None = None
 DEVICES_LIGHTWEIGHT_CACHE_TTL_SECONDS = max(1, int(os.getenv("DEVICES_LIGHTWEIGHT_CACHE_TTL_SECONDS", "15")))
 DEVICES_LIGHTWEIGHT_CACHE: dict[str, Any] = {"expire_epoch": 0, "payload": None}
+PREVIEW_FRESH_THROTTLE_SECONDS = max(1, int(os.getenv("PREVIEW_FRESH_THROTTLE_SECONDS", "30")))
+PREVIEW_FRESH_CACHE: dict[str, dict[str, Any]] = {}
 STALE_CHECKIN_WARNINGS: dict[str, int] = {}
 
 
@@ -473,6 +475,47 @@ def _devices_lightweight_cache_set(now_ts: int, payload: dict[str, Any]) -> dict
 def _devices_lightweight_cache_invalidate() -> None:
   DEVICES_LIGHTWEIGHT_CACHE["payload"] = None
   DEVICES_LIGHTWEIGHT_CACHE["expire_epoch"] = 0
+
+
+def _preview_fresh_cache_key(
+    target_device: str,
+    output_format: str,
+    daily_dither_algorithm: str | None,
+    palette_profile: str | None,
+    now_ts: int,
+) -> str:
+  date_text = datetime.fromtimestamp(now_ts, LOCAL_TZ).strftime("%Y-%m-%d")
+  return "|".join((
+      _normalize_device_id(target_device),
+      str(output_format or "bmp"),
+      _normalize_daily_dither_algorithm(daily_dither_algorithm or _get_daily_dither_algorithm()),
+      _resolve_palette_profile(palette_profile),
+      date_text,
+  ))
+
+
+def _preview_fresh_cache_get(cache_key: str, now_ts: int) -> tuple[bytes, dict[str, Any]] | None:
+  cached = PREVIEW_FRESH_CACHE.get(cache_key)
+  if not cached:
+    return None
+  expire_epoch = int(cached.get("expire_epoch") or 0)
+  if now_ts >= expire_epoch:
+    PREVIEW_FRESH_CACHE.pop(cache_key, None)
+    return None
+  payload = cached.get("payload")
+  metadata = cached.get("metadata")
+  if not isinstance(payload, (bytes, bytearray)) or not isinstance(metadata, dict):
+    PREVIEW_FRESH_CACHE.pop(cache_key, None)
+    return None
+  return bytes(payload), metadata
+
+
+def _preview_fresh_cache_set(cache_key: str, now_ts: int, payload: bytes, metadata: dict[str, Any]) -> None:
+  PREVIEW_FRESH_CACHE[cache_key] = {
+      "expire_epoch": int(now_ts) + PREVIEW_FRESH_THROTTLE_SECONDS,
+      "payload": bytes(payload),
+      "metadata": dict(metadata),
+  }
 
 
 def _ensure_table_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -2264,6 +2307,17 @@ def _resolve_current_payload_for_device(
   upstream_url = _daily_image_url(now_ts)
   picked = _normalize_daily_dither_algorithm(daily_dither_algorithm or _get_daily_dither_algorithm())
   if fresh_daily_source:
+    cache_key = _preview_fresh_cache_key(
+        target_device,
+        output_format,
+        picked,
+        palette_profile,
+        now_ts,
+    )
+    cached_fresh = _preview_fresh_cache_get(cache_key, now_ts)
+    if cached_fresh is not None:
+      payload, metadata = cached_fresh
+      return payload, "daily", picked, metadata
     payload, metadata = _render_daily_payload_fresh_with_metadata(
         now_ts,
         upstream_url,
@@ -2271,6 +2325,7 @@ def _resolve_current_payload_for_device(
         picked,
         palette_profile=palette_profile,
     )
+    _preview_fresh_cache_set(cache_key, now_ts, payload, metadata)
   else:
     payload, metadata = _render_daily_payload_with_metadata(
         now_ts,

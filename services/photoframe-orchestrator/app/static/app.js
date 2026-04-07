@@ -2695,19 +2695,11 @@ document.getElementById('dailyDitherAlgorithm').addEventListener('change', async
   document.getElementById('compareLeftAlgorithm').value = selectedDailyDitherAlgorithm();
   syncCompareSelectors();
   updateDailyDitherHint(currentDailyDitherAlgorithm);
-  try {
-    await loadPublishPreview(true);
-  } catch (err) {
-    document.getElementById('publishPreviewMeta').textContent = `预览失败: ${err.message}`;
-  }
+  document.getElementById('publishPreviewMeta').textContent = '参数已更新，点击“刷新对比预览”后重新生成。';
 });
 
 document.getElementById('paletteProfile').addEventListener('change', async () => {
-  try {
-    await loadPublishPreview(true);
-  } catch (err) {
-    document.getElementById('publishPreviewMeta').textContent = `预览失败: ${err.message}`;
-  }
+  document.getElementById('publishPreviewMeta').textContent = '参数已更新，点击“刷新对比预览”后重新生成。';
 });
 
 document.getElementById('saveDailyDitherBtn').addEventListener('click', async () => {
@@ -2728,7 +2720,7 @@ document.getElementById('saveDailyDitherBtn').addEventListener('click', async ()
     syncCompareSelectors();
     updateDailyDitherHint(currentDailyDitherAlgorithm);
     await loadOverviewPreview(true);
-    await loadPublishPreview(true);
+    document.getElementById('publishPreviewMeta').textContent = 'Daily Dither 已保存，点击“刷新对比预览”后查看新的对比结果。';
   } catch (err) {
     document.getElementById('dailyDitherHint').textContent = `Daily Dither 保存失败: ${err.message}`;
   }
@@ -2804,9 +2796,6 @@ document.getElementById('deviceId').addEventListener('change', async () => {
   await runSection(() => loadOverviewPreview(true), (err) => {
     setText('overviewPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);
   });
-  await runSection(() => loadPublishPreview(true), (err) => {
-    setText('publishPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);
-  });
   await runSection(loadDeviceConfigs, (err) => {
     const message = explainAdminLoadError(err);
     setTimelineMessage('configHistoryBody', `配置历史加载失败: ${message}`);
@@ -2862,20 +2851,12 @@ document.getElementById('token').addEventListener('blur', () => {
 
 document.getElementById('compareLeftAlgorithm').addEventListener('change', async () => {
   syncCompareSelectors();
-  try {
-    await loadPublishPreview(true);
-  } catch (err) {
-    document.getElementById('publishPreviewMeta').textContent = `预览失败: ${err.message}`;
-  }
+  document.getElementById('publishPreviewMeta').textContent = '算法已更新，点击“刷新对比预览”后重新生成。';
 });
 
 document.getElementById('compareRightAlgorithm').addEventListener('change', async () => {
   syncCompareSelectors();
-  try {
-    await loadPublishPreview(true);
-  } catch (err) {
-    document.getElementById('publishPreviewMeta').textContent = `预览失败: ${err.message}`;
-  }
+  document.getElementById('publishPreviewMeta').textContent = '算法已更新，点击“刷新对比预览”后重新生成。';
 });
 
 document.getElementById('compareSlider').addEventListener('input', () => {

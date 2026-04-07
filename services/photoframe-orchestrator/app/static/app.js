@@ -61,11 +61,13 @@ function authorizedAssetUrl(rawUrl) {
 }
 
 const previewResponseCache = new Map();
+const jsonResponseCache = new Map();
 let deviceMap = new Map();
 let powerChartCache = null;
 let powerResizeTimer = null;
 let currentDailyDitherAlgorithm = 'sierra';
 let currentPaletteProfile = 'reference';
+let deviceRowCache = new Map();
 
 const TOKEN_STORAGE_KEY = 'photoframe.console.token';
 const TOKEN_COOKIE_KEY = 'photoframe_console_token';
@@ -81,6 +83,15 @@ const POWER_LOW_THRESHOLD_COOKIE_KEY = 'photoframe_console_power_low_threshold';
 let storedDeviceId = '';
 let powerAutoLoaded = false;
 let currentWorkspace = 'overview';
+let autoRefreshTimer = null;
+let refreshInFlight = null;
+let lastFullRefreshEpochMs = 0;
+let lastSecondaryRefreshEpochMs = 0;
+
+const AUTO_REFRESH_FOREGROUND_MS = 60000;
+const AUTO_REFRESH_BACKGROUND_MS = 10 * 60 * 1000;
+const SECONDARY_REFRESH_FOREGROUND_MS = 5 * 60 * 1000;
+const SECONDARY_REFRESH_BACKGROUND_MS = 30 * 60 * 1000;
 
 const WORKSPACE_HINTS = {
   overview: '总览：设备在线状态、供电趋势、当前下发预览',
@@ -1183,7 +1194,16 @@ function setPlaceholder(id, text) {
 
 async function fetchJson(url, options = {}) {
   const headers = { ...authHeaders(), ...(options.headers || {}) };
+  const method = String(options.method || 'GET').toUpperCase();
+  const cacheable = method === 'GET';
+  const cached = cacheable ? jsonResponseCache.get(url) : null;
+  if (cacheable && cached?.etag) {
+    headers['If-None-Match'] = cached.etag;
+  }
   const resp = await fetch(url, { ...options, headers });
+  if (resp.status === 304 && cached) {
+    return cached.data;
+  }
   const text = await resp.text();
   let data = null;
   try {
@@ -1194,6 +1214,12 @@ async function fetchJson(url, options = {}) {
   if (!resp.ok) {
     const msg = (data && (data.detail || data.error || data.raw)) || `HTTP ${resp.status}`;
     throw new Error(msg);
+  }
+  if (cacheable) {
+    const etag = resp.headers.get('ETag') || '';
+    if (etag) {
+      jsonResponseCache.set(url, { etag, data });
+    }
   }
   return data;
 }
@@ -1477,6 +1503,104 @@ function appendDeviceOption(select, value) {
   op.value = value;
   op.textContent = value;
   select.appendChild(op);
+}
+
+function deviceRowMarkup(device) {
+  const cfgVersion = `${device.config_target_version || 0}/${device.config_seen_version || 0}/${device.config_applied_version || 0}`;
+  const cfgQuery = fmtEpoch(device.config_last_query_epoch);
+  const wifiSummary = formatReportedWifiProfiles(device, '-');
+  const firmwareVersion = firmwareVersionForDevice(device);
+  return `
+      <td><span class="tag">${escapeHtml(device.device_id)}</span></td>
+      <td title="${escapeHtml(firmwareVersion)}">${escapeHtml(shorten(firmwareVersion, 28))}</td>
+      <td>${fmtEpoch(device.last_checkin_epoch)}</td>
+      <td>${fmtEpoch(device.next_wakeup_epoch)}</td>
+      <td>${fmtDuration(device.eta_seconds)}</td>
+      <td>${fmtDuration(device.poll_interval_seconds)}</td>
+      <td>${escapeHtml(device.failure_count)}</td>
+      <td>${escapeHtml(device.image_source || 'daily')}</td>
+      <td>${renderFetchStatus(device)}</td>
+      <td>${escapeHtml(batteryStatusText(device))}</td>
+      <td>${escapeHtml(powerSourceText(device))}</td>
+      <td>${renderPowerAlerts(device)}</td>
+      <td title="${escapeHtml(otaStatusText(device))}">${escapeHtml(shorten(otaStatusText(device), 48))}</td>
+      <td title="${escapeHtml(wifiSummary)}">${escapeHtml(shorten(wifiSummary, 48))}</td>
+      <td>${escapeHtml(device.sta_ip || '-')}</td>
+      <td>${escapeHtml(cfgVersion)}</td>
+      <td>${cfgQuery}</td>
+      <td>${renderConfigApplyStatus(device)}</td>
+      <td>${escapeHtml(shorten(device.last_error || '', 88))}</td>
+  `;
+}
+
+function renderDevicesTableIncremental(devices) {
+  const body = document.getElementById('devicesBody');
+  const nextKeys = new Set();
+
+  devices.forEach((device, index) => {
+    const key = String(device.device_id);
+    nextKeys.add(key);
+    let tr = body.querySelector(`tr[data-device-id="${CSS.escape(key)}"]`);
+    if (!tr) {
+      tr = document.createElement('tr');
+      tr.setAttribute('data-device-id', key);
+    }
+    const markup = deviceRowMarkup(device);
+    if (deviceRowCache.get(key) !== markup) {
+      tr.innerHTML = markup;
+      deviceRowCache.set(key, markup);
+    }
+    const currentChild = body.children[index];
+    if (currentChild !== tr) {
+      body.insertBefore(tr, currentChild || null);
+    }
+  });
+
+  Array.from(body.querySelectorAll('tr[data-device-id]')).forEach((tr) => {
+    const key = tr.getAttribute('data-device-id') || '';
+    if (!nextKeys.has(key)) {
+      tr.remove();
+      deviceRowCache.delete(key);
+    }
+  });
+}
+
+function syncDeviceOptions(deviceSelect, devices, selectedBefore) {
+  const nextOptions = new Map();
+  nextOptions.set('*', '全部设备 (*)');
+  devices.forEach((device) => {
+    nextOptions.set(device.device_id, device.device_id);
+  });
+
+  Array.from(deviceSelect.options).forEach((option) => {
+    if (!nextOptions.has(option.value)) {
+      option.remove();
+    }
+  });
+
+  Array.from(nextOptions.entries()).forEach(([value, label], index) => {
+    const option = deviceSelect.options[index];
+    if (!option || option.value !== value) {
+      const nextOption = document.createElement('option');
+      nextOption.value = value;
+      nextOption.textContent = label;
+      deviceSelect.insertBefore(nextOption, deviceSelect.options[index] || null);
+    } else if (option.textContent !== label) {
+      option.textContent = label;
+    }
+  });
+
+  if (selectedBefore &&
+      selectedBefore !== '*' &&
+      [...deviceSelect.options].some((o) => o.value === selectedBefore)) {
+    deviceSelect.value = selectedBefore;
+  } else if (storedDeviceId && [...deviceSelect.options].some((o) => o.value === storedDeviceId)) {
+    deviceSelect.value = storedDeviceId;
+  } else if (deviceSelect.options.length > 1) {
+    deviceSelect.value = deviceSelect.options[1].value;
+  } else if ([...deviceSelect.options].some((o) => o.value === selectedBefore)) {
+    deviceSelect.value = selectedBefore;
+  }
 }
 
 function normalizeReported(device) {
@@ -1800,14 +1924,11 @@ async function loadHealth() {
   setText('appGitSha', gitSha);
 }
 
-async function loadDevices() {
-  const data = await fetchJson('/api/v1/devices');
+async function loadDevices(lightweight = false) {
+  const data = await fetchJson(lightweight ? '/api/v1/devices?lightweight=1' : '/api/v1/devices');
   const body = document.getElementById('devicesBody');
   const deviceSelect = document.getElementById('deviceId');
   const selectedBefore = deviceSelect.value;
-
-  body.innerHTML = '';
-  deviceSelect.innerHTML = '<option value="*">全部设备 (*)</option>';
 
   const devices = data.devices || [];
   deviceMap = new Map();
@@ -1815,52 +1936,9 @@ async function loadDevices() {
 
   for (const d of devices) {
     deviceMap.set(d.device_id, d);
-
-    const tr = document.createElement('tr');
-    const cfgVersion = `${d.config_target_version || 0}/${d.config_seen_version || 0}/${d.config_applied_version || 0}`;
-    const cfgQuery = fmtEpoch(d.config_last_query_epoch);
-    const wifiSummary = formatReportedWifiProfiles(d, '-');
-    const firmwareVersion = firmwareVersionForDevice(d);
-
-    tr.innerHTML = `
-      <td><span class="tag">${escapeHtml(d.device_id)}</span></td>
-      <td title="${escapeHtml(firmwareVersion)}">${escapeHtml(shorten(firmwareVersion, 28))}</td>
-      <td>${fmtEpoch(d.last_checkin_epoch)}</td>
-      <td>${fmtEpoch(d.next_wakeup_epoch)}</td>
-      <td>${fmtDuration(d.eta_seconds)}</td>
-      <td>${fmtDuration(d.poll_interval_seconds)}</td>
-      <td>${escapeHtml(d.failure_count)}</td>
-      <td>${escapeHtml(d.image_source || 'daily')}</td>
-      <td>${renderFetchStatus(d)}</td>
-      <td>${escapeHtml(batteryStatusText(d))}</td>
-      <td>${escapeHtml(powerSourceText(d))}</td>
-      <td>${renderPowerAlerts(d)}</td>
-      <td title="${escapeHtml(otaStatusText(d))}">${escapeHtml(shorten(otaStatusText(d), 48))}</td>
-      <td title="${escapeHtml(wifiSummary)}">${escapeHtml(shorten(wifiSummary, 48))}</td>
-      <td>${escapeHtml(d.sta_ip || '-')}</td>
-      <td>${escapeHtml(cfgVersion)}</td>
-      <td>${cfgQuery}</td>
-      <td>${renderConfigApplyStatus(d)}</td>
-      <td>${escapeHtml(shorten(d.last_error || '', 88))}</td>
-    `;
-    body.appendChild(tr);
-
-    appendDeviceOption(deviceSelect, d.device_id);
   }
-
-  if (selectedBefore &&
-      selectedBefore !== '*' &&
-      [...deviceSelect.options].some((o) => o.value === selectedBefore)) {
-    deviceSelect.value = selectedBefore;
-  } else if (storedDeviceId && [...deviceSelect.options].some((o) => o.value === storedDeviceId)) {
-    deviceSelect.value = storedDeviceId;
-  } else if (deviceSelect.options.length > 1) {
-    // 默认选第一台设备，减少“全部设备”误操作与无效空状态。
-    deviceSelect.value = deviceSelect.options[1].value;
-  } else if ([...deviceSelect.options].some((o) => o.value === selectedBefore)) {
-    // 没有具体设备时，再保留“全部设备”。
-    deviceSelect.value = selectedBefore;
-  }
+  renderDevicesTableIncremental(devices);
+  syncDeviceOptions(deviceSelect, devices, selectedBefore);
   persistPowerPrefs();
 
   fillWifiEditorFromDevice(deviceMap.get(deviceSelect.value || '*'));
@@ -2215,14 +2293,14 @@ async function loadPublishPreview(force = false) {
   const leftPromise = fetchCurrentPreviewForAlgorithm(selectedDevice, leftAlgorithm, paletteProfile, {
     force,
     nowEpoch: previewNowEpoch,
-    freshDailySource: true,
+    freshDailySource: force,
   });
   const rightPromise = leftAlgorithm === rightAlgorithm
     ? leftPromise
     : fetchCurrentPreviewForAlgorithm(selectedDevice, rightAlgorithm, paletteProfile, {
       force,
       nowEpoch: previewNowEpoch,
-      freshDailySource: true,
+      freshDailySource: force,
     });
   const [leftPreview, rightPreview] = await Promise.all([leftPromise, rightPromise]);
 
@@ -2418,6 +2496,145 @@ async function refreshAll() {
     setText('configHistoryHint', `配置历史加载失败: ${message}`);
   });
   document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString();
+  lastFullRefreshEpochMs = Date.now();
+  lastSecondaryRefreshEpochMs = lastFullRefreshEpochMs;
+}
+
+function autoRefreshIntervalMs() {
+  return document.hidden ? AUTO_REFRESH_BACKGROUND_MS : AUTO_REFRESH_FOREGROUND_MS;
+}
+
+function secondaryRefreshIntervalMs() {
+  return document.hidden ? SECONDARY_REFRESH_BACKGROUND_MS : SECONDARY_REFRESH_FOREGROUND_MS;
+}
+
+async function refreshPrimarySections() {
+  await loadHealth();
+  await runSection(() => loadDevices(true), (err) => {
+    setTableMessage('devicesBody', 17, `设备状态加载失败: ${explainAdminLoadError(err)}`);
+    setText('powerSummary', `电池曲线加载失败: ${explainAdminLoadError(err)}`);
+  });
+  await runSection(() => loadOverviewPreview(false), (err) => {
+    setText('overviewPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);
+  });
+  document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString();
+  lastFullRefreshEpochMs = Date.now();
+}
+
+async function refreshSecondarySections() {
+  await runSection(loadDailyRenderConfig, (err) => {
+    setText('dailyDitherHint', `Daily Dither 加载失败: ${explainAdminLoadError(err)}`);
+  });
+  await runSection(loadOverrides, (err) => {
+    setTableMessage('overridesBody', 9, `插播列表加载失败: ${explainAdminLoadError(err)}`);
+  });
+  await runSection(loadDeviceTokens, (err) => {
+    const message = explainAdminLoadError(err);
+    setTableMessage('deviceTokensBody', 5, `待审批设备加载失败: ${message}`);
+    setText('deviceTokensHint', `待审批设备加载失败: ${message}`);
+  });
+  await runSection(loadPublishHistory, (err) => {
+    const message = explainAdminLoadError(err);
+    setTimelineMessage('publishHistoryBody', `发布历史加载失败: ${message}`);
+    setText('publishHistoryHint', `发布历史加载失败: ${message}`);
+  });
+  await runSection(loadDeviceLogRequests, (err) => {
+    const message = explainAdminLoadError(err);
+    setTimelineMessage('logRequestHistoryBody', `日志采集请求加载失败: ${message}`);
+    setText('logRequestHistoryHint', `日志采集请求加载失败: ${message}`);
+  });
+  await runSection(loadDeviceLogUploads, (err) => {
+    const message = explainAdminLoadError(err);
+    setTimelineMessage('logUploadHistoryBody', `日志上传记录加载失败: ${message}`);
+    setText('logUploadHistoryHint', `日志上传记录加载失败: ${message}`);
+  });
+  await runSection(() => loadPublishPreview(false), (err) => {
+    setText('publishPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);
+  });
+  await runSection(loadDeviceConfigs, (err) => {
+    const message = explainAdminLoadError(err);
+    setTimelineMessage('configHistoryBody', `配置历史加载失败: ${message}`);
+    setText('configHistoryHint', `配置历史加载失败: ${message}`);
+  });
+  lastSecondaryRefreshEpochMs = Date.now();
+}
+
+async function refreshAllManaged({ force = false } = {}) {
+  if (refreshInFlight) {
+    return refreshInFlight;
+  }
+
+  if (!force && document.hidden) {
+    const elapsedMs = Date.now() - lastFullRefreshEpochMs;
+    if (elapsedMs < AUTO_REFRESH_BACKGROUND_MS) {
+      return;
+    }
+  }
+
+  refreshInFlight = refreshAll()
+    .catch((err) => {
+      throw err;
+    })
+    .finally(() => {
+      refreshInFlight = null;
+    });
+  return refreshInFlight;
+}
+
+async function refreshPrimaryManaged({ force = false } = {}) {
+  if (refreshInFlight) {
+    return refreshInFlight;
+  }
+
+  if (!force && document.hidden) {
+    const elapsedMs = Date.now() - lastFullRefreshEpochMs;
+    if (elapsedMs < AUTO_REFRESH_BACKGROUND_MS) {
+      return;
+    }
+  }
+
+  refreshInFlight = refreshPrimarySections()
+    .catch((err) => {
+      throw err;
+    })
+    .finally(() => {
+      refreshInFlight = null;
+    });
+  return refreshInFlight;
+}
+
+async function refreshSecondaryManaged({ force = false } = {}) {
+  if (refreshInFlight) {
+    return refreshInFlight;
+  }
+
+  const intervalMs = secondaryRefreshIntervalMs();
+  if (!force) {
+    const elapsedMs = Date.now() - lastSecondaryRefreshEpochMs;
+    if (elapsedMs < intervalMs) {
+      return;
+    }
+  }
+
+  refreshInFlight = refreshSecondarySections()
+    .catch((err) => {
+      throw err;
+    })
+    .finally(() => {
+      refreshInFlight = null;
+    });
+  return refreshInFlight;
+}
+
+function scheduleAutoRefresh() {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+  }
+  autoRefreshTimer = setInterval(() => {
+    refreshPrimaryManaged()
+      .then(() => refreshSecondaryManaged())
+      .catch(() => {});
+  }, autoRefreshIntervalMs());
 }
 
 document.getElementById('overrideForm').addEventListener('submit', async (ev) => {
@@ -2455,7 +2672,7 @@ document.getElementById('deviceLogRequestForm').addEventListener('submit', async
 document.getElementById('refreshBtn').addEventListener('click', async () => {
   persistConsoleToken();
   try {
-    await refreshAll();
+    await refreshAllManaged({ force: true });
   } catch (err) {
     alert(`刷新失败: ${err.message}`);
   }
@@ -2565,6 +2782,9 @@ window.addEventListener('resize', () => {
 document.getElementById('deviceId').addEventListener('change', async () => {
   persistPowerPrefs();
   updateDeviceContextBanner();
+  await runSection(() => loadDevices(false), (err) => {
+    setTableMessage('devicesBody', 17, `设备状态加载失败: ${explainAdminLoadError(err)}`);
+  });
   clearConfigPatchInputs();
   fillWifiEditorFromDevice(deviceMap.get(document.getElementById('deviceId').value || '*'));
   updateConfigHints();
@@ -2670,14 +2890,23 @@ persistConsoleToken();
 loadStoredPowerPrefs();
 initWorkspaceTabs();
 
-setInterval(() => {
-  refreshAll().catch(() => {});
-}, 30000);
+document.addEventListener('visibilitychange', () => {
+  scheduleAutoRefresh();
+  if (!document.hidden) {
+    refreshAllManaged({ force: true }).catch(() => {});
+  }
+});
+
+window.addEventListener('focus', () => {
+  refreshAllManaged({ force: true }).catch(() => {});
+});
 
 window.addEventListener('beforeunload', () => {
   clearPreviewResponseCache();
 });
 
-refreshAll().catch((err) => {
+scheduleAutoRefresh();
+
+refreshAllManaged({ force: true }).catch((err) => {
   document.getElementById('createResult').textContent = `初始化失败: ${err.message}`;
 });

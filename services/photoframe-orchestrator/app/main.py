@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 import math
+from functools import lru_cache
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -181,6 +182,7 @@ PHOTOFRAME_PALETTE: tuple[tuple[int, int, int], ...] = (
     (0, 0, 255),
     (0, 255, 0),
 )
+PHOTOFRAME_PALETTE_WHITE = PHOTOFRAME_PALETTE[1]
 EPAPER_PALETTE_PROFILES: dict[str, dict[str, Any]] = {
     "reference": {
         "label": "Reference Palette",
@@ -436,6 +438,8 @@ LOGGER = logging.getLogger("uvicorn.error")
 DB_LOCK = threading.Lock()
 DAILY_CACHE_LOCK = threading.Lock()
 DB: sqlite3.Connection | None = None
+DEVICES_LIGHTWEIGHT_CACHE_TTL_SECONDS = max(1, int(os.getenv("DEVICES_LIGHTWEIGHT_CACHE_TTL_SECONDS", "15")))
+DEVICES_LIGHTWEIGHT_CACHE: dict[str, Any] = {"expire_epoch": 0, "payload": None}
 STALE_CHECKIN_WARNINGS: dict[str, int] = {}
 
 
@@ -450,6 +454,25 @@ def _ensure_db() -> sqlite3.Connection:
   if DB is None:
     DB = _open_db()
   return DB
+
+
+def _devices_lightweight_cache_get(now_ts: int) -> dict[str, Any] | None:
+  payload = DEVICES_LIGHTWEIGHT_CACHE.get("payload")
+  expire_epoch = int(DEVICES_LIGHTWEIGHT_CACHE.get("expire_epoch") or 0)
+  if payload is None or now_ts >= expire_epoch:
+    return None
+  return payload if isinstance(payload, dict) else None
+
+
+def _devices_lightweight_cache_set(now_ts: int, payload: dict[str, Any]) -> dict[str, Any]:
+  DEVICES_LIGHTWEIGHT_CACHE["payload"] = payload
+  DEVICES_LIGHTWEIGHT_CACHE["expire_epoch"] = int(now_ts) + DEVICES_LIGHTWEIGHT_CACHE_TTL_SECONDS
+  return payload
+
+
+def _devices_lightweight_cache_invalidate() -> None:
+  DEVICES_LIGHTWEIGHT_CACHE["payload"] = None
+  DEVICES_LIGHTWEIGHT_CACHE["expire_epoch"] = 0
 
 
 def _ensure_table_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -842,6 +865,7 @@ def _touch_device_seen(conn: sqlite3.Connection, device_id: str, seen_epoch: int
         """,
         (target, int(seen_epoch)),
     )
+    _devices_lightweight_cache_invalidate()
     conn.commit()
 
 
@@ -897,6 +921,7 @@ def _record_public_daily_activity(conn: sqlite3.Connection, device_id: str, seen
     _upsert_device_power_sample_from_devices(conn, target, int(seen_epoch), int(seen_epoch))
     cutoff = int(seen_epoch) - POWER_SAMPLE_RETENTION_SECONDS
     conn.execute("DELETE FROM device_power_samples WHERE received_epoch < ?", (cutoff,))
+    _devices_lightweight_cache_invalidate()
     conn.commit()
 
 
@@ -1784,6 +1809,21 @@ def _daily_metadata_response_headers(metadata: dict[str, Any]) -> dict[str, str]
   return headers
 
 
+def _etag_from_jsonable(payload: Any) -> str:
+  raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+  return f"\"{hashlib.sha256(raw).hexdigest()}\""
+
+
+def _if_none_match_hit(request: Request, etag: str) -> bool:
+  if request is None:
+    return False
+  inm = (request.headers.get("if-none-match") or "").strip()
+  if not inm:
+    return False
+  candidates = [part.strip() for part in inm.split(",") if part.strip()]
+  return etag in candidates or "*" in candidates
+
+
 def _fetch_daily_source(
     url: str,
     *,
@@ -2584,6 +2624,35 @@ def _render_daily_payload_with_metadata(
   return _locate_asset_path(target_name).read_bytes(), metadata
 
 
+def _resolve_current_asset_for_device(
+    conn: sqlite3.Connection,
+    now_ts: int,
+    target_device: str,
+    *,
+    output_format: str = "bmp",
+    daily_dither_algorithm: str | None = None,
+    palette_profile: str | None = None,
+) -> tuple[Path, str, str, dict[str, Any]]:
+  active = _active_override_for_device(conn, now_ts, target_device)
+  if active is not None:
+    asset_name = str(active["asset_name"])
+    if output_format == "jpg":
+      asset_sha256 = str(active["asset_sha256"] or "").strip()
+      candidate = f"{asset_sha256}.jpg"
+      if asset_sha256 and _asset_path_candidates(candidate)[1].exists():
+        asset_name = candidate
+    path = _locate_asset_path(asset_name)
+    return path, "override", _normalize_override_dither_algorithm(active["dither_algorithm"]), {}
+
+  upstream_url = _daily_image_url(now_ts)
+  picked = _normalize_daily_dither_algorithm(daily_dither_algorithm or _get_daily_dither_algorithm())
+  profile_key = _resolve_palette_profile(palette_profile)
+  bmp_name, jpg_name = _ensure_daily_assets(now_ts, upstream_url, picked, palette_profile=profile_key)
+  target_name = bmp_name if output_format == "bmp" else jpg_name
+  metadata = _read_daily_cache_metadata(_daily_cache_metadata_path(jpg_name))
+  return _locate_asset_path(target_name), "daily", picked, metadata
+
+
 def _render_daily_payload(
     now_ts: int,
     url: str,
@@ -2678,10 +2747,11 @@ def _srgb_to_linear(channel: float) -> float:
   return ((value + 0.055) / 1.055) ** 2.4
 
 
-def _rgb_to_lab(rgb: tuple[float, float, float]) -> tuple[float, float, float]:
-  r_lin = _srgb_to_linear(rgb[0])
-  g_lin = _srgb_to_linear(rgb[1])
-  b_lin = _srgb_to_linear(rgb[2])
+@lru_cache(maxsize=4096)
+def _rgb8_to_lab_cached(r: int, g: int, b: int) -> tuple[float, float, float]:
+  r_lin = _srgb_to_linear(r)
+  g_lin = _srgb_to_linear(g)
+  b_lin = _srgb_to_linear(b)
 
   x = r_lin * 0.4124564 + g_lin * 0.3575761 + b_lin * 0.1804375
   y = r_lin * 0.2126729 + g_lin * 0.7151522 + b_lin * 0.0721750
@@ -2701,6 +2771,13 @@ def _rgb_to_lab(rgb: tuple[float, float, float]) -> tuple[float, float, float]:
   fy = f(yr)
   fz = f(zr)
   return (116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz))
+
+
+def _rgb_to_lab(rgb: tuple[float, float, float]) -> tuple[float, float, float]:
+  r = _clamp_channel(rgb[0])
+  g = _clamp_channel(rgb[1])
+  b = _clamp_channel(rgb[2])
+  return _rgb8_to_lab_cached(r, g, b)
 
 
 def _ciede2000(lab1: tuple[float, float, float], lab2: tuple[float, float, float]) -> float:
@@ -2793,6 +2870,35 @@ def _nearest_palette_color_lab_ciede2000(
   return best["rgb"]
 
 
+def _quantized_rgb_key(rgb: tuple[float, float, float]) -> tuple[int, int, int]:
+  return (
+      _clamp_channel(rgb[0]),
+      _clamp_channel(rgb[1]),
+      _clamp_channel(rgb[2]),
+  )
+
+
+def _build_lab_ciede2000_matcher(profile_spec: dict[str, Any]) -> callable:
+  palette = tuple(profile_spec["colors"])
+  green_penalty = float(profile_spec["green_penalty"])
+
+  @lru_cache(maxsize=65536)
+  def match(r: int, g: int, b: int) -> tuple[int, int, int]:
+    source_lab = _rgb8_to_lab_cached(r, g, b)
+    best = palette[0]
+    best_distance = math.inf
+    for candidate in palette:
+      distance = _ciede2000(source_lab, candidate["lab"])
+      if candidate["name"] == "green":
+        distance *= green_penalty
+      if distance < best_distance:
+        best = candidate
+        best_distance = distance
+    return best["rgb"]
+
+  return lambda rgb: match(*_quantized_rgb_key(rgb))
+
+
 def _new_error_row(width: int) -> list[float]:
   return [0.0] * (width * 3)
 
@@ -2833,9 +2939,7 @@ BLUE_NOISE_8X8 = _generate_blue_noise_order(8)
 
 
 def _pixel_list(image: Image.Image) -> list[tuple[int, int, int]]:
-  width, height = image.size
-  pixels = image.load()
-  return [pixels[x, y] for y in range(height) for x in range(width)]
+  return list(image.getdata())
 
 
 def _apply_bayer_dither(
@@ -2925,7 +3029,7 @@ def _apply_error_diffusion(
   source_pixels = _pixel_list(image)
   max_dy = max(dy for _, dy, _ in kernel)
   error_rows = [_new_error_row(width) for _ in range(max_dy + 1)]
-  output: list[tuple[int, int, int]] = [PHOTOFRAME_PALETTE[1]] * (width * height)
+  output: list[tuple[int, int, int]] = [PHOTOFRAME_PALETTE_WHITE] * (width * height)
 
   # 误差扩散需要逐像素维护未来 1-2 行的 RGB 残差，这里用紧凑 float buffer 避免引入 numpy。
   for y in range(height):
@@ -2988,7 +3092,7 @@ def _apply_override_dither(
     return image.copy()
   if kind == "ordered":
     matcher = (
-        (lambda rgb: _nearest_palette_color_lab_ciede2000(rgb, profile=palette_profile_spec))
+        _build_lab_ciede2000_matcher(palette_profile_spec)
         if matcher_name == "lab-ciede2000"
         else _nearest_palette_color
     )
@@ -3000,7 +3104,7 @@ def _apply_override_dither(
     if not isinstance(kernel, tuple):
       raise RuntimeError(f"kernel missing for dither algorithm: {normalized}")
     matcher = (
-        (lambda rgb: _nearest_palette_color_lab_ciede2000(rgb, profile=palette_profile_spec))
+        _build_lab_ciede2000_matcher(palette_profile_spec)
         if matcher_name == "lab-ciede2000"
         else _nearest_palette_color
     )
@@ -3216,8 +3320,8 @@ def index() -> str:
 
 
 @app.get("/healthz")
-def healthz() -> dict[str, Any]:
-  return {
+def healthz(request: Request | None = None) -> dict[str, Any] | Response:
+  payload = {
       "ok": True,
       "now_epoch": _now_epoch(),
       "timezone": TZ_NAME,
@@ -3225,14 +3329,21 @@ def healthz() -> dict[str, Any]:
       "app_git_sha": APP_GIT_SHA,
       "daily_dither_algorithm": _get_daily_dither_algorithm(),
   }
+  if request is None:
+    return payload
+  etag = _etag_from_jsonable(payload)
+  if _if_none_match_hit(request, etag):
+    return Response(status_code=304, headers={"ETag": etag})
+  return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={"ETag": etag})
 
 
 @app.get("/api/v1/daily-render-config")
 def get_daily_render_config(
+    request: Request | None = None,
     x_photoframe_token: str | None = Header(default=None),
-) -> dict[str, Any]:
+) -> dict[str, Any] | Response:
   _require_token(x_photoframe_token)
-  return {
+  payload = {
       "daily_dither_algorithm": _get_daily_dither_algorithm(),
       "palette_profile": _get_palette_profile(),
       "palette_profiles": [
@@ -3245,6 +3356,12 @@ def get_daily_render_config(
       ],
       "algorithms": _daily_dither_algorithm_specs(),
   }
+  if request is None:
+    return payload
+  etag = _etag_from_jsonable(payload)
+  if _if_none_match_hit(request, etag):
+    return Response(status_code=304, headers={"ETag": etag})
+  return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={"ETag": etag})
 
 
 @app.post("/api/v1/daily-render-config")
@@ -3384,13 +3501,18 @@ def public_daily_bmp(
   conn = _ensure_db()
 
   _record_public_daily_activity(conn, target_device, now_ts)
-  payload, source, dither_algorithm, upstream_metadata = _resolve_current_payload_for_device(
+  path, source, dither_algorithm, upstream_metadata = _resolve_current_asset_for_device(
       conn,
       now_ts,
       target_device,
       output_format="bmp",
   )
-  etag_value = hashlib.sha256(payload).hexdigest()
+  if source == "daily":
+    etag_value = str(upstream_metadata.get("rendered_bmp_sha256") or "").strip()
+  else:
+    etag_value = ""
+  if not etag_value:
+    etag_value = hashlib.sha256(path.read_bytes()).hexdigest()
   etag = f"\"{etag_value}\""
   headers = {
       "Cache-Control": "private, max-age=60",
@@ -3412,9 +3534,10 @@ def public_daily_bmp(
           headers=headers,
       )
 
-  return Response(
-      content=payload,
+  return FileResponse(
+      path=path,
       media_type="image/bmp",
+      filename=path.name,
       headers=headers,
   )
 
@@ -3432,14 +3555,18 @@ def public_daily_jpg(
   conn = _ensure_db()
 
   _record_public_daily_activity(conn, target_device, now_ts)
-  jpg_bytes, source, dither_algorithm, upstream_metadata = _resolve_current_payload_for_device(
+  path, source, dither_algorithm, upstream_metadata = _resolve_current_asset_for_device(
       conn,
       now_ts,
       target_device,
       output_format="jpg",
   )
-
-  etag_value = hashlib.sha256(jpg_bytes).hexdigest()
+  if source == "daily":
+    etag_value = str(upstream_metadata.get("rendered_jpg_sha256") or "").strip()
+  else:
+    etag_value = ""
+  if not etag_value:
+    etag_value = hashlib.sha256(path.read_bytes()).hexdigest()
   etag = f"\"{etag_value}\""
   headers = {
       "Cache-Control": "private, max-age=60",
@@ -3460,9 +3587,10 @@ def public_daily_jpg(
           headers=headers,
       )
 
-  return Response(
-      content=jpg_bytes,
+  return FileResponse(
+      path=path,
       media_type="image/jpeg",
+      filename=path.name,
       headers=headers,
   )
 
@@ -3583,6 +3711,7 @@ def device_next(
         """,
         (device_id, server_now, max(0, failure_count)),
     )
+    _devices_lightweight_cache_invalidate()
     active = conn.execute(
         """
         SELECT * FROM overrides
@@ -3797,6 +3926,7 @@ def device_checkin(
     )
     # 记录电池采样历史，用于控制台曲线与续航估算。
     #
+    _devices_lightweight_cache_invalidate()
     # 注意：设备侧在 PMIC/I2C 抽风时可能上报 -1，但服务端 devices 表会“保留上一轮有效值”。
     # 因此这里统一从 devices 表读取“最终有效值”再写入采样，避免曲线断点。
     _record_confirmed_publish(conn, payload, now_ts)
@@ -3825,6 +3955,7 @@ def device_checkin(
 
 @app.get("/api/v1/device-log-requests")
 def device_log_requests(
+    request: Request | None = None,
     device_id: str | None = Query(default=None),
     status: str | None = Query(default=None, max_length=32),
     limit: int = Query(default=50),
@@ -3881,7 +4012,13 @@ def device_log_requests(
         }
     )
 
-  return {"now_epoch": now_ts, "count": len(items), "items": items}
+  payload = {"now_epoch": now_ts, "count": len(items), "items": items}
+  if request is None:
+    return payload
+  etag = _etag_from_jsonable(payload)
+  if _if_none_match_hit(request, etag):
+    return Response(status_code=304, headers={"ETag": etag})
+  return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={"ETag": etag})
 
 
 @app.post("/api/v1/device-log-requests")
@@ -4182,6 +4319,7 @@ def firmware_rollout_delete(
 
 @app.get("/api/v1/device-log-uploads")
 def device_log_uploads(
+    request: Request | None = None,
     device_id: str | None = Query(default=None),
     limit: int = Query(default=20),
     x_photoframe_token: str | None = Header(default=None),
@@ -4228,7 +4366,13 @@ def device_log_uploads(
             "payload": payload_json,
         }
     )
-  return {"now_epoch": now_ts, "count": len(items), "items": items}
+  payload = {"now_epoch": now_ts, "count": len(items), "items": items}
+  if request is None:
+    return payload
+  etag = _etag_from_jsonable(payload)
+  if _if_none_match_hit(request, etag):
+    return Response(status_code=304, headers={"ETag": etag})
+  return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={"ETag": etag})
 
 
 @app.post("/api/v1/device/log-upload")
@@ -4530,6 +4674,7 @@ def device_config_publish(
 
 @app.get("/api/v1/device-tokens")
 def device_tokens(
+    request: Request | None = None,
     pending_only: int = Query(default=1),
     x_photoframe_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
@@ -4538,7 +4683,13 @@ def device_tokens(
   now_ts = _now_epoch()
   only_pending = bool(pending_only)
   items = _list_device_tokens(only_pending=only_pending)
-  return {"now_epoch": now_ts, "count": len(items), "pending_only": only_pending, "items": items}
+  payload = {"now_epoch": now_ts, "count": len(items), "pending_only": only_pending, "items": items}
+  if request is None:
+    return payload
+  etag = _etag_from_jsonable(payload)
+  if _if_none_match_hit(request, etag):
+    return Response(status_code=304, headers={"ETag": etag})
+  return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={"ETag": etag})
 
 
 @app.post("/api/v1/device-tokens/{device_id}/approve")
@@ -4600,11 +4751,24 @@ def delete_device_token(
 
 @app.get("/api/v1/devices")
 def devices(
+    request: Request | None = None,
+    lightweight: int = Query(default=0),
     x_photoframe_token: str | None = Header(default=None),
-) -> dict[str, Any]:
+) -> dict[str, Any] | Response:
   _require_token(x_photoframe_token)
   conn = _ensure_db()
   now_ts = _now_epoch()
+  lightweight_mode = bool(lightweight)
+  if lightweight_mode:
+    cached = _devices_lightweight_cache_get(now_ts)
+    if cached is not None:
+      payload = cached
+      if request is None:
+        return payload
+      etag = _etag_from_jsonable(payload)
+      if _if_none_match_hit(request, etag):
+        return Response(status_code=304, headers={"ETag": etag})
+      return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={"ETag": etag})
   rows = conn.execute(
       """
       SELECT * FROM devices
@@ -4671,21 +4835,26 @@ def devices(
     next_wakeup = _device_epoch_for_view(int(row["next_wakeup_epoch"]), now_ts)
     eta = max(0, int(next_wakeup) - now_ts) if next_wakeup is not None else None
     status = status_map.get(device_id)
-    latest_plan = _load_latest_device_config_plan(conn, device_id)
-    target_version = 0 if latest_plan is None else int(latest_plan["id"])
-
-    reported_config = _decode_config_json(str(row["reported_config_json"]))
-    firmware_version = str(reported_config.get("firmware_version") or "").strip()
+    target_version = 0
+    reported_config: dict[str, Any] = {}
+    firmware_version = ""
     last_power = last_power_map.get(device_id)
     last_debug = last_debug_map.get(device_id)
-    power_alerts, power_diagnostics = _build_power_alerts(
-        conn,
-        device_id,
-        now_ts,
-        int(row["charging"]),
-        int(row["vbus_good"]),
-        last_power,
-    )
+    power_alerts: list[dict[str, Any]] = []
+    power_diagnostics: dict[str, Any] = {}
+    if not lightweight_mode:
+      latest_plan = _load_latest_device_config_plan(conn, device_id)
+      target_version = 0 if latest_plan is None else int(latest_plan["id"])
+      reported_config = _decode_config_json(str(row["reported_config_json"]))
+      firmware_version = str(reported_config.get("firmware_version") or "").strip()
+      power_alerts, power_diagnostics = _build_power_alerts(
+          conn,
+          device_id,
+          now_ts,
+          int(row["charging"]),
+          int(row["vbus_good"]),
+          last_power,
+      )
     items.append(
         {
             "device_id": device_id,
@@ -4728,7 +4897,7 @@ def devices(
                 else _device_epoch_for_view(int(last_debug["stage_epoch"]), now_ts)
             ),
             "reported_config_epoch": _device_epoch_for_view(int(row["reported_config_epoch"]), now_ts),
-            "reported_config": _redact_reported_config_for_view(reported_config),
+            "reported_config": {} if lightweight_mode else _redact_reported_config_for_view(reported_config),
             "config_target_version": target_version,
             "config_seen_version": 0 if status is None else int(status["last_seen_version"]),
             "config_last_query_epoch": (
@@ -4747,7 +4916,15 @@ def devices(
         }
     )
 
-  return {"now_epoch": now_ts, "devices": items}
+  payload = {"now_epoch": now_ts, "devices": items}
+  if lightweight_mode:
+    payload = _devices_lightweight_cache_set(now_ts, payload)
+  if request is None:
+    return payload
+  etag = _etag_from_jsonable(payload)
+  if _if_none_match_hit(request, etag):
+    return Response(status_code=304, headers={"ETag": etag})
+  return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={"ETag": etag})
 
 
 @app.get("/api/v1/power-samples")
@@ -4809,6 +4986,7 @@ def power_samples(
 
 @app.get("/api/v1/device-configs")
 def device_configs(
+    request: Request | None = None,
     device_id: str | None = Query(default=None),
     limit: int = Query(default=50),
     x_photoframe_token: str | None = Header(default=None),
@@ -4849,11 +5027,18 @@ def device_configs(
         }
     )
 
-  return {'now_epoch': now_ts, 'count': len(items), 'items': items}
+  payload = {'now_epoch': now_ts, 'count': len(items), 'items': items}
+  if request is None:
+    return payload
+  etag = _etag_from_jsonable(payload)
+  if _if_none_match_hit(request, etag):
+    return Response(status_code=304, headers={"ETag": etag})
+  return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={"ETag": etag})
 
 
 @app.get("/api/v1/publish-history")
 def publish_history(
+    request: Request | None = None,
     device_id: str | None = Query(default=None),
     limit: int = Query(default=200),
     x_photoframe_token: str | None = Header(default=None),
@@ -4903,15 +5088,22 @@ def publish_history(
         }
     )
 
-  return {
+  payload = {
       "now_epoch": now_ts,
       "count": len(items),
       "items": items,
   }
+  if request is None:
+    return payload
+  etag = _etag_from_jsonable(payload)
+  if _if_none_match_hit(request, etag):
+    return Response(status_code=304, headers={"ETag": etag})
+  return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={"ETag": etag})
 
 
 @app.get("/api/v1/overrides")
 def overrides(
+    request: Request | None = None,
     now_epoch: int | None = Query(default=None),
     x_photoframe_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
@@ -4954,7 +5146,13 @@ def overrides(
         }
     )
 
-  return {"now_epoch": now_ts, "overrides": items}
+  payload = {"now_epoch": now_ts, "overrides": items}
+  if request is None:
+    return payload
+  etag = _etag_from_jsonable(payload)
+  if _if_none_match_hit(request, etag):
+    return Response(status_code=304, headers={"ETag": etag})
+  return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={"ETag": etag})
 
 
 @app.post("/api/v1/overrides/upload")

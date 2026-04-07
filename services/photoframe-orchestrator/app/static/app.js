@@ -86,7 +86,7 @@ const WORKSPACE_HINTS = {
   overview: '总览：设备在线状态、供电趋势、当前下发预览',
   publish: '发布：创建插播、查看插播列表与图片发布记录',
   config: '配置：设备配对审批、连接设置、参数与 Wi‑Fi 管理',
-  history: '历史：发布历史与配置下发历史',
+  history: '历史：图片 sent/displayed 状态与配置下发历史',
 };
 const DITHER_ALGORITHM_LABELS = {
   none: '保持原图',
@@ -1979,23 +1979,30 @@ function renderPublishHistoryItem(item) {
   const sourceTag = item.source === 'override'
     ? '<span class="tag active">override</span>'
     : '<span class="tag">daily</span>';
+  const statusTag = item.status === 'displayed'
+    ? '<span class="tag active">displayed</span>'
+    : '<span class="tag upcoming">sent</span>';
   const overrideText = item.override_id == null ? '-' : `#${item.override_id}`;
-  const safeUrl = escapeHtml(authorizedAssetUrl(item.image_url || ''));
+  const actualUrl = item.displayed_image_url || item.image_url || '';
+  const safeUrl = escapeHtml(authorizedAssetUrl(actualUrl));
   const shortUrl = escapeHtml(shorten(item.image_url || '', 78));
   const ditherText = item.dither_algorithm
     ? ditherAlgorithmLabel(item.dither_algorithm)
     : '-';
+  const displayedAt = item.displayed_epoch > 0 ? fmtEpoch(item.displayed_epoch) : '-';
 
   return `
     <article class="release-item">
       <div class="release-head">
-        <p class="release-title">${sourceTag} <span class="tag">${escapeHtml(item.device_id)}</span></p>
+        <p class="release-title">${sourceTag} ${statusTag} <span class="tag">${escapeHtml(item.device_id)}</span></p>
         <span class="release-date">${fmtEpoch(item.issued_epoch)}</span>
       </div>
       <p class="release-summary">${shortUrl}</p>
       <ul>
+        <li>status: ${escapeHtml(item.status || 'sent')}</li>
         <li>override_id: ${escapeHtml(overrideText)}</li>
         <li>dither: ${escapeHtml(ditherText)}</li>
+        <li>displayed_at: ${displayedAt}</li>
         <li>poll_after: ${fmtDuration(item.poll_after_seconds)}</li>
         <li>valid_until: ${fmtEpoch(item.valid_until_epoch)}</li>
         <li><a href="${safeUrl}" target="_blank" rel="noreferrer">打开原图</a></li>
@@ -2014,7 +2021,7 @@ async function loadPublishHistory() {
   const items = data.items || [];
   const body = document.getElementById('publishHistoryBody');
   if (items.length === 0) {
-    body.innerHTML = '<p class="muted">暂无发布记录（等待设备下一次拉取）。</p>';
+    body.innerHTML = '<p class="muted">暂无发布记录（等待设备下一次拉取并回报显示状态）。</p>';
   } else {
     body.innerHTML = items.map(renderPublishHistoryItem).join('');
   }

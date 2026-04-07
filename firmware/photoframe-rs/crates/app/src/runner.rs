@@ -593,7 +593,14 @@ where
                     fetch.status_code,
                     true,
                     fetch.image_changed,
+                    should_refresh,
                     &image_source,
+                    if should_refresh {
+                        fetch_url_used.as_deref().unwrap_or_default()
+                    } else {
+                        ""
+                    },
+                    if should_refresh { &fetch.sha256 } else { "" },
                     "",
                     boot.sta_ip.clone(),
                     boot.power_sample,
@@ -650,7 +657,10 @@ where
                 fetch.status_code,
                 false,
                 fetch.image_changed,
+                false,
                 &image_source,
+                "",
+                "",
                 if last_error.is_empty() {
                     &fetch.error
                 } else {
@@ -753,7 +763,10 @@ where
         last_http_status: i32,
         fetch_ok: bool,
         image_changed: bool,
+        display_applied: bool,
         image_source: &str,
+        displayed_image_url: &str,
+        displayed_image_sha256: &str,
         last_error: &str,
         sta_ip: Option<String>,
         power_sample: PowerSample,
@@ -789,7 +802,10 @@ where
             last_http_status,
             fetch_ok,
             image_changed,
+            display_applied,
             image_source: image_source.to_string(),
+            displayed_image_url: displayed_image_url.to_string(),
+            displayed_image_sha256: displayed_image_sha256.to_string(),
             last_error: last_error.to_string(),
             sta_ip,
             battery_mv: power_sample.battery_mv,

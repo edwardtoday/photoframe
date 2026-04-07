@@ -385,6 +385,10 @@ fn not_modified_cycle_skips_render_but_still_succeeds() {
         .unwrap();
 
     assert_eq!(runner.display().render_calls, 0);
+    let payload = runner.orchestrator().last_checkin_payload.as_ref().unwrap();
+    assert!(!payload.display_applied);
+    assert!(payload.displayed_image_url.is_empty());
+    assert!(payload.displayed_image_sha256.is_empty());
     assert_eq!(
         report.exit,
         CycleExit::Sleep {
@@ -521,10 +525,22 @@ fn successful_cycle_uses_directive_and_reports_checkin() {
             payload.sleep_seconds,
             payload.poll_interval_seconds,
             payload.image_source.as_str(),
+            payload.display_applied,
+            payload.displayed_image_url.as_str(),
+            payload.displayed_image_sha256.as_str(),
             payload.running_partition.as_str(),
             payload.ota_state.as_str(),
         )),
-        Some((900, 3600, "override", "ota_0", "valid"))
+        Some((
+            900,
+            3600,
+            "override",
+            true,
+            "https://cdn.example.com/override.jpg",
+            "new-sha",
+            "ota_0",
+            "valid",
+        ))
     );
 }
 

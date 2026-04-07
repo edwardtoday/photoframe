@@ -472,8 +472,19 @@ def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
   _ensure_table_column(conn, "devices", "ota_target_version", "TEXT NOT NULL DEFAULT ''")
   _ensure_table_column(conn, "devices", "ota_last_error", "TEXT NOT NULL DEFAULT ''")
   _ensure_table_column(conn, "devices", "ota_last_attempt_epoch", "INTEGER NOT NULL DEFAULT 0")
+  _ensure_table_column(conn, "devices", "pending_publish_source", "TEXT NOT NULL DEFAULT ''")
+  _ensure_table_column(conn, "devices", "pending_publish_image_url", "TEXT NOT NULL DEFAULT ''")
+  _ensure_table_column(conn, "devices", "pending_publish_override_id", "INTEGER")
+  _ensure_table_column(conn, "devices", "pending_publish_poll_after_seconds", "INTEGER NOT NULL DEFAULT 0")
+  _ensure_table_column(conn, "devices", "pending_publish_valid_until_epoch", "INTEGER NOT NULL DEFAULT 0")
+  _ensure_table_column(conn, "devices", "pending_publish_dither_algorithm", "TEXT NOT NULL DEFAULT ''")
+  _ensure_table_column(conn, "devices", "pending_publish_history_id", "INTEGER")
   _ensure_table_column(conn, "overrides", "dither_algorithm", f"TEXT NOT NULL DEFAULT '{OVERRIDE_DITHER_DEFAULT}'")
   _ensure_table_column(conn, "publish_history", "dither_algorithm", "TEXT NOT NULL DEFAULT ''")
+  _ensure_table_column(conn, "publish_history", "status", "TEXT NOT NULL DEFAULT 'sent'")
+  _ensure_table_column(conn, "publish_history", "displayed_epoch", "INTEGER NOT NULL DEFAULT 0")
+  _ensure_table_column(conn, "publish_history", "displayed_image_url", "TEXT NOT NULL DEFAULT ''")
+  _ensure_table_column(conn, "publish_history", "displayed_image_sha256", "TEXT NOT NULL DEFAULT ''")
 
   conn.execute(
       """
@@ -632,6 +643,13 @@ def _init_db() -> None:
           ota_target_version TEXT NOT NULL DEFAULT '',
           ota_last_error TEXT NOT NULL DEFAULT '',
           ota_last_attempt_epoch INTEGER NOT NULL DEFAULT 0,
+          pending_publish_source TEXT NOT NULL DEFAULT '',
+          pending_publish_image_url TEXT NOT NULL DEFAULT '',
+          pending_publish_override_id INTEGER,
+          pending_publish_poll_after_seconds INTEGER NOT NULL DEFAULT 0,
+          pending_publish_valid_until_epoch INTEGER NOT NULL DEFAULT 0,
+          pending_publish_dither_algorithm TEXT NOT NULL DEFAULT '',
+          pending_publish_history_id INTEGER,
           reported_config_json TEXT NOT NULL DEFAULT '{}',
           reported_config_epoch INTEGER NOT NULL DEFAULT 0,
           updated_at INTEGER NOT NULL DEFAULT 0
@@ -677,7 +695,12 @@ def _init_db() -> None:
           override_id INTEGER,
           poll_after_seconds INTEGER NOT NULL,
           valid_until_epoch INTEGER NOT NULL,
-          created_at INTEGER NOT NULL DEFAULT 0
+          created_at INTEGER NOT NULL DEFAULT 0,
+          dither_algorithm TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'sent',
+          displayed_epoch INTEGER NOT NULL DEFAULT 0,
+          displayed_image_url TEXT NOT NULL DEFAULT '',
+          displayed_image_sha256 TEXT NOT NULL DEFAULT ''
         );
 
         CREATE INDEX IF NOT EXISTS idx_publish_history_device_epoch
@@ -875,6 +898,135 @@ def _record_public_daily_activity(conn: sqlite3.Connection, device_id: str, seen
     cutoff = int(seen_epoch) - POWER_SAMPLE_RETENTION_SECONDS
     conn.execute("DELETE FROM device_power_samples WHERE received_epoch < ?", (cutoff,))
     conn.commit()
+
+
+def _remember_pending_publish(
+    conn: sqlite3.Connection,
+    device_id: str,
+    *,
+    issued_epoch: int,
+    created_at: int,
+    source: str,
+    image_url: str,
+    override_id: int | None,
+    poll_after_seconds: int,
+    valid_until_epoch: int,
+    dither_algorithm: str,
+) -> None:
+  cursor = conn.execute(
+      """
+      INSERT INTO publish_history (
+        device_id, issued_epoch, source, image_url, override_id,
+        poll_after_seconds, valid_until_epoch, created_at, dither_algorithm, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent')
+      """,
+      (
+          _normalize_device_id(device_id),
+          int(issued_epoch),
+          str(source),
+          str(image_url),
+          override_id,
+          int(poll_after_seconds),
+          int(valid_until_epoch),
+          int(created_at),
+          str(dither_algorithm),
+      ),
+  )
+  conn.execute(
+      """
+      UPDATE devices
+      SET pending_publish_source = ?,
+          pending_publish_image_url = ?,
+          pending_publish_override_id = ?,
+          pending_publish_poll_after_seconds = ?,
+          pending_publish_valid_until_epoch = ?,
+          pending_publish_dither_algorithm = ?,
+          pending_publish_history_id = ?
+      WHERE device_id = ?
+      """,
+      (
+          str(source),
+          str(image_url),
+          override_id,
+          int(poll_after_seconds),
+          int(valid_until_epoch),
+          str(dither_algorithm),
+          int(cursor.lastrowid),
+          _normalize_device_id(device_id),
+      ),
+  )
+  conn.execute(
+      """
+      DELETE FROM publish_history
+      WHERE id IN (
+        SELECT id FROM publish_history
+        ORDER BY id DESC
+        LIMIT -1 OFFSET 5000
+      )
+      """
+  )
+
+
+def _clear_pending_publish(conn: sqlite3.Connection, device_id: str) -> None:
+  conn.execute(
+      """
+      UPDATE devices
+      SET pending_publish_source = '',
+          pending_publish_image_url = '',
+          pending_publish_override_id = NULL,
+          pending_publish_poll_after_seconds = 0,
+          pending_publish_valid_until_epoch = 0,
+          pending_publish_dither_algorithm = '',
+          pending_publish_history_id = NULL
+      WHERE device_id = ?
+      """,
+      (_normalize_device_id(device_id),),
+  )
+
+
+def _record_confirmed_publish(conn: sqlite3.Connection, payload: "DeviceCheckin", server_now: int) -> None:
+  if not payload.fetch_ok or not payload.display_applied:
+    _clear_pending_publish(conn, payload.device_id)
+    return
+
+  row = conn.execute(
+      """
+      SELECT pending_publish_source, pending_publish_image_url, pending_publish_override_id,
+             pending_publish_poll_after_seconds, pending_publish_valid_until_epoch,
+             pending_publish_dither_algorithm, pending_publish_history_id
+      FROM devices
+      WHERE device_id = ?
+      """,
+      (_normalize_device_id(payload.device_id),),
+  ).fetchone()
+  if row is None:
+    return
+
+  history_id = int(row["pending_publish_history_id"] or 0)
+  if history_id <= 0:
+    _clear_pending_publish(conn, payload.device_id)
+    return
+
+  displayed_url = str(payload.displayed_image_url or "").strip() or str(row["pending_publish_image_url"] or "")
+  displayed_sha256 = str(payload.displayed_image_sha256 or "").strip()
+  conn.execute(
+      """
+      UPDATE publish_history
+      SET status = 'displayed',
+          displayed_epoch = ?,
+          displayed_image_url = ?,
+          displayed_image_sha256 = ?
+      WHERE id = ? AND device_id = ?
+      """,
+      (
+          int(payload.checkin_epoch),
+          displayed_url,
+          displayed_sha256,
+          history_id,
+          _normalize_device_id(payload.device_id),
+      ),
+  )
+  _clear_pending_publish(conn, payload.device_id)
 
 
 def _upsert_device_power_sample_from_devices(
@@ -2987,7 +3139,10 @@ class DeviceCheckin(BaseModel):
   last_http_status: int = 0
   fetch_ok: bool = False
   image_changed: bool = False
+  display_applied: bool = False
   image_source: str = "daily"
+  displayed_image_url: str = Field(default="", max_length=1024)
+  displayed_image_sha256: str = Field(default="", max_length=128)
   last_error: str = ""
   sta_ip: str = Field(default="", max_length=64)
   battery_mv: int = -1
@@ -3495,35 +3650,17 @@ def device_next(
     poll_sec = min(poll_sec, _clamp(until_next, 60, 86400))
 
   with DB_LOCK:
-    conn.execute(
-        """
-        INSERT INTO publish_history (
-          device_id, issued_epoch, source, image_url, override_id,
-          poll_after_seconds, valid_until_epoch, created_at, dither_algorithm
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            device_id,
-            now_ts,
-            source,
-            image_url,
-            active_override_id,
-            int(poll_sec),
-            int(valid_until),
-            server_now,
-            active_dither_algorithm,
-        ),
-    )
-    # 控制历史表体积，保留最近 5000 条即可满足家庭场景追溯需求。
-    conn.execute(
-        """
-        DELETE FROM publish_history
-        WHERE id IN (
-          SELECT id FROM publish_history
-          ORDER BY id DESC
-          LIMIT -1 OFFSET 5000
-        )
-        """
+    _remember_pending_publish(
+        conn,
+        device_id,
+        issued_epoch=now_ts,
+        created_at=server_now,
+        source=source,
+        image_url=image_url,
+        override_id=active_override_id,
+        poll_after_seconds=int(poll_sec),
+        valid_until_epoch=int(valid_until),
+        dither_algorithm=active_dither_algorithm,
     )
     conn.commit()
 
@@ -3662,6 +3799,7 @@ def device_checkin(
     #
     # 注意：设备侧在 PMIC/I2C 抽风时可能上报 -1，但服务端 devices 表会“保留上一轮有效值”。
     # 因此这里统一从 devices 表读取“最终有效值”再写入采样，避免曲线断点。
+    _record_confirmed_publish(conn, payload, now_ts)
     _upsert_device_power_sample_from_devices(conn, payload.device_id, checkin_epoch, now_ts)
 
     cutoff = now_ts - POWER_SAMPLE_RETENTION_SECONDS
@@ -4735,7 +4873,8 @@ def publish_history(
   rows = conn.execute(
       f"""
       SELECT id, device_id, issued_epoch, source, image_url, override_id,
-             poll_after_seconds, valid_until_epoch, dither_algorithm
+             poll_after_seconds, valid_until_epoch, dither_algorithm,
+             status, displayed_epoch, displayed_image_url, displayed_image_sha256
       FROM publish_history
       {where}
       ORDER BY issued_epoch DESC, id DESC
@@ -4757,6 +4896,10 @@ def publish_history(
             "poll_after_seconds": int(row["poll_after_seconds"]),
             "valid_until_epoch": int(row["valid_until_epoch"]),
             "dither_algorithm": row["dither_algorithm"],
+            "status": str(row["status"] or "sent"),
+            "displayed_epoch": int(row["displayed_epoch"] or 0),
+            "displayed_image_url": str(row["displayed_image_url"] or ""),
+            "displayed_image_sha256": str(row["displayed_image_sha256"] or ""),
         }
     )
 

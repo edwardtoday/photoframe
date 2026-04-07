@@ -62,7 +62,8 @@
 - `source=override`：有插播生效
 - `source=daily`：无插播，回退到每日图
 - `poll_after_seconds`：服务建议下次唤醒间隔（用于平衡省电和插播时效）
-- 服务会在每次 `device/next` 响应后记录一条图片下发历史
+- 服务会在每次 `device/next` 响应后先写一条 `status=sent` 的图片发布记录；
+  设备随后 `checkin` 回报 `display_applied=true` 时，会把同一条记录更新为 `status=displayed`
 - `log_upload_request`：可选，一次性日志采集指令。设备若收到该字段，应在本轮主周期结束前 best-effort 上传最近一段诊断日志，不应阻塞正常拉图与休眠。
 - `firmware_update`：可选，A/B OTA 升级指令。设备若收到该字段，应优先检查电量 / VBUS 门槛，再把新固件下载到 inactive slot；只有写入和 SHA256 校验成功后才切换 boot partition 并重启。
 - `image_url` 可能是：
@@ -90,7 +91,10 @@
   "last_http_status": 200,
   "fetch_ok": true,
   "image_changed": true,
+  "display_applied": true,
   "image_source": "override",
+  "displayed_image_url": "http://192.168.58.113:18081/api/v1/assets/xxxx.bmp?device_id=pf-a1b2c3d4",
+  "displayed_image_sha256": "abc123...",
   "last_error": "",
   "sta_ip": "192.168.58.120",
   "battery_mv": 3987,
@@ -112,6 +116,8 @@
 `reported_config` 为设备当前生效配置快照，用于 Web 表单灰字提示；敏感字段会在服务端返回时脱敏。
 
 - 供电状态字段：`battery_mv`（mV）、`battery_percent`、`charging`（1/0）、`vbus_good`（1/0）
+- `display_applied=true` 表示设备本轮确实完成了 E-Ink 刷新；服务端会把对应图片发布记录从 `sent` 更新为 `displayed`
+- `displayed_image_url` / `displayed_image_sha256` 表示设备本轮实际显示的图片标识；当命中 `304` 或内容未变化而跳过刷屏时，它们应为空
 - 若设备本轮因 PMIC/I2C 异常上报 `-1`（缺失），服务端会保留上一轮有效值，并用“最终有效值”写入电池采样历史，
   避免控制台曲线出现长时间断点（同时可通过 `last_error` 观察是否存在硬件读数异常）。
 
@@ -550,7 +556,11 @@ Header：
       "image_url": "http://192.168.58.113:18081/api/v1/assets/xxxx.bmp?device_id=pf-a1b2c3d4",
       "override_id": 12,
       "poll_after_seconds": 900,
-      "valid_until_epoch": 1760001800
+      "valid_until_epoch": 1760001800,
+      "status": "displayed",
+      "displayed_epoch": 1760000512,
+      "displayed_image_url": "http://192.168.58.113:18081/api/v1/assets/xxxx.bmp?device_id=pf-a1b2c3d4",
+      "displayed_image_sha256": "abc123..."
     }
   ]
 }
@@ -559,6 +569,9 @@ Header：
 说明：
 
 - 历史记录按 `issued_epoch` 倒序返回。
+- `status=sent` 表示服务端已经下发该图片指令，但还没收到设备的成功显示确认。
+- `status=displayed` 表示设备已经通过 `POST /api/v1/device/checkin` 明确确认“本轮图片已成功显示”。
+- 命中 `304` / 内容未变化跳过刷屏 / 渲染失败的周期，会保留在 `sent` 状态，不会升级成 `displayed`。
 - 当前实现自动保留最近 5000 条，超出后会清理最旧记录。
 
 ## 8) 公网只读日图（供外网相框拉取）

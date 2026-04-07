@@ -782,6 +782,172 @@ class DitherAlgorithmTests(unittest.TestCase):
       self.assertEqual(response["log_upload_request"]["max_bytes"], 4096)
       self.assertEqual(response["log_upload_request"]["reason"], "collect wake trace")
 
+  def test_device_next_only_stages_pending_publish_until_display_confirmed(self) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_root = Path(tmp_dir)
+      original_data_dir = ORCH.DATA_DIR
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_db_path = ORCH.DB_PATH
+      original_db = ORCH.DB
+      original_ensure_daily_assets = ORCH._ensure_daily_assets
+
+      ORCH.DATA_DIR = tmp_root
+      ORCH.ASSET_DIR = tmp_root / "assets"
+      ORCH.DAILY_CACHE_DIR = ORCH.ASSET_DIR / "daily-cache"
+      ORCH.DB_PATH = tmp_root / "orchestrator.db"
+      ORCH.DB = None
+      try:
+        ORCH._init_db()
+        ORCH.DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        (ORCH.DAILY_CACHE_DIR / "daily-test.bmp").write_bytes(b"BMstub")
+        (ORCH.DAILY_CACHE_DIR / "daily-test.jpg").write_bytes(b"JPGstub")
+        ORCH._ensure_daily_assets = lambda *_args, **_kwargs: ("daily-test.bmp", "daily-test.jpg")
+        response = ORCH.device_next(
+            _DummyRequest("http", "127.0.0.1:8081"),
+            device_id="pf-demo",
+            now_epoch=1774200000,
+        )
+        conn = ORCH._ensure_db()
+        history_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM publish_history WHERE device_id = ?",
+            ("pf-demo",),
+        ).fetchone()["c"]
+        history = conn.execute(
+            """
+            SELECT status, issued_epoch, image_url
+            FROM publish_history
+            WHERE device_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            ("pf-demo",),
+        ).fetchone()
+        pending = conn.execute(
+            """
+            SELECT pending_publish_source, pending_publish_image_url, pending_publish_poll_after_seconds,
+                   pending_publish_history_id
+            FROM devices
+            WHERE device_id = ?
+            """,
+            ("pf-demo",),
+        ).fetchone()
+      finally:
+        if ORCH.DB is not None:
+          ORCH.DB.close()
+          ORCH.DB = None
+        ORCH.DATA_DIR = original_data_dir
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.DB_PATH = original_db_path
+        ORCH.DB = original_db
+        ORCH._ensure_daily_assets = original_ensure_daily_assets
+
+      self.assertEqual(history_count, 1)
+      self.assertEqual(history["status"], "sent")
+      self.assertEqual(history["issued_epoch"], 1774200000)
+      self.assertEqual(history["image_url"], response["image_url"])
+      self.assertEqual(pending["pending_publish_source"], "daily")
+      self.assertEqual(pending["pending_publish_image_url"], response["image_url"])
+      self.assertEqual(pending["pending_publish_poll_after_seconds"], 3600)
+      self.assertGreater(int(pending["pending_publish_history_id"] or 0), 0)
+
+  def test_device_checkin_records_publish_history_after_display_confirmation(self) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_root = Path(tmp_dir)
+      original_data_dir = ORCH.DATA_DIR
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_db_path = ORCH.DB_PATH
+      original_db = ORCH.DB
+      original_ensure_daily_assets = ORCH._ensure_daily_assets
+
+      ORCH.DATA_DIR = tmp_root
+      ORCH.ASSET_DIR = tmp_root / "assets"
+      ORCH.DAILY_CACHE_DIR = ORCH.ASSET_DIR / "daily-cache"
+      ORCH.DB_PATH = tmp_root / "orchestrator.db"
+      ORCH.DB = None
+      try:
+        ORCH._init_db()
+        ORCH.DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        (ORCH.DAILY_CACHE_DIR / "daily-test.bmp").write_bytes(b"BMstub")
+        (ORCH.DAILY_CACHE_DIR / "daily-test.jpg").write_bytes(b"JPGstub")
+        ORCH._ensure_daily_assets = lambda *_args, **_kwargs: ("daily-test.bmp", "daily-test.jpg")
+        response = ORCH.device_next(
+            _DummyRequest("http", "127.0.0.1:8081"),
+            device_id="pf-demo",
+            now_epoch=1774200000,
+        )
+        ORCH.device_checkin(
+            ORCH.DeviceCheckin(
+                device_id="pf-demo",
+                checkin_epoch=1774200060,
+                next_wakeup_epoch=1774203660,
+                sleep_seconds=3600,
+                poll_interval_seconds=3600,
+                failure_count=0,
+                last_http_status=200,
+                fetch_ok=True,
+                image_changed=True,
+                display_applied=True,
+                image_source="daily",
+                displayed_image_url=response["image_url"],
+                displayed_image_sha256="sha-1",
+                last_error="",
+                sta_ip="192.168.1.8",
+                battery_mv=4100,
+                battery_percent=80,
+                charging=0,
+                vbus_good=0,
+                reported_config={"firmware_version": "0.1.0+test"},
+            )
+        )
+        conn = ORCH._ensure_db()
+        row = conn.execute(
+            """
+            SELECT device_id, issued_epoch, source, image_url, poll_after_seconds, valid_until_epoch,
+                   status, displayed_epoch, displayed_image_url, displayed_image_sha256
+            FROM publish_history
+            WHERE device_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            ("pf-demo",),
+        ).fetchone()
+        pending = conn.execute(
+            """
+            SELECT pending_publish_source, pending_publish_image_url, pending_publish_history_id
+            FROM devices
+            WHERE device_id = ?
+            """,
+            ("pf-demo",),
+        ).fetchone()
+      finally:
+        if ORCH.DB is not None:
+          ORCH.DB.close()
+          ORCH.DB = None
+        ORCH.DATA_DIR = original_data_dir
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.DB_PATH = original_db_path
+        ORCH.DB = original_db
+        ORCH._ensure_daily_assets = original_ensure_daily_assets
+
+      self.assertIsNotNone(row)
+      self.assertEqual(row["device_id"], "pf-demo")
+      self.assertEqual(row["issued_epoch"], 1774200000)
+      self.assertEqual(row["source"], "daily")
+      self.assertEqual(row["image_url"], response["image_url"])
+      self.assertEqual(row["poll_after_seconds"], 3600)
+      self.assertGreater(row["valid_until_epoch"], 1774200000)
+      self.assertEqual(row["status"], "displayed")
+      self.assertEqual(row["displayed_epoch"], 1774200060)
+      self.assertEqual(row["displayed_image_url"], response["image_url"])
+      self.assertEqual(row["displayed_image_sha256"], "sha-1")
+      self.assertEqual(pending["pending_publish_source"], "")
+      self.assertEqual(pending["pending_publish_image_url"], "")
+      self.assertIsNone(pending["pending_publish_history_id"])
+
   def test_device_log_upload_marks_request_completed(self) -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
       tmp_root = Path(tmp_dir)

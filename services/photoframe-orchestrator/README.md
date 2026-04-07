@@ -25,7 +25,7 @@
   - 选中后，服务端会先按相框 6 色调色板生成实际下发的 BMP/JPEG 资产
   - 管理页“快速送图”复用同一接口：默认面向顶部当前设备、开始时间留空、推荐使用 `sierra`，降低临时送图操作成本
 - 管理插播列表：`GET /api/v1/overrides`、`DELETE /api/v1/overrides/{id}`
-- 图片下发历史：`GET /api/v1/publish-history`
+- 图片发布历史（同一条记录跟踪 `sent -> displayed`）：`GET /api/v1/publish-history`
 - 管理页预览当前下发图：`GET /api/v1/preview/current.bmp`
   - 管理页可直接使用 `PHOTOFRAME_TOKEN` 预览，不要求再填设备 token
   - 若上游是 `immich-featured-today`，预览响应会透传 `X-IFT-*` 元数据（asset/layout/crop/display_score），控制台可直接看到当前成片来自哪张图、用的什么构图策略
@@ -180,7 +180,7 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 建议仅对公网放行以下路径，管理页与编辑接口继续只在内网开放：
 
 - `GET /public/daily.bmp`
-- `POST /api/v1/device/checkin`
+- `POST /api/v1/device/checkin`（设备回报本轮是否真正完成显示，用于把同一条发布记录从 `sent` 更新为 `displayed`）
 - `GET /api/v1/device/config`
 - `POST /api/v1/device/config/applied`
 

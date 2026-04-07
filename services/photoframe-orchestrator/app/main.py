@@ -3320,7 +3320,7 @@ def index() -> str:
 
 
 @app.get("/healthz")
-def healthz(request: Request | None = None) -> dict[str, Any] | Response:
+def healthz(request: Request | None = None) -> Any:
   payload = {
       "ok": True,
       "now_epoch": _now_epoch(),
@@ -3341,7 +3341,7 @@ def healthz(request: Request | None = None) -> dict[str, Any] | Response:
 def get_daily_render_config(
     request: Request | None = None,
     x_photoframe_token: str | None = Header(default=None),
-) -> dict[str, Any] | Response:
+) -> Any:
   _require_token(x_photoframe_token)
   payload = {
       "daily_dither_algorithm": _get_daily_dither_algorithm(),
@@ -3960,7 +3960,7 @@ def device_log_requests(
     status: str | None = Query(default=None, max_length=32),
     limit: int = Query(default=50),
     x_photoframe_token: str | None = Header(default=None),
-) -> dict[str, Any]:
+) -> Any:
   _require_token(x_photoframe_token)
   conn = _ensure_db()
   now_ts = _now_epoch()
@@ -4323,7 +4323,7 @@ def device_log_uploads(
     device_id: str | None = Query(default=None),
     limit: int = Query(default=20),
     x_photoframe_token: str | None = Header(default=None),
-) -> dict[str, Any]:
+) -> Any:
   _require_token(x_photoframe_token)
   conn = _ensure_db()
   now_ts = _now_epoch()
@@ -4677,7 +4677,7 @@ def device_tokens(
     request: Request | None = None,
     pending_only: int = Query(default=1),
     x_photoframe_token: str | None = Header(default=None),
-) -> dict[str, Any]:
+) -> Any:
   _require_token(x_photoframe_token)
 
   now_ts = _now_epoch()
@@ -4754,7 +4754,7 @@ def devices(
     request: Request | None = None,
     lightweight: int = Query(default=0),
     x_photoframe_token: str | None = Header(default=None),
-) -> dict[str, Any] | Response:
+) -> Any:
   _require_token(x_photoframe_token)
   conn = _ensure_db()
   now_ts = _now_epoch()
@@ -4990,7 +4990,7 @@ def device_configs(
     device_id: str | None = Query(default=None),
     limit: int = Query(default=50),
     x_photoframe_token: str | None = Header(default=None),
-) -> dict[str, Any]:
+) -> Any:
   _require_token(x_photoframe_token)
 
   conn = _ensure_db()
@@ -5042,7 +5042,7 @@ def publish_history(
     device_id: str | None = Query(default=None),
     limit: int = Query(default=200),
     x_photoframe_token: str | None = Header(default=None),
-) -> dict[str, Any]:
+) -> Any:
   _require_token(x_photoframe_token)
 
   max_rows = _clamp(limit, 1, 1000)
@@ -5106,7 +5106,7 @@ def overrides(
     request: Request | None = None,
     now_epoch: int | None = Query(default=None),
     x_photoframe_token: str | None = Header(default=None),
-) -> dict[str, Any]:
+) -> Any:
   _require_token(x_photoframe_token)
   now_ts = _now_epoch() if now_epoch is None else now_epoch
   conn = _ensure_db()

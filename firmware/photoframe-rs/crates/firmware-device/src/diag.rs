@@ -231,7 +231,10 @@ fn push_recent_lines(
             break;
         }
         if selected.is_empty() && line_bytes > max_bytes {
-            let clipped: String = line.chars().take(LOG_LINE_MAX_CHARS.min(max_bytes)).collect();
+            let clipped: String = line
+                .chars()
+                .take(LOG_LINE_MAX_CHARS.min(max_bytes))
+                .collect();
             *selected_bytes = clipped.len();
             selected.push(clipped);
             break;
@@ -281,11 +284,16 @@ fn decode_tf_block(data: &[u8], segment_index: usize, offset: usize) -> Option<T
     if end_offset > TF_LOG_SEGMENT_CAP_BYTES {
         return None;
     }
-    let payload = String::from_utf8_lossy(&data[TF_LOG_BLOCK_HEADER_BYTES..TF_LOG_BLOCK_HEADER_BYTES + text_bytes as usize]);
+    let payload = String::from_utf8_lossy(
+        &data[TF_LOG_BLOCK_HEADER_BYTES..TF_LOG_BLOCK_HEADER_BYTES + text_bytes as usize],
+    );
     let lines = if payload.is_empty() {
         Vec::new()
     } else {
-        payload.lines().map(|line| line.to_string()).collect::<Vec<_>>()
+        payload
+            .lines()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
     };
     Some(TfLogBlock {
         segment_index,
@@ -321,11 +329,19 @@ fn clear_tf_segment(path: &PathBuf) -> Result<(), String> {
 
     let file = unsafe { libc::fopen(path_c.as_ptr(), c"wb".as_ptr()) };
     if file.is_null() {
-        return Err(format!("reset tf log segment {} failed: {}", path.display(), unlink_err));
+        return Err(format!(
+            "reset tf log segment {} failed: {}",
+            path.display(),
+            unlink_err
+        ));
     }
     let fflush_rc = unsafe { libc::fflush(file) };
     let fd = unsafe { libc::fileno(file) };
-    let fsync_rc = if fd >= 0 { unsafe { libc::fsync(fd) } } else { 0 };
+    let fsync_rc = if fd >= 0 {
+        unsafe { libc::fsync(fd) }
+    } else {
+        0
+    };
     let close_rc = unsafe { libc::fclose(file) };
     if fflush_rc != 0 || fsync_rc != 0 || close_rc != 0 {
         return Err(format!(
@@ -365,7 +381,10 @@ fn read_tf_segment_file(path: &PathBuf) -> Result<Option<Vec<u8>>, String> {
         if err.kind() == std::io::ErrorKind::NotFound {
             return Ok(None);
         }
-        return Err(format!("open tf log segment {} failed: {err}", path.display()));
+        return Err(format!(
+            "open tf log segment {} failed: {err}",
+            path.display()
+        ));
     }
 
     let mut data = Vec::new();
@@ -645,10 +664,7 @@ fn append_tf_snapshot(snapshot: &RestoredLogSnapshot) -> Result<(), String> {
     if last_block.generation != next_generation || last_block.line_count != snapshot.line_count {
         return Err(format!(
             "tf log verify mismatch: generation={} lines={} expected_generation={} expected_lines={}",
-            last_block.generation,
-            last_block.line_count,
-            next_generation,
-            snapshot.line_count
+            last_block.generation, last_block.line_count, next_generation, snapshot.line_count
         ));
     }
     Ok(())
@@ -756,7 +772,9 @@ pub(crate) fn begin_boot_session(sd_history_ready: bool) {
             "INFO",
             &format!(
                 "photoframe-rs: tf history ready blocks={} total_lines={} last_boot_id={}",
-                blocks.len(), total_lines, last_boot_id
+                blocks.len(),
+                total_lines,
+                last_boot_id
             ),
         );
     }
@@ -774,6 +792,109 @@ pub(crate) fn append_external(level: &str, message: &str) {
 
 pub(crate) struct DeviceLogUploadCollector;
 
+#[derive(Debug, Clone)]
+struct CollectedLogSnapshot {
+    lines: Vec<String>,
+    selected_bytes: usize,
+    truncated: bool,
+    available_total_lines: usize,
+    available_total_bytes: usize,
+    current_boot_id: u32,
+    history_block_count: usize,
+    history_total_lines: usize,
+    history_total_bytes: usize,
+    current_total_lines: usize,
+    current_total_bytes: usize,
+}
+
+fn clamp_collect_limit(requested: usize, fallback: usize) -> usize {
+    if requested == 0 { fallback } else { requested }
+}
+
+fn collect_recent_logs(max_lines: usize, max_bytes: usize) -> Option<CollectedLogSnapshot> {
+    let history_blocks = if crate::sdcard::is_ready() {
+        load_tf_blocks().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let history_total_lines = history_blocks
+        .iter()
+        .map(|block| block.line_count)
+        .sum::<usize>();
+    let history_total_bytes = history_blocks
+        .iter()
+        .map(|block| block.text_bytes)
+        .sum::<usize>();
+
+    if crate::sdcard::is_ready() {
+        append(
+            "INFO",
+            &format!(
+                "photoframe-rs: preparing log snapshot history_blocks={} history_lines={}",
+                history_blocks.len(),
+                history_total_lines
+            ),
+        );
+    }
+
+    let guard = global_log_buffer().lock().ok()?;
+    let current_lines = guard.all_lines();
+    let current_total_lines = current_lines.len();
+    let current_total_bytes = guard.total_bytes;
+    let current_boot_id = guard.boot_id;
+    drop(guard);
+
+    let max_lines = clamp_collect_limit(max_lines, LOG_BUFFER_MAX_LINES);
+    let max_bytes = clamp_collect_limit(max_bytes, LOG_BUFFER_MAX_BYTES);
+    let available_total_lines = current_total_lines + history_total_lines;
+    let available_total_bytes = current_total_bytes + history_total_bytes;
+
+    let mut selected: Vec<String> = Vec::new();
+    let mut selected_bytes = 0usize;
+
+    push_recent_lines(
+        &mut selected,
+        &mut selected_bytes,
+        &current_lines,
+        max_lines,
+        max_bytes,
+    );
+    if selected.len() < max_lines && selected_bytes < max_bytes {
+        for block in history_blocks.iter().rev() {
+            let before_lines = selected.len();
+            let before_bytes = selected_bytes;
+            push_recent_lines(
+                &mut selected,
+                &mut selected_bytes,
+                &block.lines,
+                max_lines,
+                max_bytes,
+            );
+            if selected.len() == before_lines && selected_bytes == before_bytes {
+                break;
+            }
+            if selected.len() >= max_lines || selected_bytes >= max_bytes {
+                break;
+            }
+        }
+    }
+    selected.reverse();
+
+    Some(CollectedLogSnapshot {
+        lines: selected.clone(),
+        selected_bytes,
+        truncated: selected.len() < available_total_lines,
+        available_total_lines,
+        available_total_bytes,
+        current_boot_id,
+        history_block_count: history_blocks.len(),
+        history_total_lines,
+        history_total_bytes,
+        current_total_lines,
+        current_total_bytes,
+    })
+}
+
 impl LogUploadProvider for DeviceLogUploadCollector {
     fn collect_logs(
         &mut self,
@@ -781,81 +902,56 @@ impl LogUploadProvider for DeviceLogUploadCollector {
         request: &DeviceLogUploadRequest,
         uploaded_epoch: i64,
     ) -> Option<DeviceLogUploadRequestBody> {
-        let history_blocks = if crate::sdcard::is_ready() {
-            load_tf_blocks().unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let history_total_lines = history_blocks.iter().map(|block| block.line_count).sum::<usize>();
-        if crate::sdcard::is_ready() {
-            append(
-                "INFO",
-                &format!(
-                    "photoframe-rs: preparing log upload history_blocks={} history_lines={}",
-                    history_blocks.len(),
-                    history_total_lines
-                ),
-            );
-        }
-
-        let guard = global_log_buffer().lock().ok()?;
-        let current_lines = guard.all_lines();
-        let current_total_lines = current_lines.len();
-        let current_total_bytes = guard.total_bytes;
-        let current_boot_id = guard.boot_id;
-        drop(guard);
-
-        let max_lines = usize::try_from(request.max_lines).unwrap_or(LOG_BUFFER_MAX_LINES);
-        let max_bytes = usize::try_from(request.max_bytes).unwrap_or(LOG_BUFFER_MAX_BYTES);
-        let available_total_lines = current_total_lines
-            + history_total_lines;
-        let available_total_bytes = current_total_bytes
-            + history_blocks.iter().map(|block| block.text_bytes).sum::<usize>();
-
-        let mut selected: Vec<String> = Vec::new();
-        let mut selected_bytes = 0usize;
-
-        push_recent_lines(
-            &mut selected,
-            &mut selected_bytes,
-            &current_lines,
-            max_lines,
-            max_bytes,
-        );
-        if selected.len() < max_lines && selected_bytes < max_bytes {
-            for block in history_blocks.iter().rev() {
-                let before_lines = selected.len();
-                let before_bytes = selected_bytes;
-                push_recent_lines(
-                    &mut selected,
-                    &mut selected_bytes,
-                    &block.lines,
-                    max_lines,
-                    max_bytes,
-                );
-                if selected.len() == before_lines && selected_bytes == before_bytes {
-                    break;
-                }
-                if selected.len() >= max_lines || selected_bytes >= max_bytes {
-                    break;
-                }
-            }
-        }
-        selected.reverse();
+        let snapshot = collect_recent_logs(request.max_lines as usize, request.max_bytes as usize)?;
 
         Some(DeviceLogUploadRequestBody {
             device_id: config.device_id.to_string(),
             request_id: request.request_id,
             uploaded_epoch,
-            line_count: selected.len() as u32,
-            truncated: selected.len() < available_total_lines,
-            uploaded_bytes: Some(selected_bytes as u32),
-            buffer_total_lines: Some(available_total_lines.min(u32::MAX as usize) as u32),
-            buffer_total_bytes: Some(available_total_bytes.min(u32::MAX as usize) as u32),
-            buffer_boot_id: Some(current_boot_id),
-            lines: selected,
+            line_count: snapshot.lines.len() as u32,
+            truncated: snapshot.truncated,
+            uploaded_bytes: Some(snapshot.selected_bytes as u32),
+            buffer_total_lines: Some(snapshot.available_total_lines.min(u32::MAX as usize) as u32),
+            buffer_total_bytes: Some(snapshot.available_total_bytes.min(u32::MAX as usize) as u32),
+            buffer_boot_id: Some(snapshot.current_boot_id),
+            lines: snapshot.lines,
         })
     }
+}
+
+pub(crate) fn emit_serial_dump(reason: &str, max_lines: usize, max_bytes: usize) -> bool {
+    let snapshot = match collect_recent_logs(max_lines, max_bytes) {
+        Some(snapshot) => snapshot,
+        None => {
+            println!(
+                "PHOTOFRAME_TF_LOG_DUMP_BEGIN reason={} error=collect_failed line_count=0 truncated=0 uploaded_bytes=0 buffer_total_lines=0 buffer_total_bytes=0 buffer_boot_id=0 history_blocks=0 history_total_lines=0 history_total_bytes=0 current_total_lines=0 current_total_bytes=0",
+                reason
+            );
+            println!("PHOTOFRAME_TF_LOG_DUMP_END reason={}", reason);
+            return false;
+        }
+    };
+
+    println!(
+        "PHOTOFRAME_TF_LOG_DUMP_BEGIN reason={} line_count={} truncated={} uploaded_bytes={} buffer_total_lines={} buffer_total_bytes={} buffer_boot_id={} history_blocks={} history_total_lines={} history_total_bytes={} current_total_lines={} current_total_bytes={}",
+        reason,
+        snapshot.lines.len(),
+        i32::from(snapshot.truncated),
+        snapshot.selected_bytes,
+        snapshot.available_total_lines,
+        snapshot.available_total_bytes,
+        snapshot.current_boot_id,
+        snapshot.history_block_count,
+        snapshot.history_total_lines,
+        snapshot.history_total_bytes,
+        snapshot.current_total_lines,
+        snapshot.current_total_bytes,
+    );
+    for line in snapshot.lines {
+        println!("PHOTOFRAME_TF_LOG_DUMP_LINE {}", line);
+    }
+    println!("PHOTOFRAME_TF_LOG_DUMP_END reason={}", reason);
+    true
 }
 
 pub(crate) fn persist_for_next_boot() {
@@ -893,7 +989,9 @@ pub(crate) fn persist_for_next_boot() {
                 thread::sleep(std::time::Duration::from_millis(100));
                 append(
                     "WARN",
-                    &format!("photoframe-rs: tf log persist failed, fallback to rtc snapshot: {err}"),
+                    &format!(
+                        "photoframe-rs: tf log persist failed, fallback to rtc snapshot: {err}"
+                    ),
                 );
             }
         }
@@ -912,9 +1010,8 @@ macro_rules! device_log {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeviceLogUploadCollector, clear_persisted_log_snapshot_for_tests, global_log_buffer,
-        load_tf_blocks, persist_for_next_boot, tf_log_dir, tf_segment_path,
-        TF_LOG_SEGMENT_CAP_BYTES,
+        DeviceLogUploadCollector, TF_LOG_SEGMENT_CAP_BYTES, clear_persisted_log_snapshot_for_tests,
+        global_log_buffer, load_tf_blocks, persist_for_next_boot, tf_log_dir, tf_segment_path,
     };
     use photoframe_app::{DeviceRuntimeConfig, LogUploadProvider};
     use photoframe_contracts::DeviceLogUploadRequest;
@@ -989,7 +1086,8 @@ mod tests {
         let _test_guard = lock_test_guard();
         reset_state_for_test();
 
-        let temp_dir = std::env::temp_dir().join(format!("photoframe-diag-test-{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("photoframe-diag-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).expect("create temp dir");
         unsafe {
@@ -1020,11 +1118,52 @@ mod tests {
     }
 
     #[test]
+    fn collect_recent_logs_merges_tf_history_and_current_buffer() {
+        let _test_guard = lock_test_guard();
+        reset_state_for_test();
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "photoframe-diag-collect-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+        unsafe {
+            std::env::set_var("PHOTOFRAME_TF_LOG_DIR", &temp_dir);
+        }
+        crate::sdcard::set_test_ready(true);
+
+        super::begin_boot_session(true);
+        super::append("INFO", "boot a line 1");
+        persist_for_next_boot();
+
+        super::begin_boot_session(true);
+        super::append("INFO", "boot b line 2");
+
+        let snapshot = super::collect_recent_logs(20, 4096).expect("snapshot");
+        assert_eq!(snapshot.history_block_count, 1);
+        assert!(snapshot.history_total_lines >= 1);
+        assert_eq!(snapshot.current_boot_id, 2);
+
+        let joined = snapshot.lines.join("\n");
+        assert!(joined.contains("boot a line 1"));
+        assert!(joined.contains("boot b line 2"));
+
+        let cleanup_dir = tf_log_dir();
+        crate::sdcard::set_test_ready(false);
+        unsafe {
+            std::env::remove_var("PHOTOFRAME_TF_LOG_DIR");
+        }
+        let _ = std::fs::remove_dir_all(cleanup_dir);
+    }
+
+    #[test]
     fn unreadable_tf_segment_is_reset_before_new_snapshot_write() {
         let _test_guard = lock_test_guard();
         reset_state_for_test();
 
-        let temp_dir = std::env::temp_dir().join(format!("photoframe-diag-reset-test-{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("photoframe-diag-reset-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).expect("create temp dir");
         unsafe {

@@ -63,6 +63,8 @@ scripts/build-photoframe-rs.sh
 - 仅空片首刷才使用整片镜像，例如：`~/.espressif/python_env/idf5.0_py3.13_env/bin/esptool.py --chip esp32s3 --port /dev/cu.usbmodem111201 --baud 115200 write_flash -z 0x0 firmware/photoframe-rs/dist/photoframe-rs-fullchip.bin`
 - 串口抓日志可复用同一 Python 环境中的 `pyserial`，避免额外安装宿主机工具链
 - 串口监控建议用 `scripts/monitor-host.sh --once /dev/cu.usbmodem111201 115200`；如启用自动重连，反复打开串口会触发 `USB_UART_CHIP_RESET`，看起来像“重启循环”
+- 如需直接抓 TF 历史日志，使用 `scripts/dump-device-logs.sh /dev/cu.usbmodem111201 115200 --timeout-seconds 45 --output /tmp/pf-dump.log --raw-output /tmp/pf-dump-raw.log`
+- 新固件在 USB 串口宿主接入时会自动输出一段 `PHOTOFRAME_TF_LOG_DUMP_*` 结构化日志；宿主脚本会等待这组标记并提取 TF 历史，无需再走 HTTP 日志上报或手动打开门户
 - USB debug mode 以 `usb_serial_jtag_is_connected()` 为准，不以单纯 `vbus_good` 为准；因此“插着供电线但没有串口主机”的场景仍会按原逻辑进入休眠/USB hold
 - 真机串口验证时，若一轮主周期结束后看到 `usb debug mode active, rerun cycle in 5s`，随后再次出现 `wifi try idx=...`，说明 USB debug mode 已生效
 - OTA 故障注入/验收可用 `scripts/validate-ota-host.py`：支持上传 artifact、创建 rollout、可选请求设备日志、等待 `device-debug-stages` 中的 OTA 阶段并在指定阶段通过 USB 串口触发 reset

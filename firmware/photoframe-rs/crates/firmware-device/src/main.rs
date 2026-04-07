@@ -14,6 +14,7 @@ const _: () = photoframe_firmware_device::LIB_TARGET_PRESENT;
 #[cfg(target_os = "espidf")]
 use std::{
     ffi::CString,
+    sync::atomic::{AtomicBool, Ordering},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -65,6 +66,10 @@ enum PreparedCycle {
 
 #[cfg(target_os = "espidf")]
 const USB_DEBUG_POLL_SECONDS: u64 = 5;
+#[cfg(target_os = "espidf")]
+const USB_DEBUG_LOG_DUMP_MAX_LINES: usize = 400;
+#[cfg(target_os = "espidf")]
+const USB_DEBUG_LOG_DUMP_MAX_BYTES: usize = 48 * 1024;
 
 #[cfg(target_os = "espidf")]
 fn configure_button_gpio() {
@@ -353,7 +358,10 @@ fn main() {
     let sd_history_ready = match sdcard::mount_if_available() {
         Ok(ready) => {
             if ready {
-                println!("photoframe-rs: sdcard log storage ready at {}", sdcard::mount_path());
+                println!(
+                    "photoframe-rs: sdcard log storage ready at {}",
+                    sdcard::mount_path()
+                );
             }
             ready
         }
@@ -469,6 +477,7 @@ fn main() {
     let mut cycle_wake_source = wake_source;
     let mut cycle_long_press_action = long_press_action;
     loop {
+        maybe_dump_logs_for_usb_serial_attach();
         let prepared = match prepare_cycle(
             runner.storage_mut(),
             cycle_wake_source,
@@ -486,6 +495,7 @@ fn main() {
                     );
                     EspWifiManager::stop();
                     thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
+                    maybe_dump_logs_for_usb_serial_attach();
                     cycle_wake_source = WakeSource::Other;
                     cycle_long_press_action = LongPressAction::None;
                     continue;
@@ -508,6 +518,7 @@ fn main() {
                             USB_DEBUG_POLL_SECONDS
                         );
                         thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
+                        maybe_dump_logs_for_usb_serial_attach();
                         cycle_wake_source = WakeSource::Other;
                         cycle_long_press_action = LongPressAction::None;
                         continue;
@@ -525,6 +536,7 @@ fn main() {
                         USB_DEBUG_POLL_SECONDS
                     );
                     thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
+                    maybe_dump_logs_for_usb_serial_attach();
                     cycle_wake_source = WakeSource::Other;
                     cycle_long_press_action = LongPressAction::None;
                     continue;
@@ -558,6 +570,7 @@ fn main() {
                         seconds
                     );
                     thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
+                    maybe_dump_logs_for_usb_serial_attach();
                     cycle_wake_source = WakeSource::Other;
                     cycle_long_press_action = LongPressAction::None;
                     continue;
@@ -773,6 +786,34 @@ fn is_usb_serial_connected() -> bool {
 }
 
 #[cfg(target_os = "espidf")]
+fn maybe_dump_logs_for_usb_serial_attach() {
+    static USB_SERIAL_CONNECTED_LAST: AtomicBool = AtomicBool::new(false);
+
+    let connected = is_usb_serial_connected();
+    let was_connected = USB_SERIAL_CONNECTED_LAST.swap(connected, Ordering::SeqCst);
+    if !connected || was_connected {
+        return;
+    }
+
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs: usb serial attached, dumping tf history lines<={} bytes<={}",
+        USB_DEBUG_LOG_DUMP_MAX_LINES,
+        USB_DEBUG_LOG_DUMP_MAX_BYTES
+    );
+    let dumped = diag::emit_serial_dump(
+        "usb_attach",
+        USB_DEBUG_LOG_DUMP_MAX_LINES,
+        USB_DEBUG_LOG_DUMP_MAX_BYTES,
+    );
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs: usb serial tf history dump finished dumped={}",
+        i32::from(dumped)
+    );
+}
+
+#[cfg(target_os = "espidf")]
 fn hold_awake_before_sleep(
     planned_sleep_seconds: u64,
     timer_only: bool,
@@ -823,6 +864,7 @@ fn hold_awake_before_sleep(
     let mut last_log = Instant::now() - HOLD_LOG_PERIOD;
     loop {
         usb_serial_connected = is_usb_serial_connected();
+        maybe_dump_logs_for_usb_serial_attach();
         serial_seen |= usb_serial_connected;
         if last_power_sample_at.elapsed() >= POWER_SAMPLE_PERIOD {
             match runtime_bridge::EspRuntimeBridge::read_power_sample() {

@@ -3319,8 +3319,8 @@ def index() -> str:
   return (APP_DIR / "static" / "index.html").read_text(encoding="utf-8")
 
 
-@app.get("/healthz")
-def healthz(request: Request | None = None) -> Any:
+@app.get("/healthz", response_model=None)
+def healthz(request: Request = None) -> Any:
   payload = {
       "ok": True,
       "now_epoch": _now_epoch(),
@@ -3337,9 +3337,9 @@ def healthz(request: Request | None = None) -> Any:
   return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={"ETag": etag})
 
 
-@app.get("/api/v1/daily-render-config")
+@app.get("/api/v1/daily-render-config", response_model=None)
 def get_daily_render_config(
-    request: Request | None = None,
+    request: Request = None,
     x_photoframe_token: str | None = Header(default=None),
 ) -> Any:
   _require_token(x_photoframe_token)
@@ -3953,9 +3953,9 @@ def device_checkin(
   return {"ok": True}
 
 
-@app.get("/api/v1/device-log-requests")
+@app.get("/api/v1/device-log-requests", response_model=None)
 def device_log_requests(
-    request: Request | None = None,
+    request: Request = None,
     device_id: str | None = Query(default=None),
     status: str | None = Query(default=None, max_length=32),
     limit: int = Query(default=50),
@@ -4317,9 +4317,9 @@ def firmware_rollout_delete(
   return {"ok": True, "id": int(rollout_id), "enabled": False}
 
 
-@app.get("/api/v1/device-log-uploads")
+@app.get("/api/v1/device-log-uploads", response_model=None)
 def device_log_uploads(
-    request: Request | None = None,
+    request: Request = None,
     device_id: str | None = Query(default=None),
     limit: int = Query(default=20),
     x_photoframe_token: str | None = Header(default=None),
@@ -4672,9 +4672,9 @@ def device_config_publish(
   }
 
 
-@app.get("/api/v1/device-tokens")
+@app.get("/api/v1/device-tokens", response_model=None)
 def device_tokens(
-    request: Request | None = None,
+    request: Request = None,
     pending_only: int = Query(default=1),
     x_photoframe_token: str | None = Header(default=None),
 ) -> Any:
@@ -4749,9 +4749,9 @@ def delete_device_token(
   return {"ok": True, "device_id": target}
 
 
-@app.get("/api/v1/devices")
+@app.get("/api/v1/devices", response_model=None)
 def devices(
-    request: Request | None = None,
+    request: Request = None,
     lightweight: int = Query(default=0),
     x_photoframe_token: str | None = Header(default=None),
 ) -> Any:
@@ -4984,9 +4984,9 @@ def power_samples(
   }
 
 
-@app.get("/api/v1/device-configs")
+@app.get("/api/v1/device-configs", response_model=None)
 def device_configs(
-    request: Request | None = None,
+    request: Request = None,
     device_id: str | None = Query(default=None),
     limit: int = Query(default=50),
     x_photoframe_token: str | None = Header(default=None),
@@ -5036,9 +5036,9 @@ def device_configs(
   return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={"ETag": etag})
 
 
-@app.get("/api/v1/publish-history")
+@app.get("/api/v1/publish-history", response_model=None)
 def publish_history(
-    request: Request | None = None,
+    request: Request = None,
     device_id: str | None = Query(default=None),
     limit: int = Query(default=200),
     x_photoframe_token: str | None = Header(default=None),
@@ -5101,9 +5101,9 @@ def publish_history(
   return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={"ETag": etag})
 
 
-@app.get("/api/v1/overrides")
+@app.get("/api/v1/overrides", response_model=None)
 def overrides(
-    request: Request | None = None,
+    request: Request = None,
     now_epoch: int | None = Query(default=None),
     x_photoframe_token: str | None = Header(default=None),
 ) -> Any:

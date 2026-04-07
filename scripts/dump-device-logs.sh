@@ -69,6 +69,7 @@ import serial
 BEGIN_PREFIX = "PHOTOFRAME_TF_LOG_DUMP_BEGIN "
 LINE_PREFIX = "PHOTOFRAME_TF_LOG_DUMP_LINE "
 END_PREFIX = "PHOTOFRAME_TF_LOG_DUMP_END"
+RESUME_TOKEN = b"PHOTOFRAME_USB_RESUME\n"
 
 
 def resolve_output(raw: str) -> pathlib.Path | None:
@@ -94,6 +95,7 @@ raw_lines: list[str] = []
 dump_lines: list[str] = []
 metadata: str | None = None
 began = False
+resume_sent = False
 
 print(
     f"[info] 等待设备通过 {port} @ {baud} 输出 TF 历史日志，超时 {timeout_seconds:.0f}s",
@@ -123,11 +125,23 @@ with serial.Serial(port=port, baudrate=baud, timeout=0.2, write_timeout=1) as se
             dump_lines.append(line[len(LINE_PREFIX):])
             continue
         if line.startswith(END_PREFIX) and began:
+            for _ in range(3):
+                try:
+                    ser.write(RESUME_TOKEN)
+                    ser.flush()
+                    resume_sent = True
+                    time.sleep(0.05)
+                except Exception as exc:
+                    print(f"[warn] 发送 USB resume 信号失败: {exc}", file=sys.stderr)
+                    break
             break
 
 if raw_output_path is not None:
     raw_output_path.write_text("\n".join(raw_lines) + ("\n" if raw_lines else ""), encoding="utf-8")
     print(f"[info] 原始串口转录已保存到 {raw_output_path}", file=sys.stderr)
+
+if resume_sent:
+    print("[info] 已向设备发送 USB resume 信号", file=sys.stderr)
 
 if not began:
     print("[error] 超时前未收到 PHOTOFRAME_TF_LOG_DUMP_BEGIN", file=sys.stderr)

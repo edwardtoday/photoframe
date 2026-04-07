@@ -3,7 +3,10 @@
 use std::{
     collections::VecDeque,
     path::PathBuf,
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -33,6 +36,15 @@ const TF_LOG_BLOCK_HEADER_BYTES: usize = 40;
 const PERSISTED_LOG_MAGIC: u32 = 0x5046_4C47;
 const PERSISTED_LOG_VERSION: u32 = 1;
 const PERSISTED_LOG_MAX_BYTES: usize = 7 * 1024;
+static CONSOLE_STDOUT_SUPPRESSED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_console_stdout_suppressed(suppressed: bool) {
+    CONSOLE_STDOUT_SUPPRESSED.store(suppressed, Ordering::SeqCst);
+}
+
+pub fn console_stdout_suppressed() -> bool {
+    CONSOLE_STDOUT_SUPPRESSED.load(Ordering::SeqCst)
+}
 
 #[derive(Clone, Debug, Default)]
 struct RestoredLogSnapshot {
@@ -1002,7 +1014,9 @@ pub(crate) fn persist_for_next_boot() {
 macro_rules! device_log {
     ($level:expr, $($arg:tt)*) => {{
         let rendered = format!($($arg)*);
-        println!("{}", rendered);
+        if !$crate::diag::console_stdout_suppressed() {
+            println!("{}", rendered);
+        }
         $crate::diag::append($level, &rendered);
     }};
 }

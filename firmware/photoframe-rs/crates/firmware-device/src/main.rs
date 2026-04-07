@@ -70,6 +70,14 @@ const USB_DEBUG_POLL_SECONDS: u64 = 5;
 const USB_DEBUG_LOG_DUMP_MAX_LINES: usize = 400;
 #[cfg(target_os = "espidf")]
 const USB_DEBUG_LOG_DUMP_MAX_BYTES: usize = 48 * 1024;
+#[cfg(target_os = "espidf")]
+const USB_DEBUG_RESUME_WAIT_MS: u64 = 3_000;
+#[cfg(target_os = "espidf")]
+const USB_DEBUG_RESUME_POLL_MS: u64 = 20;
+#[cfg(target_os = "espidf")]
+const USB_DEBUG_POST_DUMP_SETTLE_MS: u64 = 200;
+#[cfg(target_os = "espidf")]
+const USB_DEBUG_RESUME_TOKEN: &[u8] = b"PHOTOFRAME_USB_RESUME";
 
 #[cfg(target_os = "espidf")]
 fn configure_button_gpio() {
@@ -380,10 +388,11 @@ fn main() {
     };
 
     configure_button_gpio();
+    let reset_reason = photoframe_platform_espidf::current_reset_reason_label();
     crate::device_log!(
         "INFO",
         "photoframe-rs: reset reason={}",
-        photoframe_platform_espidf::current_reset_reason_label()
+        reset_reason
     );
     let wake_source = current_wake_source();
     if let Some(stage) = runtime_bridge::take_render_trace() {
@@ -474,10 +483,16 @@ fn main() {
         diag::DeviceLogUploadCollector,
     );
 
+    let mut skip_usb_dump_once = reset_reason == "sw" && is_usb_serial_connected();
+    if skip_usb_dump_once {
+        set_usb_console_suppressed(true);
+    }
     let mut cycle_wake_source = wake_source;
     let mut cycle_long_press_action = long_press_action;
     loop {
-        maybe_dump_logs_for_usb_serial_attach();
+        wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
+            &mut skip_usb_dump_once,
+        ));
         let prepared = match prepare_cycle(
             runner.storage_mut(),
             cycle_wake_source,
@@ -495,7 +510,9 @@ fn main() {
                     );
                     EspWifiManager::stop();
                     thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
-                    maybe_dump_logs_for_usb_serial_attach();
+                    wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
+                        &mut skip_usb_dump_once,
+                    ));
                     cycle_wake_source = WakeSource::Other;
                     cycle_long_press_action = LongPressAction::None;
                     continue;
@@ -514,14 +531,16 @@ fn main() {
                     if is_usb_serial_connected() {
                         crate::device_log!(
                             "INFO",
-                            "photoframe-rs: usb debug mode retry after cycle failure in {}s",
-                            USB_DEBUG_POLL_SECONDS
-                        );
-                        thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
-                        maybe_dump_logs_for_usb_serial_attach();
-                        cycle_wake_source = WakeSource::Other;
-                        cycle_long_press_action = LongPressAction::None;
-                        continue;
+                        "photoframe-rs: usb debug mode retry after cycle failure in {}s",
+                        USB_DEBUG_POLL_SECONDS
+                    );
+                    thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
+                    wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
+                        &mut skip_usb_dump_once,
+                    ));
+                    cycle_wake_source = WakeSource::Other;
+                    cycle_long_press_action = LongPressAction::None;
+                    continue;
                     }
                     enter_deep_sleep(fallback_sleep_seconds, false, PreSleepHoldMode::UsbOrSerial);
                 }
@@ -536,7 +555,9 @@ fn main() {
                         USB_DEBUG_POLL_SECONDS
                     );
                     thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
-                    maybe_dump_logs_for_usb_serial_attach();
+                    wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
+                        &mut skip_usb_dump_once,
+                    ));
                     cycle_wake_source = WakeSource::Other;
                     cycle_long_press_action = LongPressAction::None;
                     continue;
@@ -570,7 +591,9 @@ fn main() {
                         seconds
                     );
                     thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
-                    maybe_dump_logs_for_usb_serial_attach();
+                    wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
+                        &mut skip_usb_dump_once,
+                    ));
                     cycle_wake_source = WakeSource::Other;
                     cycle_long_press_action = LongPressAction::None;
                     continue;
@@ -786,15 +809,40 @@ fn is_usb_serial_connected() -> bool {
 }
 
 #[cfg(target_os = "espidf")]
-fn maybe_dump_logs_for_usb_serial_attach() {
+fn set_usb_console_suppressed(suppressed: bool) {
+    static ESP_LOG_TAG_ALL: &[u8] = b"*\0";
+
+    diag::set_console_stdout_suppressed(suppressed);
+    let level = if suppressed {
+        esp_idf_sys::esp_log_level_t_ESP_LOG_NONE
+    } else {
+        esp_idf_sys::esp_log_level_t_ESP_LOG_INFO
+    };
+    unsafe {
+        esp_idf_sys::esp_log_level_set(ESP_LOG_TAG_ALL.as_ptr() as *const _, level);
+    }
+}
+
+#[cfg(target_os = "espidf")]
+fn maybe_dump_logs_for_usb_serial_attach(skip_once: &mut bool) -> bool {
     static USB_SERIAL_CONNECTED_LAST: AtomicBool = AtomicBool::new(false);
 
     let connected = is_usb_serial_connected();
     let was_connected = USB_SERIAL_CONNECTED_LAST.swap(connected, Ordering::SeqCst);
     if !connected || was_connected {
-        return;
+        return false;
     }
 
+    if *skip_once {
+        *skip_once = false;
+        crate::device_log!(
+            "INFO",
+            "photoframe-rs: skip usb tf dump once after resume reboot"
+        );
+        return false;
+    }
+
+    set_usb_console_suppressed(false);
     crate::device_log!(
         "INFO",
         "photoframe-rs: usb serial attached, dumping tf history lines<={} bytes<={}",
@@ -811,6 +859,93 @@ fn maybe_dump_logs_for_usb_serial_attach() {
         "photoframe-rs: usb serial tf history dump finished dumped={}",
         i32::from(dumped)
     );
+    dumped
+}
+
+#[cfg(target_os = "espidf")]
+fn wait_for_usb_resume_after_log_dump(dumped: bool) {
+    if !dumped {
+        return;
+    }
+
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs: usb log dump complete, wait for host resume before wifi cycle timeout={}ms",
+        USB_DEBUG_RESUME_WAIT_MS
+    );
+    let deadline = Instant::now() + Duration::from_millis(USB_DEBUG_RESUME_WAIT_MS);
+    let mut read_buf = [0u8; 64];
+    let mut pending = Vec::with_capacity(USB_DEBUG_RESUME_TOKEN.len() * 2);
+    let mut driver_cfg = esp_idf_sys::usb_serial_jtag_driver_config_t {
+        tx_buffer_size: 256,
+        rx_buffer_size: 256,
+    };
+    let driver_installed =
+        unsafe { esp_idf_sys::usb_serial_jtag_driver_install(&mut driver_cfg) } == 0;
+    if driver_installed {
+        unsafe {
+            esp_idf_sys::esp_vfs_usb_serial_jtag_use_driver();
+        }
+    } else {
+        crate::device_log!(
+            "WARN",
+            "photoframe-rs: usb serial driver install failed, fallback to timeout"
+        );
+    }
+
+    let mut resumed = false;
+    while driver_installed && Instant::now() < deadline {
+        let read = unsafe {
+            esp_idf_sys::usb_serial_jtag_read_bytes(
+                read_buf.as_mut_ptr() as *mut _,
+                read_buf.len() as u32,
+                0,
+            )
+        };
+        if read > 0 {
+            let read = read as usize;
+            pending.extend_from_slice(&read_buf[..read]);
+            if pending
+                .windows(USB_DEBUG_RESUME_TOKEN.len())
+                .any(|window| window == USB_DEBUG_RESUME_TOKEN)
+            {
+                resumed = true;
+                break;
+            }
+            if pending.len() > USB_DEBUG_RESUME_TOKEN.len() * 2 {
+                let keep_from = pending.len() - USB_DEBUG_RESUME_TOKEN.len();
+                pending.drain(..keep_from);
+            }
+        }
+
+        thread::sleep(Duration::from_millis(USB_DEBUG_RESUME_POLL_MS));
+    }
+
+    if driver_installed {
+        unsafe {
+            esp_idf_sys::esp_vfs_usb_serial_jtag_use_nonblocking();
+            let _ = esp_idf_sys::usb_serial_jtag_driver_uninstall();
+        }
+    }
+
+    if resumed {
+        crate::device_log!(
+            "INFO",
+            "photoframe-rs: usb host resume received, continue wifi cycle"
+        );
+    } else {
+        crate::device_log!(
+            "WARN",
+            "photoframe-rs: usb host resume timeout, continue wifi cycle"
+        );
+    }
+    set_usb_console_suppressed(true);
+    thread::sleep(Duration::from_millis(USB_DEBUG_POST_DUMP_SETTLE_MS));
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs: usb dump handshake complete, reboot before wifi cycle"
+    );
+    restart_device();
 }
 
 #[cfg(target_os = "espidf")]
@@ -862,9 +997,10 @@ fn hold_awake_before_sleep(
 
     let mut last_power_sample_at = Instant::now() - POWER_SAMPLE_PERIOD;
     let mut last_log = Instant::now() - HOLD_LOG_PERIOD;
+    let mut skip_usb_dump_once = false;
     loop {
         usb_serial_connected = is_usb_serial_connected();
-        maybe_dump_logs_for_usb_serial_attach();
+        maybe_dump_logs_for_usb_serial_attach(&mut skip_usb_dump_once);
         serial_seen |= usb_serial_connected;
         if last_power_sample_at.elapsed() >= POWER_SAMPLE_PERIOD {
             match runtime_bridge::EspRuntimeBridge::read_power_sample() {

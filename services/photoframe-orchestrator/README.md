@@ -63,6 +63,11 @@ docker compose -f docker-compose.photoframe-orchestrator.prod.yml pull
 docker compose -f docker-compose.photoframe-orchestrator.prod.yml up -d
 ```
 
+QNAP/NAS 生产环境默认使用 `network_mode: host`，并把 Daily upstream 指到
+`http://127.0.0.1:8000/image/480x800.jpg?date=%DATE%`。
+原因是 `immich-featured-today` 通常跑在同机宿主网络；若 orchestrator 留在 bridge
+网络里，容器内未必能直接访问宿主的 `8000`，也容易误把 daily 源写成公网地址后再回源失败。
+
 ## 生产 Docker（NAS，离线投送，不 pull）
 
 适合 NAS 外网不稳定、或希望明确绕过 `docker compose pull` 的场景。
@@ -115,6 +120,7 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 ## 环境变量
 
 - `DAILY_IMAGE_URL_TEMPLATE`：无插播时的每日图片模板，支持 `%DATE%`；推荐指向 `immich-featured-today` 的 `480x800.jpg`
+  同机部署时优先用 `http://127.0.0.1:8000/image/480x800.jpg?date=%DATE%`
 - `PUBLIC_BASE_URL`：返回给设备的资源 URL 前缀
 - `DEFAULT_POLL_SECONDS`：默认轮询周期（秒）
 - `PHOTOFRAME_TOKEN`：管理接口 token（Web 管理页、插播编辑、设备 token 审批等后台接口）

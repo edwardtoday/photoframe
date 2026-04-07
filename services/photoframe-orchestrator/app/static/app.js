@@ -2548,9 +2548,6 @@ async function refreshSecondarySections() {
     setTimelineMessage('logUploadHistoryBody', `日志上传记录加载失败: ${message}`);
     setText('logUploadHistoryHint', `日志上传记录加载失败: ${message}`);
   });
-  await runSection(() => loadPublishPreview(false), (err) => {
-    setText('publishPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);
-  });
   await runSection(loadDeviceConfigs, (err) => {
     const message = explainAdminLoadError(err);
     setTimelineMessage('configHistoryBody', `配置历史加载失败: ${message}`);

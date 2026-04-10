@@ -146,6 +146,7 @@ impl ImageFetcher for FakeImageFetcher {
 #[derive(Default)]
 struct FakeDisplay {
     render_calls: usize,
+    queued_results: Vec<Result<(), FailureKind>>,
 }
 fn seeded_config() -> DeviceRuntimeConfig {
     DeviceRuntimeConfig {
@@ -166,6 +167,9 @@ impl Display for FakeDisplay {
         _force_refresh: bool,
     ) -> Result<(), FailureKind> {
         self.render_calls += 1;
+        if !self.queued_results.is_empty() {
+            return self.queued_results.remove(0);
+        }
         Ok(())
     }
 }
@@ -399,7 +403,7 @@ fn not_modified_cycle_skips_render_but_still_succeeds() {
 }
 
 #[test]
-fn failed_cycle_sleeps_until_next_beijing_sync_window() {
+fn general_failure_cycle_uses_retry_backoff() {
     let mut runner = CycleRunner::new(
         FakeClock,
         FakeStorage {
@@ -430,7 +434,61 @@ fn failed_cycle_sleeps_until_next_beijing_sync_window() {
     assert_eq!(
         report.exit,
         CycleExit::Sleep {
-            seconds: NEXT_BEIJING_SYNC_SLEEP_SECONDS,
+            seconds: 300,
+            timer_only: false,
+        }
+    );
+}
+
+#[test]
+fn pmic_soft_failure_uses_regular_retry_interval() {
+    let mut runner = CycleRunner::new(
+        FakeClock,
+        FakeStorage {
+            config: seeded_config(),
+            save_count: 0,
+        },
+        FakeOrchestrator::default(),
+        FakeImageFetcher {
+            queued_results: vec![ImageFetchOutcome {
+                ok: true,
+                status_code: 200,
+                error: String::new(),
+                image_changed: true,
+                sha256: "new-sha".into(),
+                etag: None,
+                last_modified: None,
+                artifact: Some(ImageArtifact {
+                    format: ImageFormat::Bmp,
+                    width: 800,
+                    height: 480,
+                    bytes: vec![1, 2, 3],
+                }),
+            }],
+            ..FakeImageFetcher::default()
+        },
+        FakeDisplay {
+            render_calls: 0,
+            queued_results: vec![Err(FailureKind::PmicSoftFailure)],
+        },
+    );
+
+    let report = runner
+        .run(BootContext {
+            wake_source: WakeSource::Timer,
+            long_press_action: LongPressAction::None,
+            sta_ip: None,
+            power_sample: PowerSample::default(),
+        })
+        .unwrap();
+
+    let payload = runner.orchestrator().last_checkin_payload.as_ref().unwrap();
+    assert_eq!(payload.last_error, "pmic soft failure");
+    assert_eq!(runner.orchestrator().debug_stages.last().map(String::as_str), Some("before_checkin_fail"));
+    assert_eq!(
+        report.exit,
+        CycleExit::Sleep {
+            seconds: 3600,
             timer_only: false,
         }
     );

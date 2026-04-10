@@ -69,6 +69,10 @@ const LDO_ENABLE_ALDO3: u8 = 1u8 << 2;
 const LDO_ENABLE_ALDO4: u8 = 1u8 << 3;
 #[cfg(target_os = "espidf")]
 const LDO_ENABLE_ALL: u8 = 0x0F;
+#[cfg(target_os = "espidf")]
+const POWER_INIT_MAX_ATTEMPTS: usize = 2;
+#[cfg(target_os = "espidf")]
+const POWER_INIT_RETRY_DELAY_MS: u64 = 250;
 
 #[cfg(target_os = "espidf")]
 struct PowerRuntime {
@@ -358,7 +362,40 @@ fn configure_display_power_rails(state: &mut PowerRuntime) -> bool {
 
 #[cfg(target_os = "espidf")]
 pub fn ensure_ready_for_render() -> bool {
-    init_power().is_ok()
+    for attempt in 0..POWER_INIT_MAX_ATTEMPTS {
+        match init_power() {
+            Ok(()) => {
+                if attempt > 0 {
+                    log(&format!(
+                        "render power init recovered attempt={}/{}",
+                        attempt + 1,
+                        POWER_INIT_MAX_ATTEMPTS
+                    ));
+                }
+                return true;
+            }
+            Err(err) => {
+                log(&format!(
+                    "render power init failed attempt={}/{} reason={err}",
+                    attempt + 1,
+                    POWER_INIT_MAX_ATTEMPTS
+                ));
+                if attempt + 1 >= POWER_INIT_MAX_ATTEMPTS {
+                    return false;
+                }
+                reset_power_runtime();
+                sleep_ms(POWER_INIT_RETRY_DELAY_MS);
+            }
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "espidf")]
+fn reset_power_runtime() {
+    let mutex = runtime();
+    let mut state = mutex.lock().unwrap();
+    reset_i2c_bus(&mut state);
 }
 
 #[cfg(target_os = "espidf")]

@@ -981,6 +981,59 @@ def _remember_pending_publish(
     valid_until_epoch: int,
     dither_algorithm: str,
 ) -> None:
+  normalized_device_id = _normalize_device_id(device_id)
+  pending = conn.execute(
+      """
+      SELECT pending_publish_source, pending_publish_image_url, pending_publish_override_id,
+             pending_publish_history_id
+      FROM devices
+      WHERE device_id = ?
+      LIMIT 1
+      """,
+      (normalized_device_id,),
+  ).fetchone()
+  pending_history_id = int(pending["pending_publish_history_id"] or 0) if pending is not None else 0
+  same_pending = (
+      pending is not None
+      and pending_history_id > 0
+      and str(pending["pending_publish_source"] or "") == str(source)
+      and str(pending["pending_publish_image_url"] or "") == str(image_url)
+      and pending["pending_publish_override_id"] == override_id
+  )
+  if same_pending:
+    conn.execute(
+        """
+        UPDATE publish_history
+        SET poll_after_seconds = ?,
+            valid_until_epoch = ?,
+            dither_algorithm = ?
+        WHERE id = ? AND device_id = ?
+        """,
+        (
+            int(poll_after_seconds),
+            int(valid_until_epoch),
+            str(dither_algorithm),
+            pending_history_id,
+            normalized_device_id,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE devices
+        SET pending_publish_poll_after_seconds = ?,
+            pending_publish_valid_until_epoch = ?,
+            pending_publish_dither_algorithm = ?
+        WHERE device_id = ?
+        """,
+        (
+            int(poll_after_seconds),
+            int(valid_until_epoch),
+            str(dither_algorithm),
+            normalized_device_id,
+        ),
+    )
+    return
+
   cursor = conn.execute(
       """
       INSERT INTO publish_history (
@@ -989,7 +1042,7 @@ def _remember_pending_publish(
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent')
       """,
       (
-          _normalize_device_id(device_id),
+          normalized_device_id,
           int(issued_epoch),
           str(source),
           str(image_url),
@@ -1020,7 +1073,7 @@ def _remember_pending_publish(
           int(valid_until_epoch),
           str(dither_algorithm),
           int(cursor.lastrowid),
-          _normalize_device_id(device_id),
+          normalized_device_id,
       ),
   )
   conn.execute(
@@ -1054,7 +1107,6 @@ def _clear_pending_publish(conn: sqlite3.Connection, device_id: str) -> None:
 
 def _record_confirmed_publish(conn: sqlite3.Connection, payload: "DeviceCheckin", server_now: int) -> None:
   if not payload.fetch_ok or not payload.display_applied:
-    _clear_pending_publish(conn, payload.device_id)
     return
 
   row = conn.execute(

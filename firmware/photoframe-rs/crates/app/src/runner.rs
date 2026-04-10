@@ -632,11 +632,12 @@ where
         let failure_kind = render_failure.unwrap_or(FailureKind::GeneralFailure);
         let decision =
             apply_cycle_outcome(&config.retry_policy(), config.failure_count, failure_kind);
-        let failure_sleep_seconds =
-            sleep_seconds_until_next_beijing_sync(now_epoch).unwrap_or(decision.sleep_seconds);
+        let failure_sleep_seconds = decision.sleep_seconds;
         let _ = self.orchestrator.report_debug_stage(
             &config,
-            if fetch.ok {
+            if render_failure.is_some() {
+                "after_render_fail"
+            } else if fetch.ok {
                 "after_fetch_fail"
             } else {
                 "after_fetch_http_fail"

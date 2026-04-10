@@ -11,6 +11,7 @@ FULL_BIN_ABS="${DIST_DIR}/photoframe-rs-fullchip.bin"
 APP_BIN_ABS="${DIST_DIR}/photoframe-rs-app.bin"
 PARTITIONS_CSV="/work/firmware/photoframe-rs/partitions.csv"
 OTADATA_ABS="${BUILD_ROOT}/ota_data_initial.bin"
+ESP_IDF_SYS_BUILD_GLOB="${BUILD_ROOT}/build/esp-idf-sys-*"
 
 mkdir -p "${DIST_DIR}"
 rm -f "${DIST_DIR}/photoframe-rs.bin"
@@ -63,6 +64,11 @@ if [[ ${#BUILD_ENV_PREFIX[@]} -gt 0 ]]; then
     printf -v BUILD_CMD '%s %q' "${BUILD_CMD}" "${item}"
   done
   BUILD_CMD="${BUILD_CMD} cargo build --release"
+fi
+
+if compgen -G "${ESP_IDF_SYS_BUILD_GLOB}" >/dev/null; then
+  echo "[info] 清理 esp-idf-sys CMake 构建缓存，确保 PROJECT_VER 等配置即时生效"
+  rm -rf ${ESP_IDF_SYS_BUILD_GLOB}
 fi
 
 "${SCRIPT_DIR}/rust-idf-docker.sh" "${BUILD_CMD}"

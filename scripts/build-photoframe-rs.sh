@@ -17,6 +17,27 @@ rm -f "${DIST_DIR}/photoframe-rs.bin"
 
 BUILD_CMD='cargo build --release'
 BUILD_ENV_PREFIX=()
+
+default_project_ver() {
+  local base_version short_sha version
+  base_version="$(
+    sed -n 's/^version = "\(.*\)"/\1/p' \
+      "${REPO_ROOT}/firmware/photoframe-rs/crates/firmware-device/Cargo.toml" \
+      | head -n 1
+  )"
+  short_sha="$(git -C "${REPO_ROOT}" rev-parse --short=8 HEAD 2>/dev/null || true)"
+
+  version="${base_version:-0.1.0}"
+  if [[ -n "${short_sha}" ]]; then
+    version="${version}+${short_sha}"
+  fi
+  if ! git -C "${REPO_ROOT}" diff --quiet --exit-code; then
+    version="${version}-dirty"
+  fi
+
+  printf '%s' "${version}"
+}
+
 if [[ -n "${PHOTOFRAME_BOOTSTRAP_CONFIG_JSON:-}" ]]; then
   BUILD_ENV_PREFIX+=("PHOTOFRAME_BOOTSTRAP_CONFIG_JSON=${PHOTOFRAME_BOOTSTRAP_CONFIG_JSON}")
   echo "[info] 将 PHOTOFRAME_BOOTSTRAP_CONFIG_JSON 注入 Docker 构建"
@@ -25,6 +46,9 @@ if [[ -n "${PHOTOFRAME_FIRMWARE_VERSION:-}" ]]; then
   BUILD_ENV_PREFIX+=("PHOTOFRAME_FIRMWARE_VERSION=${PHOTOFRAME_FIRMWARE_VERSION}")
   echo "[info] 将 PHOTOFRAME_FIRMWARE_VERSION=${PHOTOFRAME_FIRMWARE_VERSION} 注入 Docker 构建"
 fi
+PROJECT_VER_VALUE="${PHOTOFRAME_PROJECT_VER:-${PHOTOFRAME_FIRMWARE_VERSION:-$(default_project_ver)}}"
+BUILD_ENV_PREFIX+=("PROJECT_VER=${PROJECT_VER_VALUE}")
+echo "[info] 将 PROJECT_VER=${PROJECT_VER_VALUE} 注入 Docker 构建"
 if [[ -n "${PHOTOFRAME_DEBUG_STAGE_BEACON:-}" ]]; then
   BUILD_ENV_PREFIX+=("PHOTOFRAME_DEBUG_STAGE_BEACON=${PHOTOFRAME_DEBUG_STAGE_BEACON}")
   echo "[info] 启用 PHOTOFRAME_DEBUG_STAGE_BEACON"

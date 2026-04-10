@@ -1239,6 +1239,10 @@ fn is_usb_serial_connected() -> bool {
     unsafe { esp_idf_sys::usb_serial_jtag_is_connected() }
 }
 
+fn should_hold_awake_for_usb_or_serial(usb_serial_connected: bool) -> bool {
+    usb_serial_connected
+}
+
 #[cfg(target_os = "espidf")]
 fn set_usb_console_suppressed(suppressed: bool) {
     static ESP_LOG_TAG_ALL: &[u8] = b"*\0";
@@ -1388,8 +1392,6 @@ fn hold_awake_before_sleep(
     const HOLD_LOOP_SLEEP_MS: u64 = 100;
     const POWER_SAMPLE_PERIOD: Duration = Duration::from_secs(3);
     const HOLD_LOG_PERIOD: Duration = Duration::from_secs(10);
-    const MAX_POWER_SAMPLE_FAILURES: usize = 3;
-
     let mut power_sample =
         runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
     let mut power_sample_failures = 0usize;
@@ -1405,12 +1407,12 @@ fn hold_awake_before_sleep(
 
     match hold_mode {
         PreSleepHoldMode::UsbOrSerial => {
-            if !usb_serial_connected && !usb_power_present {
+            if !should_hold_awake_for_usb_or_serial(usb_serial_connected) {
                 return;
             }
             crate::device_log!(
                 "INFO",
-                "photoframe-rs: usb present (serial={} vbus={}), skip {} deep sleep (planned {}s)",
+                "photoframe-rs: usb serial attached (serial={} vbus={}), skip {} deep sleep (planned {}s)",
                 i32::from(usb_serial_connected),
                 i32::from(usb_power_present),
                 if timer_only { "timer-only" } else { "normal" },
@@ -1445,12 +1447,9 @@ fn hold_awake_before_sleep(
             }
             last_power_sample_at = Instant::now();
         }
-        usb_power_present = power_sample.vbus_good == 1;
         match hold_mode {
             PreSleepHoldMode::UsbOrSerial => {
-                if !usb_serial_connected
-                    && (!usb_power_present || power_sample_failures >= MAX_POWER_SAMPLE_FAILURES)
-                {
+                if !should_hold_awake_for_usb_or_serial(usb_serial_connected) {
                     break;
                 }
             }
@@ -1582,7 +1581,9 @@ fn idle_forever() -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{startup_message, wake_source_from_ext1_state};
+    use super::{
+        should_hold_awake_for_usb_or_serial, startup_message, wake_source_from_ext1_state,
+    };
     use photoframe_domain::WakeSource;
 
     #[test]
@@ -1614,5 +1615,11 @@ mod tests {
             wake_source_from_ext1_state(true, true, false, false),
             WakeSource::SpuriousExt1
         );
+    }
+
+    #[test]
+    fn usb_hold_requires_real_serial_connection() {
+        assert!(should_hold_awake_for_usb_or_serial(true));
+        assert!(!should_hold_awake_for_usb_or_serial(false));
     }
 }

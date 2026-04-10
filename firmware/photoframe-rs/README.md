@@ -55,10 +55,10 @@ scripts/build-photoframe-rs.sh
 
 - `BOOT` 短按：从深睡唤醒后执行一次 orchestrator 同步，不再强制绕过条件请求
 - `BOOT` 长按（3 秒）：直接进入 AP 配网入口，不清空已有 Wi‑Fi 配置
-- `KEY` 短按：在当前 orchestrator 图片与最近 30 张 TF 缓存图片之间循环切换，不联网
-- `KEY` 长按（3 秒）：回到当前 orchestrator 图片（从 TF 缓存重显），不联网
+- `KEY` 短按：按日期在“当前 orchestrator 图片 -> 前 1 天 -> 前 2 天 ...”之间循环切换；优先读取 TF 卡 `pfphotos/` 缓存，若目标日期缺图，会临时联网请求 orchestrator `/api/v1/device/history/daily.*` 回源补图并写回 TF
+- `KEY` 长按（3 秒）：回到当前 orchestrator 图片；若 TF 中缺当前日期图片，也会通过 orchestrator 历史补图接口回源拉取
 - 定时刷新到点时，若设备正停留在历史图，会强制回到当前 orchestrator 图片
-- 历史图缓存默认写入 TF 卡 `pfphotos/` 目录；若 TF 不可用，按键轮播只会记录告警，不会触发联网兜底
+- 历史图缓存默认写入 TF 卡 `pfphotos/` 目录；若 TF 不可用，按键轮播只会记录告警，无法保留离线历史
 
 ## 真机刷写与串口
 

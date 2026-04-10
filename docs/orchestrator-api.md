@@ -608,7 +608,33 @@ Header：
 - `X-PhotoFrame-Source: override|daily`
 - `X-PhotoFrame-Device: <device_id>`
 
-## 9) 认证
+## 9) 设备历史补图
+
+`GET /api/v1/device/history/daily.bmp`
+`GET /api/v1/device/history/daily.jpg`
+
+鉴权：
+
+- 请求头：`X-PhotoFrame-Token: <device_token>`
+
+必填 Query：
+
+- `device_id`：设备 ID
+- `date`：目标日期，格式 `YYYY-MM-DD`
+
+行为：
+
+1. 仅面向设备侧使用，不经过 publish history，也不会生成新的 `sent/displayed` 记录。
+2. 服务端按显式 `date` 重写 `DAILY_IMAGE_URL_TEMPLATE`，向上游拉取对应日期图片。
+3. 与常规 daily 一样，复用服务端裁剪、dither、palette profile 和资产缓存链路。
+4. 返回 BMP 或 JPEG，取决于接口后缀；响应头会包含 `X-PhotoFrame-Date`、`ETag` 和 `X-PhotoFrame-Dither`，设备可按需复用缓存。
+
+适用场景：
+
+- 设备短按 `KEY` 回看历史日期时，若 TF 卡里缺该日期图片，可通过该接口即时补图并写回本地缓存。
+- 设备长按 `KEY` 回到“当前 orchestrator 图片”时，若当前日期图片也不在 TF 中，同样走该接口兜底。
+
+## 10) 认证
 
 管理端（编辑页、插播、配置发布、审批）使用：
 

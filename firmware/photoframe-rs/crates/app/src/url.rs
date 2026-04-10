@@ -51,6 +51,45 @@ pub fn shift_date_param_days(url: &str, delta_days: i64) -> Option<String> {
     Some(out)
 }
 
+pub fn shift_date_string_days(date_text: &str, delta_days: i64) -> Option<String> {
+    if delta_days == 0 {
+        return Some(date_text.to_string());
+    }
+    let date = NaiveDate::parse_from_str(date_text, "%Y-%m-%d").ok()?;
+    let shifted = if delta_days > 0 {
+        date.checked_add_days(Days::new(delta_days as u64))?
+    } else {
+        date.checked_sub_days(Days::new((-delta_days) as u64))?
+    };
+    Some(shifted.format("%Y-%m-%d").to_string())
+}
+
+pub fn date_days_behind(reference_date: &str, candidate_date: &str) -> Option<i64> {
+    let reference = NaiveDate::parse_from_str(reference_date, "%Y-%m-%d").ok()?;
+    let candidate = NaiveDate::parse_from_str(candidate_date, "%Y-%m-%d").ok()?;
+    Some((reference - candidate).num_days())
+}
+
+pub fn extract_date_from_url(url: &str) -> Option<String> {
+    if let Some(marker_pos) = url.find("date=") {
+        let start = marker_pos + "date=".len();
+        let candidate = url.get(start..start + 10)?;
+        if NaiveDate::parse_from_str(candidate, "%Y-%m-%d").is_ok() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    if let Some(marker_pos) = url.find("daily-") {
+        let start = marker_pos + "daily-".len();
+        let candidate = url.get(start..start + 10)?;
+        if NaiveDate::parse_from_str(candidate, "%Y-%m-%d").is_ok() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
+}
+
 pub fn build_dated_url(template: &str, date: &str, device_id: &str) -> String {
     let safe_device_id = if device_id.is_empty() {
         "unknown"

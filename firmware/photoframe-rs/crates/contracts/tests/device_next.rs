@@ -40,7 +40,9 @@ fn parses_device_next_response_with_clock_fields() {
     assert_eq!(response.poll_after_seconds, Some(3600));
     assert_eq!(response.device_clock_ok, Some(false));
     assert_eq!(response.effective_epoch, Some(1_760_000_000));
-    let request = response.log_upload_request.expect("missing log upload request");
+    let request = response
+        .log_upload_request
+        .expect("missing log upload request");
     assert_eq!(request.request_id, 12);
     assert_eq!(request.max_lines, 120);
     assert_eq!(request.max_bytes, 8192);

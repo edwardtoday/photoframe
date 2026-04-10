@@ -198,7 +198,9 @@ fn render_image_direct(
             crate::device_log!(
                 "INFO",
                 "photoframe-rs/render: jpeg decoded width={} height={} rgb_len={}",
-                decoded.width, decoded.height, decoded.rgb_len
+                decoded.width,
+                decoded.height,
+                decoded.rgb_len
             );
             let _ =
                 photoframe_platform_espidf::send_debug_stage_beacon(config, "after_jpeg_decode");
@@ -209,7 +211,8 @@ fn render_image_direct(
                     crate::device_log!(
                         "ERROR",
                         "photoframe-rs/render: jpeg size overflow width={} height={}",
-                        decoded.width, decoded.height
+                        decoded.width,
+                        decoded.height
                     );
                     log_render_timing(
                         "err",
@@ -229,7 +232,8 @@ fn render_image_direct(
                 crate::device_log!(
                     "ERROR",
                     "photoframe-rs/render: jpeg rgb_len too short actual={} expected={}",
-                    decoded.rgb_len, expected_rgb_len
+                    decoded.rgb_len,
+                    expected_rgb_len
                 );
                 let _ = photoframe_platform_espidf::send_debug_stage_beacon(
                     config,
@@ -286,14 +290,23 @@ fn render_image_direct(
     } else {
         config.device_id.as_str()
     };
-    crate::device_log!("INFO", "photoframe-rs/render: pause wifi before panel flush");
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs/render: pause wifi before panel flush"
+    );
     EspWifiManager::pause_for_render();
     let flush_start = Instant::now();
     let flush_result = crate::panel::flush_packed_image(&packed.bytes);
     flush_ms = flush_start.elapsed().as_millis();
-    crate::device_log!("INFO", "photoframe-rs/render: resume wifi after panel flush");
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs/render: resume wifi after panel flush"
+    );
     if let Err(err) = EspWifiManager::reconnect_after_render(hostname, config) {
-        crate::device_log!("WARN", "photoframe-rs/render: wifi resume failed after flush: {err}");
+        crate::device_log!(
+            "WARN",
+            "photoframe-rs/render: wifi resume failed after flush: {err}"
+        );
         log_render_timing(
             "err",
             "wifi_resume",

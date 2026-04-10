@@ -1,8 +1,8 @@
 #![cfg_attr(not(target_os = "espidf"), allow(dead_code))]
 
 use photoframe_app::{
-    Clock, DeviceRuntimeConfig, Display, ImageArtifact, ImageFetchOutcome, ImageFetchPlan,
-    FirmwareRuntimeStatus, FirmwareUpdater, ImageFetcher, OrchestratorApi, Storage,
+    Clock, DeviceRuntimeConfig, Display, FirmwareRuntimeStatus, FirmwareUpdater, ImageArtifact,
+    ImageFetchOutcome, ImageFetchPlan, ImageFetcher, OrchestratorApi, Storage,
 };
 use photoframe_contracts::{
     DeviceCheckinRequest, DeviceLogUploadRequest, DeviceLogUploadRequestBody, DeviceNextResponse,
@@ -13,9 +13,9 @@ use photoframe_domain::FailureKind;
 #[cfg(target_os = "espidf")]
 use photoframe_app::{ImageFormat, WifiCredential};
 #[cfg(target_os = "espidf")]
-    use photoframe_contracts::{
-        DeviceConfigAppliedRequest, DeviceConfigPayload, DeviceConfigResponse, RemoteConfigPatch,
-    };
+use photoframe_contracts::{
+    DeviceConfigAppliedRequest, DeviceConfigPayload, DeviceConfigResponse, RemoteConfigPatch,
+};
 #[cfg(target_os = "espidf")]
 use photoframe_domain::{device_id_from_mac_suffix, token_hex_from_bytes};
 
@@ -222,9 +222,11 @@ impl Storage for EspIdfStorage {
                 64,
             );
             config.last_image_sha256 = self.get_string("img_sha256")?.unwrap_or_default();
+            config.last_image_date = self.get_string("img_date")?.unwrap_or_default();
             config.last_image_etag = self.get_string("img_etag")?.unwrap_or_default();
             config.last_image_last_modified = self.get_string("img_lm")?.unwrap_or_default();
             config.displayed_image_sha256 = self.get_string("disp_sha")?.unwrap_or_default();
+            config.displayed_image_date = self.get_string("disp_date")?.unwrap_or_default();
             config.manual_history_active = self.get_i32("hist_mode")?.unwrap_or(0) != 0;
             config.preferred_image_origin = self.get_string("img_origin")?.unwrap_or_default();
             config.last_success_epoch = self.get_i64("last_ok")?.unwrap_or(0);
@@ -266,9 +268,11 @@ impl Storage for EspIdfStorage {
             self.set_i32("dither", config.dither_mode)?;
             self.set_i32("clr_tol", config.six_color_tolerance)?;
             self.set_string("img_sha256", &config.last_image_sha256)?;
+            self.set_string("img_date", &config.last_image_date)?;
             self.set_string("img_etag", &config.last_image_etag)?;
             self.set_string("img_lm", &config.last_image_last_modified)?;
             self.set_string("disp_sha", &config.displayed_image_sha256)?;
+            self.set_string("disp_date", &config.displayed_image_date)?;
             self.set_i32("hist_mode", i32::from(config.manual_history_active))?;
             self.set_string("img_origin", &config.preferred_image_origin)?;
             self.set_i64("last_ok", config.last_success_epoch)?;
@@ -523,13 +527,13 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
                             emit_diag_log(
                                 "INFO",
                                 format!(
-                                "photoframe-rs/checkin: ok device_id={} base={}/{} attempt={}/3 status={} url={}",
-                                payload.device_id,
-                                base_index + 1,
-                                base_urls.len(),
-                                attempt + 1,
-                                status,
-                                url
+                                    "photoframe-rs/checkin: ok device_id={} base={}/{} attempt={}/3 status={} url={}",
+                                    payload.device_id,
+                                    base_index + 1,
+                                    base_urls.len(),
+                                    attempt + 1,
+                                    status,
+                                    url
                                 ),
                             );
                             return Ok(());
@@ -539,13 +543,13 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
                             emit_diag_log(
                                 "WARN",
                                 format!(
-                                "photoframe-rs/checkin: non-2xx device_id={} base={}/{} attempt={}/3 status={} url={}",
-                                payload.device_id,
-                                base_index + 1,
-                                base_urls.len(),
-                                attempt + 1,
-                                status,
-                                url
+                                    "photoframe-rs/checkin: non-2xx device_id={} base={}/{} attempt={}/3 status={} url={}",
+                                    payload.device_id,
+                                    base_index + 1,
+                                    base_urls.len(),
+                                    attempt + 1,
+                                    status,
+                                    url
                                 ),
                             );
                         }
@@ -554,13 +558,13 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
                             emit_diag_log(
                                 "WARN",
                                 format!(
-                                "photoframe-rs/checkin: error device_id={} base={}/{} attempt={}/3 err={} url={}",
-                                payload.device_id,
-                                base_index + 1,
-                                base_urls.len(),
-                                attempt + 1,
-                                err,
-                                url
+                                    "photoframe-rs/checkin: error device_id={} base={}/{} attempt={}/3 err={} url={}",
+                                    payload.device_id,
+                                    base_index + 1,
+                                    base_urls.len(),
+                                    attempt + 1,
+                                    err,
+                                    url
                                 ),
                             );
                         }
@@ -569,12 +573,12 @@ impl OrchestratorApi for EspIdfOrchestratorApi {
                 emit_diag_log(
                     "WARN",
                     format!(
-                    "photoframe-rs/checkin: base failed device_id={} base={}/{} last_error={} url={}",
-                    payload.device_id,
-                    base_index + 1,
-                    base_urls.len(),
-                    last_error,
-                    url
+                        "photoframe-rs/checkin: base failed device_id={} base={}/{} last_error={} url={}",
+                        payload.device_id,
+                        base_index + 1,
+                        base_urls.len(),
+                        last_error,
+                        url
                     ),
                 );
             }
@@ -978,7 +982,8 @@ fn orchestrator_token_for_url(url: &str, config: &DeviceRuntimeConfig) -> Option
     }
     let expected_origin = photoframe_app::split_url_origin_and_rest(&config.orchestrator_base_url)
         .map(|(origin, _)| origin)?;
-    let candidate_origin = photoframe_app::split_url_origin_and_rest(url).map(|(origin, _)| origin)?;
+    let candidate_origin =
+        photoframe_app::split_url_origin_and_rest(url).map(|(origin, _)| origin)?;
     if candidate_origin == expected_origin {
         return Some(config.orchestrator_token.clone());
     }
@@ -1131,7 +1136,8 @@ fn install_firmware_inner(
 
         let mut redirect_count = 0usize;
         loop {
-            if let Err(err) = check_esp(sys::esp_http_client_open(client, 0), "esp_http_client_open")
+            if let Err(err) =
+                check_esp(sys::esp_http_client_open(client, 0), "esp_http_client_open")
             {
                 sys::esp_http_client_cleanup(client);
                 return Err(err);
@@ -1163,13 +1169,21 @@ fn install_firmware_inner(
                 let body = read_body_stream(client).unwrap_or_default();
                 sys::esp_http_client_close(client);
                 sys::esp_http_client_cleanup(client);
-                let preview = String::from_utf8_lossy(&body).chars().take(120).collect::<String>();
-                return Err(format!("firmware download status={status_code} url={url_text} body={preview}"));
+                let preview = String::from_utf8_lossy(&body)
+                    .chars()
+                    .take(120)
+                    .collect::<String>();
+                return Err(format!(
+                    "firmware download status={status_code} url={url_text} body={preview}"
+                ));
             }
             let _ = send_debug_stage_beacon(config, "ota_http_ok");
 
             let content_len = sys::esp_http_client_get_content_length(client);
-            if directive.size_bytes > 0 && content_len > 0 && content_len as u64 != directive.size_bytes {
+            if directive.size_bytes > 0
+                && content_len > 0
+                && content_len as u64 != directive.size_bytes
+            {
                 let _ = send_debug_stage_beacon(config, "ota_fail_size_header");
                 sys::esp_http_client_close(client);
                 sys::esp_http_client_cleanup(client);
@@ -1435,10 +1449,10 @@ fn fetch_image_inner(plan: &ImageFetchPlan) -> Result<ImageFetchOutcome, String>
                 emit_diag_log(
                     "INFO",
                     format!(
-                    "photoframe-rs/timing: fetch status=304 total={}ms headers={}ms body=0ms bytes=0 changed=false format=unchanged url={}",
-                    fetch_start.elapsed().as_millis(),
-                    headers_ms,
-                    plan.url
+                        "photoframe-rs/timing: fetch status=304 total={}ms headers={}ms body=0ms bytes=0 changed=false format=unchanged url={}",
+                        fetch_start.elapsed().as_millis(),
+                        headers_ms,
+                        plan.url
                     ),
                 );
                 sys::esp_http_client_close(client);

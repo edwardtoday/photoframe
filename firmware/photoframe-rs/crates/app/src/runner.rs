@@ -10,6 +10,7 @@ use photoframe_domain::{
 use crate::{
     DeviceRuntimeConfig, ImageArtifact, ImageFetchOutcome, ImageFetchPlan,
     build_checkin_base_url_candidates, build_dated_url, build_fetch_url_candidates,
+    extract_date_from_url,
     model::{FirmwareRuntimeStatus, PowerSample},
     split_url_origin_and_rest,
 };
@@ -135,6 +136,7 @@ pub trait Display {
         _artifact: &ImageArtifact,
         _config: &DeviceRuntimeConfig,
         _image_sha256: &str,
+        _image_date: Option<&str>,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -487,7 +489,9 @@ where
         let orchestrator_origin =
             split_url_origin_and_rest(&config.orchestrator_base_url).map(|(origin, _)| origin);
 
-        let _ = self.orchestrator.report_debug_stage(&config, "before_fetch");
+        let _ = self
+            .orchestrator
+            .report_debug_stage(&config, "before_fetch");
         for candidate in fetch_urls {
             let orchestrator_token =
                 orchestrator_token_for_url(orchestrator_origin.as_deref(), &candidate, &config);
@@ -544,16 +548,19 @@ where
 
         if fetch.ok && should_refresh {
             if let Some(artifact) = fetch.artifact.as_ref() {
+                let rendered_image_date = fetch_url_used.as_deref().and_then(extract_date_from_url);
                 if let Err(kind) = self.display.render(artifact, &config, force_refresh) {
                     render_failure = Some(kind);
                     last_error = match kind {
                         FailureKind::PmicSoftFailure => "pmic soft failure".into(),
                         _ => "render failed".into(),
                     };
-                } else if let Err(err) =
-                    self.display
-                        .after_render_success(artifact, &config, &fetch.sha256)
-                {
+                } else if let Err(err) = self.display.after_render_success(
+                    artifact,
+                    &config,
+                    &fetch.sha256,
+                    rendered_image_date.as_deref(),
+                ) {
                     render_failure = Some(FailureKind::GeneralFailure);
                     last_error = format!("persist rendered photo failed: {err}");
                 }
@@ -573,7 +580,12 @@ where
             config.failure_count = 0;
             if should_refresh {
                 config.last_image_sha256 = fetch.sha256.clone();
+                config.last_image_date = fetch_url_used
+                    .as_deref()
+                    .and_then(extract_date_from_url)
+                    .unwrap_or_default();
                 config.displayed_image_sha256 = fetch.sha256.clone();
+                config.displayed_image_date = config.last_image_date.clone();
                 config.manual_history_active = false;
             }
             if let Some(value) = &fetch.etag {

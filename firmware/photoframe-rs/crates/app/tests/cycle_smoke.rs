@@ -1,11 +1,12 @@
 use photoframe_app::{
-    BootContext, Clock, CycleExit, CycleRunner, DeviceRuntimeConfig, Display, ImageArtifact,
-    FirmwareRuntimeStatus, FirmwareUpdater, ImageFetchOutcome, ImageFetchPlan, ImageFetcher, ImageFormat,
-    LogUploadProvider, OrchestratorApi, PowerSample, Storage, WifiCredential,
+    BootContext, Clock, CycleExit, CycleRunner, DeviceRuntimeConfig, Display,
+    FirmwareRuntimeStatus, FirmwareUpdater, ImageArtifact, ImageFetchOutcome, ImageFetchPlan,
+    ImageFetcher, ImageFormat, LogUploadProvider, OrchestratorApi, PowerSample, Storage,
+    WifiCredential,
 };
 use photoframe_contracts::{
-    DeviceCheckinRequest, DeviceLogUploadRequest, DeviceLogUploadRequestBody,
-    DeviceNextResponse, FirmwareUpdateDirective,
+    DeviceCheckinRequest, DeviceLogUploadRequest, DeviceLogUploadRequestBody, DeviceNextResponse,
+    FirmwareUpdateDirective,
 };
 use photoframe_domain::{FailureKind, LongPressAction, WakeSource};
 
@@ -484,7 +485,14 @@ fn pmic_soft_failure_uses_regular_retry_interval() {
 
     let payload = runner.orchestrator().last_checkin_payload.as_ref().unwrap();
     assert_eq!(payload.last_error, "pmic soft failure");
-    assert_eq!(runner.orchestrator().debug_stages.last().map(String::as_str), Some("before_checkin_fail"));
+    assert_eq!(
+        runner
+            .orchestrator()
+            .debug_stages
+            .last()
+            .map(String::as_str),
+        Some("before_checkin_fail")
+    );
     assert_eq!(
         report.exit,
         CycleExit::Sleep {
@@ -579,16 +587,20 @@ fn successful_cycle_uses_directive_and_reports_checkin() {
     assert_eq!(runner.orchestrator().checkin_calls, 1);
     assert_eq!(runner.display().render_calls, 1);
     assert_eq!(
-        runner.orchestrator().last_checkin_payload.as_ref().map(|payload| (
-            payload.sleep_seconds,
-            payload.poll_interval_seconds,
-            payload.image_source.as_str(),
-            payload.display_applied,
-            payload.displayed_image_url.as_str(),
-            payload.displayed_image_sha256.as_str(),
-            payload.running_partition.as_str(),
-            payload.ota_state.as_str(),
-        )),
+        runner
+            .orchestrator()
+            .last_checkin_payload
+            .as_ref()
+            .map(|payload| (
+                payload.sleep_seconds,
+                payload.poll_interval_seconds,
+                payload.image_source.as_str(),
+                payload.display_applied,
+                payload.displayed_image_url.as_str(),
+                payload.displayed_image_sha256.as_str(),
+                payload.running_partition.as_str(),
+                payload.ota_state.as_str(),
+            )),
         Some((
             900,
             3600,
@@ -1129,8 +1141,14 @@ fn successful_cycle_uploads_logs_when_requested() {
 
     assert!(report.logs_uploaded);
     assert_eq!(runner.orchestrator().upload_log_calls, 1);
-    assert_eq!(runner.orchestrator().last_log_upload_request.as_ref(), Some(&request));
-    assert_eq!(runner.orchestrator().last_log_upload_payload.as_ref(), Some(&payload));
+    assert_eq!(
+        runner.orchestrator().last_log_upload_request.as_ref(),
+        Some(&request)
+    );
+    assert_eq!(
+        runner.orchestrator().last_log_upload_payload.as_ref(),
+        Some(&payload)
+    );
 }
 
 #[test]

@@ -1836,13 +1836,25 @@ def _current_epaper_palette_profile(override_profile: str | None = None) -> dict
   return _palette_profile_spec(override_profile)
 
 
-def _daily_image_url(now_epoch: int) -> str:
-  date_text = datetime.fromtimestamp(now_epoch, LOCAL_TZ).strftime("%Y-%m-%d")
+def _normalize_date_text(raw: str) -> str:
+  try:
+    return datetime.strptime(str(raw).strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
+  except Exception as exc:
+    raise HTTPException(status_code=400, detail="invalid date, expected YYYY-MM-DD") from exc
+
+
+def _daily_image_url_for_date(date_text: str) -> str:
+  date_text = _normalize_date_text(date_text)
   url = DAILY_TEMPLATE.replace("%DATE%", date_text)
   if "date=" not in url:
     connector = "&" if "?" in url else "?"
     url = f"{url}{connector}date={date_text}"
   return url
+
+
+def _daily_image_url(now_epoch: int) -> str:
+  date_text = datetime.fromtimestamp(now_epoch, LOCAL_TZ).strftime("%Y-%m-%d")
+  return _daily_image_url_for_date(date_text)
 
 
 def _fetch_daily_source_bytes(url: str) -> bytes:
@@ -2622,8 +2634,8 @@ def _fit_daily_source_image(source_bytes: bytes) -> Image.Image:
     raise HTTPException(status_code=502, detail="daily upstream cannot decode image") from exc
 
 
-def _daily_asset_names(now_ts: int, dither_algorithm: str) -> tuple[str, str]:
-  date_text = datetime.fromtimestamp(now_ts, LOCAL_TZ).strftime("%Y-%m-%d")
+def _daily_asset_names_for_date(date_text: str, dither_algorithm: str) -> tuple[str, str]:
+  date_text = _normalize_date_text(date_text)
   suffix = dither_algorithm.replace("/", "-").replace(" ", "-")
   return (
       f"daily-{date_text}-{suffix}.bmp",
@@ -2631,15 +2643,21 @@ def _daily_asset_names(now_ts: int, dither_algorithm: str) -> tuple[str, str]:
   )
 
 
-def _ensure_daily_assets(
+def _daily_asset_names(now_ts: int, dither_algorithm: str) -> tuple[str, str]:
+  date_text = datetime.fromtimestamp(now_ts, LOCAL_TZ).strftime("%Y-%m-%d")
+  return _daily_asset_names_for_date(date_text, dither_algorithm)
+
+
+def _ensure_daily_assets_for_date(
     now_ts: int,
+    date_text: str,
     url: str,
     dither_algorithm: str,
     *,
     palette_profile: str | None = None,
 ) -> tuple[str, str]:
   profile_key = _resolve_palette_profile(palette_profile)
-  bmp_name, jpg_name = _daily_asset_names(now_ts, f"{dither_algorithm}-{profile_key}")
+  bmp_name, jpg_name = _daily_asset_names_for_date(date_text, f"{dither_algorithm}-{profile_key}")
   bmp_path = DAILY_CACHE_DIR / bmp_name
   jpg_path = DAILY_CACHE_DIR / jpg_name
   metadata_path = _daily_cache_metadata_path(jpg_name)
@@ -2717,6 +2735,44 @@ def _ensure_daily_assets(
   return bmp_name, jpg_name
 
 
+def _ensure_daily_assets(
+    now_ts: int,
+    url: str,
+    dither_algorithm: str,
+    *,
+    palette_profile: str | None = None,
+) -> tuple[str, str]:
+  date_text = datetime.fromtimestamp(now_ts, LOCAL_TZ).strftime("%Y-%m-%d")
+  return _ensure_daily_assets_for_date(
+      now_ts,
+      date_text,
+      url,
+      dither_algorithm,
+      palette_profile=palette_profile,
+  )
+
+
+def _render_daily_payload_with_metadata_for_date(
+    now_ts: int,
+    date_text: str,
+    url: str,
+    output_format: str,
+    dither_algorithm: str,
+    *,
+    palette_profile: str | None = None,
+) -> tuple[bytes, dict[str, Any]]:
+  bmp_name, jpg_name = _ensure_daily_assets_for_date(
+      now_ts,
+      date_text,
+      url,
+      dither_algorithm,
+      palette_profile=palette_profile,
+  )
+  target_name = bmp_name if output_format == "bmp" else jpg_name
+  metadata = _read_daily_cache_metadata(_daily_cache_metadata_path(jpg_name))
+  return _locate_asset_path(target_name).read_bytes(), metadata
+
+
 def _render_daily_payload_with_metadata(
     now_ts: int,
     url: str,
@@ -2725,10 +2781,15 @@ def _render_daily_payload_with_metadata(
     *,
     palette_profile: str | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
-  bmp_name, jpg_name = _ensure_daily_assets(now_ts, url, dither_algorithm, palette_profile=palette_profile)
-  target_name = bmp_name if output_format == "bmp" else jpg_name
-  metadata = _read_daily_cache_metadata(_daily_cache_metadata_path(jpg_name))
-  return _locate_asset_path(target_name).read_bytes(), metadata
+  date_text = datetime.fromtimestamp(now_ts, LOCAL_TZ).strftime("%Y-%m-%d")
+  return _render_daily_payload_with_metadata_for_date(
+      now_ts,
+      date_text,
+      url,
+      output_format,
+      dither_algorithm,
+      palette_profile=palette_profile,
+  )
 
 
 def _resolve_current_asset_for_device(
@@ -3593,6 +3654,68 @@ def asset(
       filename=safe_name,
       headers={"Cache-Control": _daily_asset_cache_control(path)},
   )
+
+
+def _device_history_daily_response(
+    request: Request,
+    device_id: str,
+    date: str,
+    output_format: str,
+    x_photoframe_token: str | None,
+) -> Response:
+  _require_device_token(device_id, x_photoframe_token)
+  now_ts = _now_epoch()
+  date_text = _normalize_date_text(date)
+  picked = _get_daily_dither_algorithm()
+  palette_profile = _get_palette_profile()
+  upstream_url = _daily_image_url_for_date(date_text)
+  payload, upstream_metadata = _render_daily_payload_with_metadata_for_date(
+      now_ts,
+      date_text,
+      upstream_url,
+      output_format,
+      picked,
+      palette_profile=palette_profile,
+  )
+  sha_key = "rendered_bmp_sha256" if output_format == "bmp" else "rendered_jpg_sha256"
+  etag_value = str(upstream_metadata.get(sha_key) or "").strip() or hashlib.sha256(payload).hexdigest()
+  etag = f"\"{etag_value}\""
+  headers = {
+      "Cache-Control": "private, max-age=60",
+      "ETag": etag,
+      "X-PhotoFrame-Source": "daily-history",
+      "X-PhotoFrame-Device": _normalize_device_id(device_id),
+      "X-PhotoFrame-Date": date_text,
+      "X-PhotoFrame-Dither": picked,
+  }
+  headers.update(_daily_metadata_response_headers(upstream_metadata))
+  if _if_none_match_hit(request, etag):
+    return Response(status_code=304, content=b"", headers=headers)
+  return Response(
+      content=payload,
+      media_type="image/bmp" if output_format == "bmp" else "image/jpeg",
+      headers=headers,
+  )
+
+
+@app.get("/api/v1/device/history/daily.bmp")
+def device_history_daily_bmp(
+    request: Request,
+    device_id: str = Query(..., min_length=1, max_length=64),
+    date: str = Query(..., min_length=10, max_length=10),
+    x_photoframe_token: str | None = Header(default=None),
+) -> Response:
+  return _device_history_daily_response(request, device_id, date, "bmp", x_photoframe_token)
+
+
+@app.get("/api/v1/device/history/daily.jpg")
+def device_history_daily_jpg(
+    request: Request,
+    device_id: str = Query(..., min_length=1, max_length=64),
+    date: str = Query(..., min_length=10, max_length=10),
+    x_photoframe_token: str | None = Header(default=None),
+) -> Response:
+  return _device_history_daily_response(request, device_id, date, "jpg", x_photoframe_token)
 
 
 @app.get("/public/daily.bmp")

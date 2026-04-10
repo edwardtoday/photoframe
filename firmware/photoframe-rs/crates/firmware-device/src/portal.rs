@@ -775,7 +775,8 @@ pub fn run_ap_portal_forever() -> Result<(), String> {
 
     let mut storage = EspIdfStorage::new()?;
     let config = storage.load_config()?;
-    let power_sample = crate::runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
+    let power_sample =
+        crate::runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
     let status = PortalRuntimeStatus {
         wifi_connected: false,
         force_refresh: false,

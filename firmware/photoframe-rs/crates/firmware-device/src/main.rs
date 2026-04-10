@@ -2,9 +2,9 @@
 mod diag;
 mod jpeg;
 mod panel;
+mod photo_history;
 mod portal;
 mod power;
-mod photo_history;
 mod render_core;
 mod runtime_bridge;
 mod sdcard;
@@ -22,7 +22,8 @@ use std::{
 
 #[cfg(target_os = "espidf")]
 use photoframe_app::{
-    BootContext, CycleExit, CycleReport, CycleRunner, DeviceRuntimeConfig, Display, Storage,
+    BootContext, Clock, CycleExit, CycleReport, CycleRunner, DeviceRuntimeConfig, Display,
+    ImageFetchPlan, ImageFetcher, Storage, date_days_behind, shift_date_string_days,
 };
 #[cfg(target_os = "espidf")]
 use photoframe_contracts::DeviceConfigPayload;
@@ -363,12 +364,15 @@ impl Display for DeviceDisplay {
         artifact: &photoframe_app::ImageArtifact,
         _config: &photoframe_app::DeviceRuntimeConfig,
         image_sha256: &str,
+        image_date: Option<&str>,
     ) -> Result<(), String> {
-        if let Err(err) = photo_history::remember_rendered_photo(artifact, image_sha256) {
+        if let Err(err) = photo_history::remember_rendered_photo(artifact, image_sha256, image_date)
+        {
             crate::device_log!(
                 "WARN",
-                "photoframe-rs: cache rendered photo failed sha={} err={}",
+                "photoframe-rs: cache rendered photo failed sha={} date={} err={}",
                 image_sha256,
+                image_date.unwrap_or_default(),
                 err
             );
         }
@@ -386,6 +390,11 @@ enum LocalPhotoOutcome {
 fn regular_sleep_seconds(config: &DeviceRuntimeConfig) -> u64 {
     let fallback = u64::from(config.interval_minutes.max(1)) * 60;
     sleep_seconds_until_next_beijing_sync(system_now_epoch()).unwrap_or(fallback)
+}
+
+#[cfg(target_os = "espidf")]
+fn history_fetch_output_format() -> &'static str {
+    "bmp"
 }
 
 #[cfg(target_os = "espidf")]
@@ -417,66 +426,335 @@ fn render_cached_photo(
 }
 
 #[cfg(target_os = "espidf")]
-fn cycle_cached_history_photo(
-    config: &mut DeviceRuntimeConfig,
-) -> Result<LocalPhotoOutcome, String> {
+fn current_orchestrator_date(config: &DeviceRuntimeConfig) -> Result<String, String> {
+    if !config.last_image_date.trim().is_empty() {
+        return Ok(config.last_image_date.trim().to_string());
+    }
+    if let Some(entry) = photo_history::entry_for_sha256(&config.last_image_sha256)?
+        && !entry.image_date.trim().is_empty()
+    {
+        return Ok(entry.image_date);
+    }
+    let clock = photoframe_platform_espidf::EspIdfClock;
+    Ok(clock.today_date_string())
+}
+
+#[cfg(target_os = "espidf")]
+fn displayed_history_date(
+    config: &DeviceRuntimeConfig,
+    current_date: &str,
+) -> Result<String, String> {
+    if !config.displayed_image_date.trim().is_empty() {
+        return Ok(config.displayed_image_date.trim().to_string());
+    }
     let current_sha = if config.displayed_image_sha256.is_empty() {
         config.last_image_sha256.as_str()
     } else {
         config.displayed_image_sha256.as_str()
     };
-    let Some(entry) = photo_history::next_entry(current_sha)? else {
-        crate::device_log!("WARN", "photoframe-rs: photo history empty, skip key browse");
-        return Ok(LocalPhotoOutcome::Unavailable {
-            image_source: "history_empty".into(),
-        });
-    };
-    if !render_cached_photo(config, &entry.sha256, "key_cycle")? {
-        return Ok(LocalPhotoOutcome::Unavailable {
-            image_source: "history_missing".into(),
-        });
+    if let Some(entry) = photo_history::entry_for_sha256(current_sha)?
+        && !entry.image_date.trim().is_empty()
+    {
+        return Ok(entry.image_date);
     }
-    config.displayed_image_sha256 = entry.sha256.clone();
-    config.manual_history_active = entry.sha256 != config.last_image_sha256;
+    Ok(current_date.to_string())
+}
+
+#[cfg(target_os = "espidf")]
+fn next_history_target_date(current_date: &str, displayed_date: &str) -> Result<String, String> {
+    if displayed_date == current_date {
+        return shift_date_string_days(current_date, -1)
+            .ok_or_else(|| format!("cannot shift history date from current={current_date}"));
+    }
+
+    let days_behind = date_days_behind(current_date, displayed_date).unwrap_or_default();
+    if days_behind >= photo_history::PHOTO_HISTORY_MAX_ENTRIES as i64 {
+        return Ok(current_date.to_string());
+    }
+    shift_date_string_days(displayed_date, -1)
+        .ok_or_else(|| format!("cannot shift history date displayed={displayed_date}"))
+}
+
+#[cfg(target_os = "espidf")]
+fn apply_displayed_history_state(
+    config: &mut DeviceRuntimeConfig,
+    sha256: &str,
+    displayed_date: &str,
+    current_date: &str,
+    image_source: &str,
+) -> LocalPhotoOutcome {
+    config.displayed_image_sha256 = sha256.to_string();
+    config.displayed_image_date = displayed_date.to_string();
+    config.manual_history_active = displayed_date != current_date;
     crate::device_log!(
         "INFO",
-        "photoframe-rs: history key switched sha={} browse_active={}",
+        "photoframe-rs: history switched sha={} date={} browse_active={}",
         config.displayed_image_sha256,
+        config.displayed_image_date,
         i32::from(config.manual_history_active)
     );
-    Ok(LocalPhotoOutcome::Rendered {
-        image_source: if config.manual_history_active {
-            "history".into()
+    LocalPhotoOutcome::Rendered {
+        image_source: image_source.to_string(),
+    }
+}
+
+#[cfg(target_os = "espidf")]
+fn render_history_date_from_cache(
+    config: &mut DeviceRuntimeConfig,
+    displayed_date: &str,
+    current_date: &str,
+    reason: &str,
+) -> Result<Option<LocalPhotoOutcome>, String> {
+    let Some(entry) = photo_history::entry_for_date(displayed_date)? else {
+        return Ok(None);
+    };
+    if !render_cached_photo(config, &entry.sha256, reason)? {
+        return Ok(None);
+    }
+    let image_source = if displayed_date == current_date {
+        "current_cached"
+    } else {
+        "history_cached"
+    };
+    Ok(Some(apply_displayed_history_state(
+        config,
+        &entry.sha256,
+        displayed_date,
+        current_date,
+        image_source,
+    )))
+}
+
+#[cfg(target_os = "espidf")]
+fn connect_best_wifi<S: Storage>(
+    storage: &mut S,
+    config: &mut DeviceRuntimeConfig,
+) -> Result<Option<String>, String> {
+    use crate::wifi::EspWifiManager;
+
+    if !config.has_wifi_credentials() {
+        return Err("missing wifi credentials".into());
+    }
+
+    let hostname = if config.device_id.is_empty() {
+        "photoframe-rs"
+    } else {
+        &config.device_id
+    };
+
+    EspWifiManager::init_once(hostname)?;
+
+    for profile_index in config.wifi_connection_order() {
+        let profile = &config.wifi_profiles[profile_index];
+        crate::device_log!(
+            "INFO",
+            "photoframe-rs: wifi try idx={} ssid={}",
+            profile_index,
+            profile.ssid
+        );
+        match EspWifiManager::connect(hostname, &profile.ssid, &profile.password, 25, 5) {
+            Ok(()) => {
+                let sta_ip = EspWifiManager::sta_ip_string();
+                crate::device_log!(
+                    "INFO",
+                    "photoframe-rs: wifi connected idx={} ssid={} ip={}",
+                    profile_index,
+                    profile.ssid,
+                    sta_ip.clone().unwrap_or_else(|| "-".into())
+                );
+                config.primary_wifi_ssid = profile.ssid.clone();
+                config.primary_wifi_password = profile.password.clone();
+                config.last_connected_wifi_index = Some(profile_index);
+                if let Err(err) = storage.save_config(config) {
+                    println!("photoframe-rs: save connected profile failed: {err}");
+                }
+                return Ok(sta_ip);
+            }
+            Err(err) => {
+                crate::device_log!(
+                    "WARN",
+                    "photoframe-rs: wifi connect failed idx={} err={}",
+                    profile_index,
+                    err
+                );
+                EspWifiManager::stop();
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+#[cfg(target_os = "espidf")]
+fn build_remote_history_url(config: &DeviceRuntimeConfig, date_text: &str) -> String {
+    format!(
+        "{}/api/v1/device/history/daily.{}?device_id={}&date={}",
+        config.orchestrator_base_url.trim_end_matches('/'),
+        history_fetch_output_format(),
+        config.device_id,
+        date_text
+    )
+}
+
+#[cfg(target_os = "espidf")]
+fn fetch_history_date_via_orchestrator<S: Storage>(
+    storage: &mut S,
+    config: &mut DeviceRuntimeConfig,
+    displayed_date: &str,
+    current_date: &str,
+) -> Result<Option<LocalPhotoOutcome>, String> {
+    if !config.orchestrator_enabled
+        || config.orchestrator_base_url.trim().is_empty()
+        || config.orchestrator_token.trim().is_empty()
+    {
+        crate::device_log!(
+            "WARN",
+            "photoframe-rs: skip remote history fetch date={} orchestrator unavailable",
+            displayed_date
+        );
+        return Ok(LocalPhotoOutcome::Unavailable {
+            image_source: "history_remote_unavailable".into(),
+        })
+        .map(Some);
+    }
+
+    if connect_best_wifi(storage, config)?.is_none() {
+        crate::device_log!(
+            "WARN",
+            "photoframe-rs: skip remote history fetch date={} wifi unavailable",
+            displayed_date
+        );
+        return Ok(Some(LocalPhotoOutcome::Unavailable {
+            image_source: "history_wifi_unavailable".into(),
+        }));
+    }
+
+    let url = build_remote_history_url(config, displayed_date);
+    let mut fetcher = photoframe_platform_espidf::EspIdfImageFetcher;
+    let result = fetcher.fetch(&ImageFetchPlan {
+        device_id: config.device_id.clone(),
+        url: url.clone(),
+        debug_stage_base_url: config.orchestrator_base_url.clone(),
+        previous_sha256: String::new(),
+        photo_token: config.photo_token.clone(),
+        orchestrator_token: config.orchestrator_token.clone(),
+        previous_etag: None,
+        previous_last_modified: None,
+    });
+    if !result.ok {
+        crate::device_log!(
+            "WARN",
+            "photoframe-rs: remote history fetch failed date={} status={} err={} url={}",
+            displayed_date,
+            result.status_code,
+            result.error,
+            url
+        );
+        return Ok(Some(LocalPhotoOutcome::Unavailable {
+            image_source: "history_remote_missing".into(),
+        }));
+    }
+    let Some(artifact) = result.artifact.as_ref() else {
+        crate::device_log!(
+            "WARN",
+            "photoframe-rs: remote history fetch missing artifact date={} url={}",
+            displayed_date,
+            url
+        );
+        return Ok(Some(LocalPhotoOutcome::Unavailable {
+            image_source: "history_remote_missing".into(),
+        }));
+    };
+
+    let mut display = DeviceDisplay;
+    display
+        .render(artifact, config, false)
+        .map_err(|err| format!("render remote history photo failed: {err:?}"))?;
+    if let Err(err) =
+        photo_history::remember_rendered_photo(artifact, &result.sha256, Some(displayed_date))
+    {
+        crate::device_log!(
+            "WARN",
+            "photoframe-rs: cache remote history photo failed sha={} date={} err={}",
+            result.sha256,
+            displayed_date,
+            err
+        );
+    }
+
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs: remote history fetched date={} sha={} url={}",
+        displayed_date,
+        result.sha256,
+        url
+    );
+    Ok(Some(apply_displayed_history_state(
+        config,
+        &result.sha256,
+        displayed_date,
+        current_date,
+        if displayed_date == current_date {
+            "current_remote"
         } else {
-            "current_cached".into()
+            "history_remote"
         },
+    )))
+}
+
+#[cfg(target_os = "espidf")]
+fn show_history_date<S: Storage>(
+    storage: &mut S,
+    config: &mut DeviceRuntimeConfig,
+    displayed_date: &str,
+    current_date: &str,
+    cache_reason: &str,
+) -> Result<LocalPhotoOutcome, String> {
+    if let Some(outcome) =
+        render_history_date_from_cache(config, displayed_date, current_date, cache_reason)?
+    {
+        return Ok(outcome);
+    }
+    if let Some(outcome) =
+        fetch_history_date_via_orchestrator(storage, config, displayed_date, current_date)?
+    {
+        return Ok(outcome);
+    }
+    Ok(LocalPhotoOutcome::Unavailable {
+        image_source: "history_missing".into(),
     })
 }
 
 #[cfg(target_os = "espidf")]
-fn show_current_orchestrator_photo(
+fn cycle_cached_history_photo<S: Storage>(
+    storage: &mut S,
     config: &mut DeviceRuntimeConfig,
 ) -> Result<LocalPhotoOutcome, String> {
-    let current_sha = config.last_image_sha256.trim().to_string();
-    if current_sha.is_empty() {
+    let current_date = current_orchestrator_date(config)?;
+    let displayed_date = displayed_history_date(config, &current_date)?;
+    let target_date = next_history_target_date(&current_date, &displayed_date)?;
+    show_history_date(storage, config, &target_date, &current_date, "key_cycle")
+}
+
+#[cfg(target_os = "espidf")]
+fn show_current_orchestrator_photo<S: Storage>(
+    storage: &mut S,
+    config: &mut DeviceRuntimeConfig,
+) -> Result<LocalPhotoOutcome, String> {
+    let current_date = current_orchestrator_date(config)?;
+    if config.last_image_sha256.trim().is_empty() {
         crate::device_log!(
             "WARN",
-            "photoframe-rs: current orchestrator photo unknown, skip long key display"
+            "photoframe-rs: current orchestrator sha unknown, try remote current date fetch"
         );
-        return Ok(LocalPhotoOutcome::Unavailable {
-            image_source: "current_cached_missing".into(),
-        });
     }
-    if !render_cached_photo(config, &current_sha, "key_long_current")? {
-        return Ok(LocalPhotoOutcome::Unavailable {
-            image_source: "current_cached_missing".into(),
-        });
-    }
-    config.displayed_image_sha256 = current_sha;
-    config.manual_history_active = false;
-    Ok(LocalPhotoOutcome::Rendered {
-        image_source: "current_cached".into(),
-    })
+    show_history_date(
+        storage,
+        config,
+        &current_date,
+        &current_date,
+        "key_long_current",
+    )
 }
 
 #[cfg(target_os = "espidf")]
@@ -498,8 +776,8 @@ fn maybe_handle_local_button_action<S: Storage>(
     }
 
     let wants_show_current = matches!(long_press_action, LongPressAction::ShowCurrentPhoto);
-    let wants_cycle_history =
-        matches!(wake_source, WakeSource::Key) && matches!(long_press_action, LongPressAction::None);
+    let wants_cycle_history = matches!(wake_source, WakeSource::Key)
+        && matches!(long_press_action, LongPressAction::None);
     if !wants_show_current && !wants_cycle_history {
         return Ok(None);
     }
@@ -507,9 +785,9 @@ fn maybe_handle_local_button_action<S: Storage>(
     let mut config = storage.load_config()?;
     let sleep_seconds = regular_sleep_seconds(&config);
     let outcome = if wants_show_current {
-        show_current_orchestrator_photo(&mut config)?
+        show_current_orchestrator_photo(storage, &mut config)?
     } else {
-        cycle_cached_history_photo(&mut config)?
+        cycle_cached_history_photo(storage, &mut config)?
     };
     storage.save_config(&config)?;
 
@@ -585,11 +863,7 @@ fn main() {
 
     configure_button_gpio();
     let reset_reason = photoframe_platform_espidf::current_reset_reason_label();
-    crate::device_log!(
-        "INFO",
-        "photoframe-rs: reset reason={}",
-        reset_reason
-    );
+    crate::device_log!("INFO", "photoframe-rs: reset reason={}", reset_reason);
     let wake_source = current_wake_source();
     if let Some(stage) = runtime_bridge::take_render_trace() {
         crate::device_log!("INFO", "photoframe-rs: previous render trace={stage}");
@@ -754,9 +1028,9 @@ fn main() {
                                 USB_DEBUG_POLL_SECONDS
                             );
                             thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
-                            wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
-                                &mut skip_usb_dump_once,
-                            ));
+                            wait_for_usb_resume_after_log_dump(
+                                maybe_dump_logs_for_usb_serial_attach(&mut skip_usb_dump_once),
+                            );
                             cycle_wake_source = WakeSource::Other;
                             cycle_long_press_action = LongPressAction::None;
                             continue;
@@ -841,8 +1115,6 @@ fn prepare_cycle<S: Storage>(
     wake_source: WakeSource,
     long_press_action: LongPressAction,
 ) -> Result<PreparedCycle, String> {
-    use crate::wifi::EspWifiManager;
-
     let mut config = storage.load_config()?;
     config.ensure_primary_wifi_in_profiles();
 
@@ -854,54 +1126,7 @@ fn prepare_cycle<S: Storage>(
         return Ok(PreparedCycle::EnterApPortal);
     }
 
-    let hostname = if config.device_id.is_empty() {
-        "photoframe-rs"
-    } else {
-        &config.device_id
-    };
-
-    EspWifiManager::init_once(hostname)?;
-
-    let mut connected = false;
-    for profile_index in config.wifi_connection_order() {
-        let profile = &config.wifi_profiles[profile_index];
-        crate::device_log!(
-            "INFO",
-            "photoframe-rs: wifi try idx={} ssid={}",
-            profile_index,
-            profile.ssid
-        );
-        match EspWifiManager::connect(hostname, &profile.ssid, &profile.password, 25, 5) {
-            Ok(()) => {
-                crate::device_log!(
-                    "INFO",
-                    "photoframe-rs: wifi connected idx={} ssid={} ip={}",
-                    profile_index,
-                    profile.ssid,
-                    EspWifiManager::sta_ip_string().unwrap_or_else(|| "-".into())
-                );
-                config.primary_wifi_ssid = profile.ssid.clone();
-                config.primary_wifi_password = profile.password.clone();
-                config.last_connected_wifi_index = Some(profile_index);
-                if let Err(err) = storage.save_config(&config) {
-                    println!("photoframe-rs: save connected profile failed: {err}");
-                }
-                connected = true;
-                break;
-            }
-            Err(err) => {
-                crate::device_log!(
-                    "WARN",
-                    "photoframe-rs: wifi connect failed idx={} err={}",
-                    profile_index,
-                    err
-                );
-                EspWifiManager::stop();
-            }
-        }
-    }
-
-    if !connected {
+    let Some(sta_ip) = connect_best_wifi(storage, &mut config)? else {
         let decision = apply_cycle_outcome(
             &config.retry_policy(),
             config.failure_count,
@@ -919,7 +1144,7 @@ fn prepare_cycle<S: Storage>(
         let sleep_seconds = sleep_seconds_until_next_beijing_sync(system_now_epoch())
             .unwrap_or(decision.sleep_seconds);
         return Ok(PreparedCycle::RetryLater { sleep_seconds });
-    }
+    };
 
     apply_timezone(&config.timezone);
     let time_before_sync = system_now_epoch();
@@ -934,12 +1159,11 @@ fn prepare_cycle<S: Storage>(
     let mut power_sample =
         runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
     apply_test_power_override(&mut power_sample);
-    let sta_ip = EspWifiManager::sta_ip_string();
 
     Ok(PreparedCycle::Ready(BootContext {
         wake_source,
         long_press_action,
-        sta_ip,
+        sta_ip: Some(sta_ip),
         power_sample,
     }))
 }

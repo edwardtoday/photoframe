@@ -531,6 +531,43 @@ class DitherAlgorithmTests(unittest.TestCase):
       with Image.open(io.BytesIO(jpg_bytes)) as rendered_jpg:
         self.assertEqual(rendered_jpg.size, (480, 800))
 
+  def test_daily_image_url_for_date_rewrites_template_explicitly(self) -> None:
+    original_template = ORCH.DAILY_TEMPLATE
+    ORCH.DAILY_TEMPLATE = "https://example.com/image/480x800.jpg?foo=1&date=%DATE%"
+    try:
+      self.assertEqual(
+          ORCH._daily_image_url_for_date("2026-04-10"),
+          "https://example.com/image/480x800.jpg?foo=1&date=2026-04-10",
+      )
+    finally:
+      ORCH.DAILY_TEMPLATE = original_template
+
+  def test_render_daily_payload_for_explicit_history_date_uses_date_bucket(self) -> None:
+    source_image = _build_gradient_image(size=(96, 96))
+    source_jpeg = io.BytesIO()
+    source_image.save(source_jpeg, format="JPEG", quality=92)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_urlopen = ORCH.urlopen
+      ORCH.DAILY_CACHE_DIR = Path(tmp_dir) / "daily-cache"
+      ORCH.DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+      ORCH.urlopen = lambda *_args, **_kwargs: _DummyUrlopenResponse(source_jpeg.getvalue())
+      try:
+        bmp_bytes, _metadata = ORCH._render_daily_payload_with_metadata_for_date(
+            1773910400,
+            "2026-03-15",
+            "https://example.com/daily.jpg?date=2026-03-15",
+            "bmp",
+            "jarvis",
+        )
+      finally:
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.urlopen = original_urlopen
+
+      self.assertTrue(bmp_bytes.startswith(b"BM"))
+      self.assertTrue((Path(tmp_dir) / "daily-cache" / "daily-2026-03-15-jarvis-reference.bmp").exists())
+
   def test_render_daily_payload_uses_saved_palette_profile_when_omitted(self) -> None:
     source_image = _build_gradient_image(size=(96, 96))
     source_jpeg = io.BytesIO()

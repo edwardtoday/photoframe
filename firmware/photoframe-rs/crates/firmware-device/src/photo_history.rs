@@ -22,6 +22,8 @@ pub(crate) struct CachedPhotoEntry {
     pub(crate) format: String,
     pub(crate) created_epoch: i64,
     pub(crate) file_name: String,
+    #[serde(default)]
+    pub(crate) image_date: String,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,8 +65,8 @@ fn load_index() -> Result<CachedPhotoIndex, String> {
     if !path.exists() {
         return Ok(CachedPhotoIndex::default());
     }
-    let bytes =
-        fs::read(&path).map_err(|err| format!("read photo history index {} failed: {err}", path.display()))?;
+    let bytes = fs::read(&path)
+        .map_err(|err| format!("read photo history index {} failed: {err}", path.display()))?;
     serde_json::from_slice(&bytes)
         .map_err(|err| format!("parse photo history index {} failed: {err}", path.display()))
 }
@@ -72,8 +74,12 @@ fn load_index() -> Result<CachedPhotoIndex, String> {
 fn save_index(index: &CachedPhotoIndex) -> Result<(), String> {
     ensure_history_dir()?;
     let path = index_path();
-    let bytes = serde_json::to_vec(index)
-        .map_err(|err| format!("serialize photo history index {} failed: {err}", path.display()))?;
+    let bytes = serde_json::to_vec(index).map_err(|err| {
+        format!(
+            "serialize photo history index {} failed: {err}",
+            path.display()
+        )
+    })?;
     fs::write(&path, bytes)
         .map_err(|err| format!("write photo history index {} failed: {err}", path.display()))
 }
@@ -100,6 +106,7 @@ fn parse_format(label: &str) -> Option<ImageFormat> {
     }
 }
 
+#[cfg(test)]
 fn next_entry_from_slice<'a>(
     entries: &'a [CachedPhotoEntry],
     current_sha256: &str,
@@ -110,7 +117,10 @@ fn next_entry_from_slice<'a>(
     if current_sha256.is_empty() {
         return entries.first();
     }
-    if let Some(index) = entries.iter().position(|entry| entry.sha256 == current_sha256) {
+    if let Some(index) = entries
+        .iter()
+        .position(|entry| entry.sha256 == current_sha256)
+    {
         return entries.get((index + 1) % entries.len());
     }
     entries.first()
@@ -119,6 +129,7 @@ fn next_entry_from_slice<'a>(
 pub(crate) fn remember_rendered_photo(
     artifact: &ImageArtifact,
     sha256: &str,
+    image_date: Option<&str>,
 ) -> Result<(), String> {
     if !crate::sdcard::is_ready() {
         return Err("sdcard not ready".into());
@@ -135,9 +146,26 @@ pub(crate) fn remember_rendered_photo(
     fs::write(&path, &artifact.bytes)
         .map_err(|err| format!("write cached photo {} failed: {err}", path.display()))?;
 
-    if let Some(existing) = index.entries.iter().position(|entry| entry.sha256 == sha256) {
+    let normalized_date = image_date.unwrap_or_default().trim().to_string();
+    let replace_index = if normalized_date.is_empty() {
+        index
+            .entries
+            .iter()
+            .position(|entry| entry.sha256 == sha256)
+    } else {
+        index
+            .entries
+            .iter()
+            .position(|entry| entry.image_date == normalized_date)
+    };
+    if let Some(existing) = replace_index {
         let previous = index.entries.remove(existing);
-        if previous.file_name != file_name {
+        if previous.file_name != file_name
+            && !index
+                .entries
+                .iter()
+                .any(|entry| entry.file_name == previous.file_name)
+        {
             let previous_path = entry_path(&previous.file_name);
             let _ = fs::remove_file(previous_path);
         }
@@ -150,12 +178,19 @@ pub(crate) fn remember_rendered_photo(
             format: format_label(&artifact.format).to_string(),
             created_epoch: current_epoch(),
             file_name: file_name.clone(),
+            image_date: normalized_date,
         },
     );
 
     let removed = index.entries.split_off(PHOTO_HISTORY_MAX_ENTRIES);
     for entry in removed {
-        let _ = fs::remove_file(entry_path(&entry.file_name));
+        if !index
+            .entries
+            .iter()
+            .any(|remaining| remaining.file_name == entry.file_name)
+        {
+            let _ = fs::remove_file(entry_path(&entry.file_name));
+        }
     }
 
     save_index(&index)
@@ -188,9 +223,25 @@ pub(crate) fn entry_for_sha256(sha256: &str) -> Result<Option<CachedPhotoEntry>,
         return Ok(None);
     }
     let index = load_index()?;
-    Ok(index.entries.into_iter().find(|entry| entry.sha256 == sha256))
+    Ok(index
+        .entries
+        .into_iter()
+        .find(|entry| entry.sha256 == sha256))
 }
 
+pub(crate) fn entry_for_date(date_text: &str) -> Result<Option<CachedPhotoEntry>, String> {
+    let date_text = date_text.trim();
+    if date_text.is_empty() {
+        return Ok(None);
+    }
+    let index = load_index()?;
+    Ok(index
+        .entries
+        .into_iter()
+        .find(|entry| entry.image_date == date_text))
+}
+
+#[cfg(test)]
 pub(crate) fn next_entry(current_sha256: &str) -> Result<Option<CachedPhotoEntry>, String> {
     let index = load_index()?;
     Ok(next_entry_from_slice(&index.entries, current_sha256).cloned())
@@ -205,8 +256,8 @@ fn test_lock() -> &'static Mutex<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PHOTO_HISTORY_MAX_ENTRIES, entry_for_sha256, history_dir, load_artifact_by_sha256,
-        next_entry, remember_rendered_photo, test_lock,
+        PHOTO_HISTORY_MAX_ENTRIES, entry_for_date, entry_for_sha256, history_dir,
+        load_artifact_by_sha256, next_entry, remember_rendered_photo, test_lock,
     };
     use photoframe_app::{ImageArtifact, ImageFormat};
     use std::{
@@ -250,16 +301,31 @@ mod tests {
     fn remember_photo_keeps_latest_entries_and_loads_back() {
         let (guard, env_key, root) = setup_env();
 
-        remember_rendered_photo(&artifact("first", ImageFormat::Bmp), "sha-1").unwrap();
-        remember_rendered_photo(&artifact("second", ImageFormat::Jpeg), "sha-2").unwrap();
+        remember_rendered_photo(
+            &artifact("first", ImageFormat::Bmp),
+            "sha-1",
+            Some("2026-04-10"),
+        )
+        .unwrap();
+        remember_rendered_photo(
+            &artifact("second", ImageFormat::Jpeg),
+            "sha-2",
+            Some("2026-04-09"),
+        )
+        .unwrap();
 
         let newest = next_entry("").unwrap().unwrap();
         assert_eq!(newest.sha256, "sha-2");
+        assert_eq!(newest.image_date, "2026-04-09");
         assert_eq!(history_dir(), root);
 
         let loaded = load_artifact_by_sha256("sha-1").unwrap().unwrap();
         assert_eq!(loaded.format, ImageFormat::Bmp);
         assert_eq!(loaded.bytes, b"first");
+        assert_eq!(
+            entry_for_date("2026-04-10").unwrap().unwrap().sha256,
+            "sha-1"
+        );
 
         cleanup_env(guard, env_key, root);
     }
@@ -268,9 +334,9 @@ mod tests {
     fn next_entry_cycles_through_current_and_previous_items() {
         let (guard, env_key, root) = setup_env();
 
-        remember_rendered_photo(&artifact("first", ImageFormat::Bmp), "sha-1").unwrap();
-        remember_rendered_photo(&artifact("second", ImageFormat::Bmp), "sha-2").unwrap();
-        remember_rendered_photo(&artifact("third", ImageFormat::Bmp), "sha-3").unwrap();
+        remember_rendered_photo(&artifact("first", ImageFormat::Bmp), "sha-1", None).unwrap();
+        remember_rendered_photo(&artifact("second", ImageFormat::Bmp), "sha-2", None).unwrap();
+        remember_rendered_photo(&artifact("third", ImageFormat::Bmp), "sha-3", None).unwrap();
 
         assert_eq!(next_entry("sha-3").unwrap().unwrap().sha256, "sha-2");
         assert_eq!(next_entry("sha-2").unwrap().unwrap().sha256, "sha-1");
@@ -285,13 +351,43 @@ mod tests {
 
         for idx in 0..(PHOTO_HISTORY_MAX_ENTRIES + 3) {
             let sha = format!("sha-{idx}");
-            remember_rendered_photo(&artifact(&sha, ImageFormat::Bmp), &sha).unwrap();
+            remember_rendered_photo(&artifact(&sha, ImageFormat::Bmp), &sha, None).unwrap();
         }
 
         assert!(entry_for_sha256("sha-0").unwrap().is_none());
         assert!(entry_for_sha256("sha-1").unwrap().is_none());
         assert!(entry_for_sha256("sha-2").unwrap().is_none());
         assert!(entry_for_sha256("sha-3").unwrap().is_some());
+
+        cleanup_env(guard, env_key, root);
+    }
+
+    #[test]
+    fn same_sha_can_back_multiple_dates_without_losing_current_file() {
+        let (guard, env_key, root) = setup_env();
+
+        remember_rendered_photo(
+            &artifact("same", ImageFormat::Bmp),
+            "sha-same",
+            Some("2026-04-10"),
+        )
+        .unwrap();
+        remember_rendered_photo(
+            &artifact("same", ImageFormat::Bmp),
+            "sha-same",
+            Some("2026-04-09"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            entry_for_date("2026-04-10").unwrap().unwrap().sha256,
+            "sha-same"
+        );
+        assert_eq!(
+            entry_for_date("2026-04-09").unwrap().unwrap().sha256,
+            "sha-same"
+        );
+        assert!(history_dir().join("sha-same.bmp").exists());
 
         cleanup_env(guard, env_key, root);
     }

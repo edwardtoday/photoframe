@@ -5,6 +5,7 @@
 ## 能力
 
 - 设备拉取：`GET /api/v1/device/next`
+- 设备历史补图：`GET /api/v1/device/history/daily.bmp` / `GET /api/v1/device/history/daily.jpg`
 - 设备心跳：`POST /api/v1/device/checkin`
 - 电池采样历史：`GET /api/v1/power-samples`（用于控制台曲线/续航估算）
 - 设备配置同步：
@@ -30,6 +31,7 @@
   - 管理页可直接使用 `PHOTOFRAME_TOKEN` 预览，不要求再填设备 token
   - 若上游是 `immich-featured-today`，预览响应会透传 `X-IFT-*` 元数据（asset/layout/crop/display_score），控制台可直接看到当前成片来自哪张图、用的什么构图策略
 - 公网日图代理：`GET /public/daily.bmp` / `GET /public/daily.jpg`（token 保护，且优先返回当前生效插播）
+- 历史补图接口会按显式 `date=YYYY-MM-DD` 使用与 daily 相同的裁剪 / dither / 缓存链路，供设备在本地 TF 缺少某天图片时按需回源补齐
 - Web 管理页：`GET /`（含图片发布历史 + 设备配置发布历史 + 当前下发预览 + 设备 token 审批）
 - 设备状态页会直接显示设备最近一次 checkin 上报的 `firmware_version`
 - 设备状态页会给出电源告警：区分 `USB debug mode` 导致的连续高频活跃，与“电池下平均电流偏高”的待机底流异常

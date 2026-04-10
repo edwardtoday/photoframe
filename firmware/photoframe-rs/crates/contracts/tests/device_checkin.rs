@@ -15,8 +15,7 @@ fn serializes_device_checkin_with_reported_config() {
         display_applied: true,
         image_source: "daily".into(),
         displayed_image_url:
-            "http://192.168.58.113:18081/api/v1/assets/daily-2025-10-09-sierra-colorful.jpg"
-                .into(),
+            "http://192.168.58.113:18081/api/v1/assets/daily-2025-10-09-sierra-colorful.jpg".into(),
         displayed_image_sha256: "abc123".into(),
         last_error: String::new(),
         sta_ip: Some("192.168.1.50".into()),

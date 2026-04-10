@@ -1,13 +1,13 @@
 #![cfg_attr(not(target_os = "espidf"), allow(dead_code))]
 
+#[cfg(all(not(target_os = "espidf"), test))]
+use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "espidf")]
 use std::{
     ffi::{CStr, CString},
     ptr,
     sync::{Mutex, OnceLock},
 };
-#[cfg(all(not(target_os = "espidf"), test))]
-use std::sync::{Mutex, OnceLock};
 
 #[cfg(target_os = "espidf")]
 use esp_idf_sys as sys;
@@ -277,7 +277,10 @@ pub(crate) fn mount_if_available() -> Result<bool, String> {
 
 #[cfg(target_os = "espidf")]
 pub(crate) fn is_ready() -> bool {
-    global_state().lock().map(|guard| guard.mounted).unwrap_or(false)
+    global_state()
+        .lock()
+        .map(|guard| guard.mounted)
+        .unwrap_or(false)
 }
 
 #[cfg(not(target_os = "espidf"))]
@@ -298,7 +301,10 @@ pub(crate) fn set_test_ready(ready: bool) {
 #[cfg(not(target_os = "espidf"))]
 #[cfg(test)]
 pub(crate) fn is_ready() -> bool {
-    test_ready_state().lock().map(|guard| *guard).unwrap_or(false)
+    test_ready_state()
+        .lock()
+        .map(|guard| *guard)
+        .unwrap_or(false)
 }
 
 #[cfg(not(target_os = "espidf"))]

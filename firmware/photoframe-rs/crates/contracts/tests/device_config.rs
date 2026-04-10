@@ -38,7 +38,9 @@ fn parses_device_config_response_with_nested_config() {
     );
     assert_eq!(response.config.timezone.as_deref(), Some("Asia/Shanghai"));
     assert_eq!(response.device_clock_ok, Some(false));
-    let request = response.log_upload_request.expect("missing log upload request");
+    let request = response
+        .log_upload_request
+        .expect("missing log upload request");
     assert_eq!(request.request_id, 34);
     assert_eq!(request.max_lines, 80);
     assert_eq!(request.max_bytes, 4096);

@@ -82,6 +82,14 @@ const USB_DEBUG_RESUME_POLL_MS: u64 = 20;
 const USB_DEBUG_POST_DUMP_SETTLE_MS: u64 = 200;
 #[cfg(target_os = "espidf")]
 const USB_DEBUG_RESUME_TOKEN: &[u8] = b"PHOTOFRAME_USB_RESUME";
+#[cfg(target_os = "espidf")]
+const LOCAL_BROWSE_IDLE_SECONDS: u64 = 15;
+#[cfg(target_os = "espidf")]
+const BUTTON_POLL_MS: u64 = 20;
+#[cfg(target_os = "espidf")]
+const BUTTON_DEBOUNCE_MS: u64 = 40;
+#[cfg(target_os = "espidf")]
+const LONG_PRESS_SECONDS: u64 = 3;
 
 #[cfg(target_os = "espidf")]
 fn configure_button_gpio() {
@@ -384,6 +392,14 @@ impl Display for DeviceDisplay {
 enum LocalPhotoOutcome {
     Rendered { image_source: String },
     Unavailable { image_source: String },
+}
+
+#[cfg(target_os = "espidf")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AwakeButtonAction {
+    CycleHistory,
+    ShowCurrentPhoto,
+    EnterApPortal,
 }
 
 #[cfg(target_os = "espidf")]
@@ -811,6 +827,152 @@ fn maybe_handle_local_button_action<S: Storage>(
 }
 
 #[cfg(target_os = "espidf")]
+fn build_local_cycle_report(
+    action: CycleAction,
+    image_source: String,
+    sleep_seconds: u64,
+) -> CycleReport {
+    CycleReport {
+        exit: CycleExit::Sleep {
+            seconds: sleep_seconds,
+            timer_only: false,
+        },
+        action,
+        image_source,
+        fetch_url_used: None,
+        checkin_reported: false,
+        portal_window_opened: false,
+        logs_uploaded: false,
+    }
+}
+
+#[cfg(target_os = "espidf")]
+fn run_local_browse_action<S: Storage>(
+    storage: &mut S,
+    button_action: AwakeButtonAction,
+) -> Result<CycleReport, String> {
+    if matches!(button_action, AwakeButtonAction::EnterApPortal) {
+        return Ok(CycleReport {
+            exit: CycleExit::EnterApPortal,
+            action: CycleAction::ManualSync,
+            image_source: "portal".into(),
+            fetch_url_used: None,
+            checkin_reported: false,
+            portal_window_opened: false,
+            logs_uploaded: false,
+        });
+    }
+
+    let mut config = storage.load_config()?;
+    let sleep_seconds = regular_sleep_seconds(&config);
+    let outcome = match button_action {
+        AwakeButtonAction::CycleHistory => cycle_cached_history_photo(storage, &mut config)?,
+        AwakeButtonAction::ShowCurrentPhoto => {
+            show_current_orchestrator_photo(storage, &mut config)?
+        }
+        AwakeButtonAction::EnterApPortal => unreachable!(),
+    };
+    storage.save_config(&config)?;
+
+    let image_source = match outcome {
+        LocalPhotoOutcome::Rendered { image_source } => image_source,
+        LocalPhotoOutcome::Unavailable { image_source } => image_source,
+    };
+
+    Ok(build_local_cycle_report(
+        CycleAction::BrowseHistory,
+        image_source,
+        sleep_seconds,
+    ))
+}
+
+#[cfg(target_os = "espidf")]
+fn wait_for_buttons_released(deadline: Instant) {
+    while Instant::now() < deadline && (is_key_pressed() || is_boot_pressed()) {
+        thread::sleep(Duration::from_millis(BUTTON_POLL_MS));
+    }
+}
+
+#[cfg(target_os = "espidf")]
+fn poll_awake_button_action(idle_timeout: Duration) -> Option<AwakeButtonAction> {
+    let deadline = Instant::now() + idle_timeout;
+    wait_for_buttons_released(deadline);
+    if Instant::now() >= deadline {
+        return None;
+    }
+
+    let mut key_pressed_since: Option<Instant> = None;
+    let mut boot_pressed_since: Option<Instant> = None;
+
+    while Instant::now() < deadline {
+        let key_pressed = is_key_pressed();
+        let boot_pressed = is_boot_pressed();
+
+        if boot_pressed {
+            let pressed_since = boot_pressed_since.get_or_insert_with(Instant::now);
+            if pressed_since.elapsed() >= Duration::from_secs(LONG_PRESS_SECONDS) {
+                wait_for_buttons_released(Instant::now() + Duration::from_secs(5));
+                return Some(AwakeButtonAction::EnterApPortal);
+            }
+        } else if boot_pressed_since.take().is_some_and(|pressed_since| {
+            pressed_since.elapsed() >= Duration::from_millis(BUTTON_DEBOUNCE_MS)
+        }) {
+            // 醒着时短按 BOOT 不定义额外语义，忽略并继续等待。
+        }
+
+        if key_pressed {
+            let pressed_since = key_pressed_since.get_or_insert_with(Instant::now);
+            if pressed_since.elapsed() >= Duration::from_secs(LONG_PRESS_SECONDS) {
+                wait_for_buttons_released(Instant::now() + Duration::from_secs(5));
+                return Some(AwakeButtonAction::ShowCurrentPhoto);
+            }
+        } else if key_pressed_since.take().is_some_and(|pressed_since| {
+            pressed_since.elapsed() >= Duration::from_millis(BUTTON_DEBOUNCE_MS)
+        }) {
+            return Some(AwakeButtonAction::CycleHistory);
+        }
+
+        thread::sleep(Duration::from_millis(BUTTON_POLL_MS));
+    }
+
+    None
+}
+
+#[cfg(target_os = "espidf")]
+fn continue_local_browse_window<S: Storage>(
+    storage: &mut S,
+    initial_report: CycleReport,
+) -> Result<CycleReport, String> {
+    if !matches!(initial_report.action, CycleAction::BrowseHistory) {
+        return Ok(initial_report);
+    }
+
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs: keep awake for local browse idle_window={}s",
+        LOCAL_BROWSE_IDLE_SECONDS
+    );
+
+    let mut report = initial_report;
+    while let Some(button_action) =
+        poll_awake_button_action(Duration::from_secs(LOCAL_BROWSE_IDLE_SECONDS))
+    {
+        crate::device_log!(
+            "INFO",
+            "photoframe-rs: awake browse action={:?}",
+            button_action
+        );
+        report = run_local_browse_action(storage, button_action)?;
+        if matches!(report.exit, CycleExit::EnterApPortal) {
+            return Ok(report);
+        }
+    }
+
+    crate::device_log!("INFO", "photoframe-rs: local browse idle timeout, sleep");
+    Ok(report)
+}
+
+#[cfg(target_os = "espidf")]
 fn main() {
     esp_idf_sys::link_patches();
     power::prepare_for_boot();
@@ -984,7 +1146,28 @@ fn main() {
         };
 
         let report = if let Some(report) = local_report {
-            report
+            match continue_local_browse_window(runner.storage_mut(), report) {
+                Ok(report) => report,
+                Err(err) => {
+                    crate::device_log!("ERROR", "photoframe-rs: local browse window failed: {err}");
+                    let fallback_sleep_seconds = 5 * 60;
+                    if is_usb_serial_connected() {
+                        crate::device_log!(
+                            "INFO",
+                            "photoframe-rs: usb debug mode retry after local browse failure in {}s",
+                            USB_DEBUG_POLL_SECONDS
+                        );
+                        thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
+                        wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
+                            &mut skip_usb_dump_once,
+                        ));
+                        cycle_wake_source = WakeSource::Other;
+                        cycle_long_press_action = LongPressAction::None;
+                        continue;
+                    }
+                    enter_deep_sleep(fallback_sleep_seconds, false, PreSleepHoldMode::UsbOrSerial);
+                }
+            }
         } else {
             let prepared = match prepare_cycle(
                 runner.storage_mut(),
@@ -1396,7 +1579,7 @@ fn hold_awake_before_sleep(
         runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
     let mut power_sample_failures = 0usize;
     let mut usb_serial_connected = is_usb_serial_connected();
-    let mut usb_power_present = power_sample.vbus_good == 1;
+    let usb_power_present = power_sample.vbus_good == 1;
     let mut serial_seen = usb_serial_connected;
     let grace_deadline = match hold_mode {
         PreSleepHoldMode::UsbOrSerial => None,

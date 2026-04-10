@@ -174,6 +174,8 @@ pub struct DeviceRuntimeConfig {
     pub last_image_sha256: String,
     pub last_image_etag: String,
     pub last_image_last_modified: String,
+    pub displayed_image_sha256: String,
+    pub manual_history_active: bool,
     pub preferred_image_origin: String,
     pub last_success_epoch: i64,
     pub last_time_sync_epoch: i64,
@@ -216,6 +218,8 @@ impl Default for DeviceRuntimeConfig {
             last_image_sha256: String::new(),
             last_image_etag: String::new(),
             last_image_last_modified: String::new(),
+            displayed_image_sha256: String::new(),
+            manual_history_active: false,
             preferred_image_origin: String::new(),
             last_success_epoch: 0,
             last_time_sync_epoch: 0,
@@ -469,6 +473,8 @@ impl DeviceRuntimeConfig {
 
         if display_config_changed {
             self.last_image_sha256.clear();
+            self.displayed_image_sha256.clear();
+            self.manual_history_active = false;
         }
 
         ApplyRemoteConfigOutcome {
@@ -561,6 +567,8 @@ impl DeviceRuntimeConfig {
 
         if display_config_changed {
             self.last_image_sha256.clear();
+            self.displayed_image_sha256.clear();
+            self.manual_history_active = false;
         }
 
         ApplyLocalConfigOutcome {

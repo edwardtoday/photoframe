@@ -129,6 +129,15 @@ pub trait Display {
         config: &DeviceRuntimeConfig,
         force_refresh: bool,
     ) -> Result<(), FailureKind>;
+
+    fn after_render_success(
+        &mut self,
+        _artifact: &ImageArtifact,
+        _config: &DeviceRuntimeConfig,
+        _image_sha256: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -285,16 +294,10 @@ where
     pub fn run(&mut self, boot: BootContext) -> Result<CycleReport, String> {
         let mut config = self.storage.load_config()?;
         let action = decide_cycle_action(boot.wake_source);
-        let portal_window_opened =
-            matches!(boot.long_press_action, LongPressAction::OpenStaPortalWindow);
+        let portal_window_opened = false;
         let now_epoch = self.clock.now_epoch();
 
-        if matches!(
-            boot.long_press_action,
-            LongPressAction::ClearWifiAndEnterPortal
-        ) {
-            config.clear_wifi_credentials();
-            self.storage.save_config(&config)?;
+        if matches!(boot.long_press_action, LongPressAction::EnterApPortal) {
             return Ok(CycleReport {
                 exit: CycleExit::EnterApPortal,
                 action,
@@ -446,7 +449,13 @@ where
             }
         }
 
-        let force_refresh = matches!(action, CycleAction::ForceRefresh);
+        let force_refresh =
+            matches!(action, CycleAction::ForceRefresh) || config.manual_history_active;
+        let previous_sha256 = if force_refresh {
+            String::new()
+        } else {
+            config.last_image_sha256.clone()
+        };
         let previous_etag = if force_refresh || config.last_image_etag.is_empty() {
             None
         } else {
@@ -486,7 +495,7 @@ where
                 device_id: config.device_id.clone(),
                 url: candidate.clone(),
                 debug_stage_base_url: config.orchestrator_base_url.clone(),
-                previous_sha256: config.last_image_sha256.clone(),
+                previous_sha256: previous_sha256.clone(),
                 photo_token: config.photo_token.clone(),
                 orchestrator_token,
                 previous_etag: previous_etag.clone(),
@@ -511,7 +520,7 @@ where
                 device_id: config.device_id.clone(),
                 url: fallback_url.clone(),
                 debug_stage_base_url: config.orchestrator_base_url.clone(),
-                previous_sha256: config.last_image_sha256.clone(),
+                previous_sha256,
                 photo_token: config.photo_token.clone(),
                 orchestrator_token,
                 previous_etag,
@@ -541,6 +550,12 @@ where
                         FailureKind::PmicSoftFailure => "pmic soft failure".into(),
                         _ => "render failed".into(),
                     };
+                } else if let Err(err) =
+                    self.display
+                        .after_render_success(artifact, &config, &fetch.sha256)
+                {
+                    render_failure = Some(FailureKind::GeneralFailure);
+                    last_error = format!("persist rendered photo failed: {err}");
                 }
             } else {
                 render_failure = Some(FailureKind::GeneralFailure);
@@ -556,8 +571,10 @@ where
                 .orchestrator
                 .report_debug_stage(&config, "after_render_ok");
             config.failure_count = 0;
-            if fetch.image_changed {
+            if should_refresh {
                 config.last_image_sha256 = fetch.sha256.clone();
+                config.displayed_image_sha256 = fetch.sha256.clone();
+                config.manual_history_active = false;
             }
             if let Some(value) = &fetch.etag {
                 config.last_image_etag = value.clone();

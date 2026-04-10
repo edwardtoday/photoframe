@@ -552,7 +552,7 @@ fn successful_cycle_uses_directive_and_reports_checkin() {
     let report = runner
         .run(BootContext {
             wake_source: WakeSource::Timer,
-            long_press_action: LongPressAction::OpenStaPortalWindow,
+            long_press_action: LongPressAction::None,
             sta_ip: Some("192.168.1.50".into()),
             power_sample: PowerSample {
                 battery_mv: 4050,
@@ -575,7 +575,7 @@ fn successful_cycle_uses_directive_and_reports_checkin() {
         report.fetch_url_used.as_deref(),
         Some("https://cdn.example.com/override.jpg")
     );
-    assert!(report.portal_window_opened);
+    assert!(!report.portal_window_opened);
     assert_eq!(runner.orchestrator().checkin_calls, 1);
     assert_eq!(runner.display().render_calls, 1);
     assert_eq!(
@@ -599,6 +599,64 @@ fn successful_cycle_uses_directive_and_reports_checkin() {
             "ota_0",
             "valid",
         ))
+    );
+}
+
+#[test]
+fn manual_history_mode_forces_fetch_body_and_restores_current_photo() {
+    let mut runner = CycleRunner::new(
+        FakeClock,
+        FakeStorage {
+            config: DeviceRuntimeConfig {
+                last_image_sha256: "same".into(),
+                last_image_etag: "etag-1".into(),
+                displayed_image_sha256: "older".into(),
+                manual_history_active: true,
+                ..seeded_config()
+            },
+            save_count: 0,
+        },
+        FakeOrchestrator::default(),
+        FakeImageFetcher {
+            queued_results: vec![ImageFetchOutcome {
+                ok: true,
+                status_code: 200,
+                error: String::new(),
+                image_changed: true,
+                sha256: "same".into(),
+                etag: Some("etag-2".into()),
+                last_modified: Some("Tue, 02 Jan 2026 00:00:00 GMT".into()),
+                artifact: Some(ImageArtifact {
+                    format: ImageFormat::Bmp,
+                    width: 800,
+                    height: 480,
+                    bytes: vec![1, 2, 3],
+                }),
+            }],
+            ..FakeImageFetcher::default()
+        },
+        FakeDisplay::default(),
+    );
+
+    let report = runner
+        .run(BootContext {
+            wake_source: WakeSource::Timer,
+            long_press_action: LongPressAction::None,
+            sta_ip: None,
+            power_sample: PowerSample::default(),
+        })
+        .unwrap();
+
+    let payload = runner.orchestrator().last_checkin_payload.as_ref().unwrap();
+    assert!(payload.display_applied);
+    assert_eq!(payload.displayed_image_sha256, "same");
+    assert_eq!(runner.image_fetcher().fetch_calls[0].previous_sha256, "");
+    assert_eq!(
+        report.exit,
+        CycleExit::Sleep {
+            seconds: NEXT_BEIJING_SYNC_SLEEP_SECONDS,
+            timer_only: false,
+        }
     );
 }
 

@@ -51,6 +51,15 @@ scripts/build-photoframe-rs.sh
 - 应用镜像：`firmware/photoframe-rs/dist/photoframe-rs-app.bin`
 - 整片镜像：`firmware/photoframe-rs/dist/photoframe-rs-fullchip.bin`（会覆盖 NVS，仅限空片首刷）
 
+## 当前按键语义
+
+- `BOOT` 短按：从深睡唤醒后执行一次 orchestrator 同步，不再强制绕过条件请求
+- `BOOT` 长按（3 秒）：直接进入 AP 配网入口，不清空已有 Wi‑Fi 配置
+- `KEY` 短按：在当前 orchestrator 图片与最近 30 张 TF 缓存图片之间循环切换，不联网
+- `KEY` 长按（3 秒）：回到当前 orchestrator 图片（从 TF 缓存重显），不联网
+- 定时刷新到点时，若设备正停留在历史图，会强制回到当前 orchestrator 图片
+- 历史图缓存默认写入 TF 卡 `pfphotos/` 目录；若 TF 不可用，按键轮播只会记录告警，不会触发联网兜底
+
 ## 真机刷写与串口
 
 - 构建继续使用 Docker：`scripts/build-photoframe-rs.sh`

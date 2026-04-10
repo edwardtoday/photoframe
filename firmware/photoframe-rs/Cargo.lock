@@ -743,6 +743,7 @@ dependencies = [
  "photoframe-contracts",
  "photoframe-domain",
  "photoframe-platform-espidf",
+ "serde",
  "serde_json",
 ]
 

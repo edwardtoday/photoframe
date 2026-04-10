@@ -4,6 +4,7 @@ mod jpeg;
 mod panel;
 mod portal;
 mod power;
+mod photo_history;
 mod render_core;
 mod runtime_bridge;
 mod sdcard;
@@ -20,7 +21,9 @@ use std::{
 };
 
 #[cfg(target_os = "espidf")]
-use photoframe_app::{BootContext, CycleExit, CycleRunner, DeviceRuntimeConfig, Display, Storage};
+use photoframe_app::{
+    BootContext, CycleExit, CycleReport, CycleRunner, DeviceRuntimeConfig, Display, Storage,
+};
 #[cfg(target_os = "espidf")]
 use photoframe_contracts::DeviceConfigPayload;
 use photoframe_domain::WakeSource;
@@ -118,10 +121,10 @@ fn detect_long_press_action() -> LongPressAction {
     }
 
     if is_boot_pressed() {
-        return LongPressAction::ClearWifiAndEnterPortal;
+        return LongPressAction::EnterApPortal;
     }
     if is_key_pressed() {
-        return LongPressAction::OpenStaPortalWindow;
+        return LongPressAction::ShowCurrentPhoto;
     }
     LongPressAction::None
 }
@@ -168,12 +171,8 @@ fn migrate_legacy_network_defaults(config: &mut DeviceRuntimeConfig) -> bool {
 #[cfg(target_os = "espidf")]
 fn merge_builtin_wifi_profiles(
     config: &mut DeviceRuntimeConfig,
-    long_press_action: LongPressAction,
+    _long_press_action: LongPressAction,
 ) -> bool {
-    if matches!(long_press_action, LongPressAction::ClearWifiAndEnterPortal) {
-        return false;
-    }
-
     let previous_last_connected_ssid = config
         .last_connected_wifi_index
         .and_then(|index| config.wifi_profiles.get(index))
@@ -358,12 +357,190 @@ impl Display for DeviceDisplay {
     ) -> Result<(), FailureKind> {
         runtime_bridge::EspRuntimeBridge::render_image(artifact, config)
     }
+
+    fn after_render_success(
+        &mut self,
+        artifact: &photoframe_app::ImageArtifact,
+        _config: &photoframe_app::DeviceRuntimeConfig,
+        image_sha256: &str,
+    ) -> Result<(), String> {
+        if let Err(err) = photo_history::remember_rendered_photo(artifact, image_sha256) {
+            crate::device_log!(
+                "WARN",
+                "photoframe-rs: cache rendered photo failed sha={} err={}",
+                image_sha256,
+                err
+            );
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "espidf")]
+enum LocalPhotoOutcome {
+    Rendered { image_source: String },
+    Unavailable { image_source: String },
+}
+
+#[cfg(target_os = "espidf")]
+fn regular_sleep_seconds(config: &DeviceRuntimeConfig) -> u64 {
+    let fallback = u64::from(config.interval_minutes.max(1)) * 60;
+    sleep_seconds_until_next_beijing_sync(system_now_epoch()).unwrap_or(fallback)
+}
+
+#[cfg(target_os = "espidf")]
+fn render_cached_photo(
+    config: &DeviceRuntimeConfig,
+    sha256: &str,
+    reason: &str,
+) -> Result<bool, String> {
+    let Some(artifact) = photo_history::load_artifact_by_sha256(sha256)? else {
+        crate::device_log!(
+            "WARN",
+            "photoframe-rs: cached photo missing sha={} reason={}",
+            sha256,
+            reason
+        );
+        return Ok(false);
+    };
+    let mut display = DeviceDisplay;
+    display
+        .render(&artifact, config, false)
+        .map_err(|err| format!("render cached photo failed: {err:?}"))?;
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs: rendered cached photo sha={} reason={}",
+        sha256,
+        reason
+    );
+    Ok(true)
+}
+
+#[cfg(target_os = "espidf")]
+fn cycle_cached_history_photo(
+    config: &mut DeviceRuntimeConfig,
+) -> Result<LocalPhotoOutcome, String> {
+    let current_sha = if config.displayed_image_sha256.is_empty() {
+        config.last_image_sha256.as_str()
+    } else {
+        config.displayed_image_sha256.as_str()
+    };
+    let Some(entry) = photo_history::next_entry(current_sha)? else {
+        crate::device_log!("WARN", "photoframe-rs: photo history empty, skip key browse");
+        return Ok(LocalPhotoOutcome::Unavailable {
+            image_source: "history_empty".into(),
+        });
+    };
+    if !render_cached_photo(config, &entry.sha256, "key_cycle")? {
+        return Ok(LocalPhotoOutcome::Unavailable {
+            image_source: "history_missing".into(),
+        });
+    }
+    config.displayed_image_sha256 = entry.sha256.clone();
+    config.manual_history_active = entry.sha256 != config.last_image_sha256;
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs: history key switched sha={} browse_active={}",
+        config.displayed_image_sha256,
+        i32::from(config.manual_history_active)
+    );
+    Ok(LocalPhotoOutcome::Rendered {
+        image_source: if config.manual_history_active {
+            "history".into()
+        } else {
+            "current_cached".into()
+        },
+    })
+}
+
+#[cfg(target_os = "espidf")]
+fn show_current_orchestrator_photo(
+    config: &mut DeviceRuntimeConfig,
+) -> Result<LocalPhotoOutcome, String> {
+    let current_sha = config.last_image_sha256.trim().to_string();
+    if current_sha.is_empty() {
+        crate::device_log!(
+            "WARN",
+            "photoframe-rs: current orchestrator photo unknown, skip long key display"
+        );
+        return Ok(LocalPhotoOutcome::Unavailable {
+            image_source: "current_cached_missing".into(),
+        });
+    }
+    if !render_cached_photo(config, &current_sha, "key_long_current")? {
+        return Ok(LocalPhotoOutcome::Unavailable {
+            image_source: "current_cached_missing".into(),
+        });
+    }
+    config.displayed_image_sha256 = current_sha;
+    config.manual_history_active = false;
+    Ok(LocalPhotoOutcome::Rendered {
+        image_source: "current_cached".into(),
+    })
+}
+
+#[cfg(target_os = "espidf")]
+fn maybe_handle_local_button_action<S: Storage>(
+    storage: &mut S,
+    wake_source: WakeSource,
+    long_press_action: LongPressAction,
+) -> Result<Option<CycleReport>, String> {
+    if matches!(long_press_action, LongPressAction::EnterApPortal) {
+        return Ok(Some(CycleReport {
+            exit: CycleExit::EnterApPortal,
+            action: CycleAction::ManualSync,
+            image_source: "portal".into(),
+            fetch_url_used: None,
+            checkin_reported: false,
+            portal_window_opened: false,
+            logs_uploaded: false,
+        }));
+    }
+
+    let wants_show_current = matches!(long_press_action, LongPressAction::ShowCurrentPhoto);
+    let wants_cycle_history =
+        matches!(wake_source, WakeSource::Key) && matches!(long_press_action, LongPressAction::None);
+    if !wants_show_current && !wants_cycle_history {
+        return Ok(None);
+    }
+
+    let mut config = storage.load_config()?;
+    let sleep_seconds = regular_sleep_seconds(&config);
+    let outcome = if wants_show_current {
+        show_current_orchestrator_photo(&mut config)?
+    } else {
+        cycle_cached_history_photo(&mut config)?
+    };
+    storage.save_config(&config)?;
+
+    let image_source = match outcome {
+        LocalPhotoOutcome::Rendered { image_source } => image_source,
+        LocalPhotoOutcome::Unavailable { image_source } => image_source,
+    };
+
+    Ok(Some(CycleReport {
+        exit: CycleExit::Sleep {
+            seconds: sleep_seconds,
+            timer_only: false,
+        },
+        action: CycleAction::BrowseHistory,
+        image_source,
+        fetch_url_used: None,
+        checkin_reported: false,
+        portal_window_opened: false,
+        logs_uploaded: false,
+    }))
 }
 
 #[cfg(target_os = "espidf")]
 fn main() {
     esp_idf_sys::link_patches();
-    let sd_history_ready = match sdcard::mount_if_available() {
+    power::prepare_for_boot();
+    let mut sd_history_ready = false;
+    if !power::ensure_ready_for_sdcard() {
+        println!("photoframe-rs: sdcard power prepare failed");
+    }
+    match sdcard::mount_if_available() {
         Ok(ready) => {
             if ready {
                 println!(
@@ -371,13 +548,32 @@ fn main() {
                     sdcard::mount_path()
                 );
             }
-            ready
+            sd_history_ready = ready;
         }
-        Err(err) => {
-            println!("photoframe-rs: sdcard mount unavailable: {err}");
-            false
+        Err(first_err) => {
+            println!("photoframe-rs: sdcard mount first attempt failed: {first_err}");
+            if power::recover_sdcard_power() {
+                match sdcard::mount_if_available() {
+                    Ok(ready) => {
+                        if ready {
+                            println!(
+                                "photoframe-rs: sdcard log storage ready at {} after power recovery",
+                                sdcard::mount_path()
+                            );
+                        }
+                        sd_history_ready = ready;
+                    }
+                    Err(second_err) => {
+                        println!("photoframe-rs: sdcard mount unavailable: {second_err}");
+                    }
+                }
+            } else {
+                println!(
+                    "photoframe-rs: sdcard mount unavailable: recovery skipped after first failure"
+                );
+            }
         }
-    };
+    }
     diag::begin_boot_session(sd_history_ready);
     photoframe_platform_espidf::register_diag_log_sink(diag::append_external);
 
@@ -415,13 +611,6 @@ fn main() {
             idle_forever();
         }
     };
-
-    if matches!(long_press_action, LongPressAction::ClearWifiAndEnterPortal) {
-        config.clear_wifi_credentials();
-        if let Err(err) = storage.save_config(&config) {
-            println!("photoframe-rs: clear wifi failed: {err}");
-        }
-    }
 
     match storage.ensure_device_identity(&mut config) {
         Ok(true) => {
@@ -493,22 +682,21 @@ fn main() {
         wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
             &mut skip_usb_dump_once,
         ));
-        let prepared = match prepare_cycle(
+        let local_report = match maybe_handle_local_button_action(
             runner.storage_mut(),
             cycle_wake_source,
             cycle_long_press_action,
         ) {
-            Ok(prepared) => prepared,
+            Ok(report) => report,
             Err(err) => {
-                crate::device_log!("ERROR", "photoframe-rs: prepare cycle failed: {err}");
+                crate::device_log!("ERROR", "photoframe-rs: local button action failed: {err}");
                 let fallback_sleep_seconds = 5 * 60;
                 if is_usb_serial_connected() {
                     crate::device_log!(
                         "INFO",
-                        "photoframe-rs: usb debug mode retry after prepare failure in {}s",
+                        "photoframe-rs: usb debug mode retry after local action failure in {}s",
                         USB_DEBUG_POLL_SECONDS
                     );
-                    EspWifiManager::stop();
                     thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
                     wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
                         &mut skip_usb_dump_once,
@@ -521,48 +709,84 @@ fn main() {
             }
         };
 
-        let report = match prepared {
-            PreparedCycle::Ready(boot) => match runner.run(boot) {
-                Ok(report) => report,
+        let report = if let Some(report) = local_report {
+            report
+        } else {
+            let prepared = match prepare_cycle(
+                runner.storage_mut(),
+                cycle_wake_source,
+                cycle_long_press_action,
+            ) {
+                Ok(prepared) => prepared,
                 Err(err) => {
-                    crate::device_log!("ERROR", "photoframe-rs: cycle failed: {err}");
-                    EspWifiManager::stop();
+                    crate::device_log!("ERROR", "photoframe-rs: prepare cycle failed: {err}");
                     let fallback_sleep_seconds = 5 * 60;
                     if is_usb_serial_connected() {
                         crate::device_log!(
                             "INFO",
-                        "photoframe-rs: usb debug mode retry after cycle failure in {}s",
-                        USB_DEBUG_POLL_SECONDS
-                    );
-                    thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
-                    wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
-                        &mut skip_usb_dump_once,
-                    ));
-                    cycle_wake_source = WakeSource::Other;
-                    cycle_long_press_action = LongPressAction::None;
-                    continue;
+                            "photoframe-rs: usb debug mode retry after prepare failure in {}s",
+                            USB_DEBUG_POLL_SECONDS
+                        );
+                        EspWifiManager::stop();
+                        thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
+                        wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
+                            &mut skip_usb_dump_once,
+                        ));
+                        cycle_wake_source = WakeSource::Other;
+                        cycle_long_press_action = LongPressAction::None;
+                        continue;
                     }
                     enter_deep_sleep(fallback_sleep_seconds, false, PreSleepHoldMode::UsbOrSerial);
                 }
-            },
-            PreparedCycle::EnterApPortal => enter_ap_portal_or_idle(),
-            PreparedCycle::RetryLater { sleep_seconds } => {
-                EspWifiManager::stop();
-                if is_usb_serial_connected() {
-                    crate::device_log!(
-                        "INFO",
-                        "photoframe-rs: usb debug mode retry after wifi failure in {}s",
-                        USB_DEBUG_POLL_SECONDS
-                    );
-                    thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
-                    wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
-                        &mut skip_usb_dump_once,
-                    ));
-                    cycle_wake_source = WakeSource::Other;
-                    cycle_long_press_action = LongPressAction::None;
-                    continue;
+            };
+
+            match prepared {
+                PreparedCycle::Ready(boot) => match runner.run(boot) {
+                    Ok(report) => report,
+                    Err(err) => {
+                        crate::device_log!("ERROR", "photoframe-rs: cycle failed: {err}");
+                        EspWifiManager::stop();
+                        let fallback_sleep_seconds = 5 * 60;
+                        if is_usb_serial_connected() {
+                            crate::device_log!(
+                                "INFO",
+                                "photoframe-rs: usb debug mode retry after cycle failure in {}s",
+                                USB_DEBUG_POLL_SECONDS
+                            );
+                            thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
+                            wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
+                                &mut skip_usb_dump_once,
+                            ));
+                            cycle_wake_source = WakeSource::Other;
+                            cycle_long_press_action = LongPressAction::None;
+                            continue;
+                        }
+                        enter_deep_sleep(
+                            fallback_sleep_seconds,
+                            false,
+                            PreSleepHoldMode::UsbOrSerial,
+                        );
+                    }
+                },
+                PreparedCycle::EnterApPortal => enter_ap_portal_or_idle(),
+                PreparedCycle::RetryLater { sleep_seconds } => {
+                    EspWifiManager::stop();
+                    if is_usb_serial_connected() {
+                        crate::device_log!(
+                            "INFO",
+                            "photoframe-rs: usb debug mode retry after wifi failure in {}s",
+                            USB_DEBUG_POLL_SECONDS
+                        );
+                        thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
+                        wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
+                            &mut skip_usb_dump_once,
+                        ));
+                        cycle_wake_source = WakeSource::Other;
+                        cycle_long_press_action = LongPressAction::None;
+                        continue;
+                    }
+                    enter_deep_sleep(sleep_seconds, false, PreSleepHoldMode::UsbOrSerial);
                 }
-                enter_deep_sleep(sleep_seconds, false, PreSleepHoldMode::UsbOrSerial);
             }
         };
 
@@ -710,23 +934,6 @@ fn prepare_cycle<S: Storage>(
     let mut power_sample =
         runtime_bridge::EspRuntimeBridge::read_power_sample().unwrap_or_default();
     apply_test_power_override(&mut power_sample);
-    if matches!(long_press_action, LongPressAction::OpenStaPortalWindow) {
-        if let Err(err) = portal::run_sta_portal_window(portal::PortalRuntimeStatus {
-            wifi_connected: true,
-            force_refresh: false,
-            last_http_status: 0,
-            image_changed: false,
-            image_source: "portal".into(),
-            next_wakeup_epoch: 0,
-            battery_mv: power_sample.battery_mv,
-            battery_percent: power_sample.battery_percent,
-            charging: power_sample.charging,
-            vbus_good: power_sample.vbus_good,
-            last_error: String::new(),
-        }) {
-            crate::device_log!("WARN", "photoframe-rs: sta portal window failed: {err}");
-        }
-    }
     let sta_ip = EspWifiManager::sta_ip_string();
 
     Ok(PreparedCycle::Ready(BootContext {

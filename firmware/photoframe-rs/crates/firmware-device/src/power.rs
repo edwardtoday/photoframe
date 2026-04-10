@@ -36,6 +36,8 @@ const REG_STATUS2: u8 = 0x01;
 #[cfg(target_os = "espidf")]
 const REG_EXTEN_CFG: u8 = 0x16;
 #[cfg(target_os = "espidf")]
+const REG_SLEEP_WAKEUP_CTRL: u8 = 0x26;
+#[cfg(target_os = "espidf")]
 const REG_ADC_CHANNEL_CTRL: u8 = 0x30;
 #[cfg(target_os = "espidf")]
 const REG_ADC_BATT_H: u8 = 0x34;
@@ -70,9 +72,31 @@ const LDO_ENABLE_ALDO4: u8 = 1u8 << 3;
 #[cfg(target_os = "espidf")]
 const LDO_ENABLE_ALL: u8 = 0x0F;
 #[cfg(target_os = "espidf")]
+const SLEEP_CTRL_SLEEP_ENABLE: u8 = 1u8 << 0;
+#[cfg(target_os = "espidf")]
+const SLEEP_CTRL_WAKEUP_ENABLE: u8 = 1u8 << 1;
+#[cfg(target_os = "espidf")]
+const SLEEP_CTRL_DC_DLO_SELECT: u8 = 1u8 << 2;
+#[cfg(target_os = "espidf")]
+const SLEEP_CTRL_PWROK_TO_LOW: u8 = 1u8 << 3;
+#[cfg(target_os = "espidf")]
+const SLEEP_CTRL_IRQ_PIN_TO_LOW: u8 = 1u8 << 4;
+#[cfg(target_os = "espidf")]
 const POWER_INIT_MAX_ATTEMPTS: usize = 2;
 #[cfg(target_os = "espidf")]
 const POWER_INIT_RETRY_DELAY_MS: u64 = 250;
+#[cfg(target_os = "espidf")]
+const AXP_WAKE_SETTLE_MS: u64 = 2_000;
+#[cfg(target_os = "espidf")]
+const AXP_WAKE_MAX_ATTEMPTS: usize = 2;
+#[cfg(target_os = "espidf")]
+const AXP_HARD_WAKE_LOW_MS: u64 = 1_500;
+#[cfg(target_os = "espidf")]
+const AXP_HARD_WAKE_SETTLE_MS: u64 = 3_000;
+#[cfg(target_os = "espidf")]
+const SDCARD_POWER_CYCLE_OFF_MS: u64 = 80;
+#[cfg(target_os = "espidf")]
+const SDCARD_POWER_CYCLE_ON_MS: u64 = 250;
 
 #[cfg(target_os = "espidf")]
 struct PowerRuntime {
@@ -144,6 +168,7 @@ fn sample_i2c_line_levels() -> Option<(i32, i32)> {
 #[cfg(target_os = "espidf")]
 fn pulse_axp_irq_pin() {
     unsafe {
+        let _ = sys::rtc_gpio_hold_dis(AXP_IRQ_PIN);
         let cfg = sys::gpio_config_t {
             pin_bit_mask: 1u64 << AXP_IRQ_PIN,
             mode: sys::gpio_mode_t_GPIO_MODE_OUTPUT,
@@ -161,6 +186,36 @@ fn pulse_axp_irq_pin() {
         let _ = sys::gpio_set_level(AXP_IRQ_PIN, 1);
     }
     sleep_ms(200);
+}
+
+#[cfg(target_os = "espidf")]
+fn prime_axp_irq_pin_high() {
+    unsafe {
+        let _ = sys::rtc_gpio_hold_dis(AXP_IRQ_PIN);
+        let cfg = sys::gpio_config_t {
+            pin_bit_mask: 1u64 << AXP_IRQ_PIN,
+            mode: sys::gpio_mode_t_GPIO_MODE_OUTPUT,
+            pull_up_en: sys::gpio_pullup_t_GPIO_PULLUP_ENABLE,
+            pull_down_en: sys::gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
+            intr_type: sys::gpio_int_type_t_GPIO_INTR_DISABLE,
+        };
+        if sys::gpio_config(&cfg) == 0 {
+            let _ = sys::gpio_set_level(AXP_IRQ_PIN, 1);
+        }
+    }
+}
+
+#[cfg(target_os = "espidf")]
+fn hard_wake_axp_irq_pin() {
+    prime_axp_irq_pin_high();
+    unsafe {
+        let _ = sys::gpio_set_level(AXP_IRQ_PIN, 0);
+    }
+    sleep_ms(AXP_HARD_WAKE_LOW_MS);
+    unsafe {
+        let _ = sys::gpio_set_level(AXP_IRQ_PIN, 1);
+    }
+    sleep_ms(AXP_HARD_WAKE_SETTLE_MS);
 }
 
 #[cfg(target_os = "espidf")]
@@ -185,8 +240,24 @@ fn recover_i2c_bus_by_bitbang() -> bool {
 
     let (mut scl, mut sda) = sample_i2c_line_levels().unwrap_or((-1, -1));
     if scl == 0 {
-        pulse_axp_irq_pin();
-        (scl, sda) = sample_i2c_line_levels().unwrap_or((-1, -1));
+        for attempt in 0..AXP_WAKE_MAX_ATTEMPTS {
+            log(&format!(
+                "i2c recover: scl low, pulse axp wake attempt={}/{}",
+                attempt + 1,
+                AXP_WAKE_MAX_ATTEMPTS
+            ));
+            pulse_axp_irq_pin();
+            sleep_ms(AXP_WAKE_SETTLE_MS);
+            (scl, sda) = sample_i2c_line_levels().unwrap_or((-1, -1));
+            if scl != 0 {
+                break;
+            }
+        }
+        if scl == 0 {
+            log("i2c recover: try hard axp wake cycle");
+            hard_wake_axp_irq_pin();
+            (scl, sda) = sample_i2c_line_levels().unwrap_or((-1, -1));
+        }
         if scl == 0 {
             log("i2c recover abort: scl still stuck low");
             return false;
@@ -361,6 +432,22 @@ fn configure_display_power_rails(state: &mut PowerRuntime) -> bool {
 }
 
 #[cfg(target_os = "espidf")]
+fn configure_sleep_wakeup_control(state: &mut PowerRuntime) -> bool {
+    let current = match read_reg(state, REG_SLEEP_WAKEUP_CTRL) {
+        Some(current) => current,
+        None => return false,
+    };
+    let mut next = current | SLEEP_CTRL_DC_DLO_SELECT | SLEEP_CTRL_IRQ_PIN_TO_LOW;
+    next |= SLEEP_CTRL_WAKEUP_ENABLE;
+    next &= !SLEEP_CTRL_PWROK_TO_LOW;
+    next |= SLEEP_CTRL_SLEEP_ENABLE;
+    if next == current {
+        return true;
+    }
+    write_reg(state, REG_SLEEP_WAKEUP_CTRL, next)
+}
+
+#[cfg(target_os = "espidf")]
 pub fn ensure_ready_for_render() -> bool {
     for attempt in 0..POWER_INIT_MAX_ATTEMPTS {
         match init_power() {
@@ -389,6 +476,61 @@ pub fn ensure_ready_for_render() -> bool {
         }
     }
     false
+}
+
+#[cfg(target_os = "espidf")]
+pub fn prepare_for_boot() {
+    prime_axp_irq_pin_high();
+    pulse_axp_irq_pin();
+    sleep_ms(AXP_WAKE_SETTLE_MS);
+}
+
+#[cfg(target_os = "espidf")]
+pub fn ensure_ready_for_sdcard() -> bool {
+    ensure_ready_for_render()
+}
+
+#[cfg(target_os = "espidf")]
+pub fn recover_sdcard_power() -> bool {
+    if !ensure_ready_for_render() {
+        return false;
+    }
+
+    let mutex = runtime();
+    let mut state = mutex.lock().unwrap();
+    if !state.ready {
+        return false;
+    }
+
+    let disable_ok = disable_reg_bits(
+        &mut state,
+        REG_LDO_ON_OFF_CTRL0,
+        LDO_ENABLE_ALDO3 | LDO_ENABLE_ALDO4,
+    );
+    drop(state);
+    sleep_ms(SDCARD_POWER_CYCLE_OFF_MS);
+
+    let mutex = runtime();
+    let mut state = mutex.lock().unwrap();
+    let enable_ok = enable_reg_bits(
+        &mut state,
+        REG_LDO_ON_OFF_CTRL0,
+        LDO_ENABLE_ALDO3 | LDO_ENABLE_ALDO4,
+    );
+    drop(state);
+    sleep_ms(SDCARD_POWER_CYCLE_ON_MS);
+
+    let ok = disable_ok && enable_ok;
+    if ok {
+        log("sdcard rails power-cycled for mount retry");
+    } else {
+        log(&format!(
+            "sdcard rail power-cycle failed disable_ok={} enable_ok={}",
+            i32::from(disable_ok),
+            i32::from(enable_ok)
+        ));
+    }
+    ok
 }
 
 #[cfg(target_os = "espidf")]
@@ -581,6 +723,9 @@ pub fn prepare_for_sleep() {
     if !state.ready {
         return;
     }
+    if !configure_sleep_wakeup_control(&mut state) {
+        log("sleep wakeup control configure failed");
+    }
     // 深睡前切掉 EPD 相关外围 LDO，避免显示链路在睡眠期继续吃静态电流。
     let _ = disable_reg_bits(
         &mut state,
@@ -593,6 +738,19 @@ pub fn prepare_for_sleep() {
 
 #[cfg(not(target_os = "espidf"))]
 pub fn ensure_ready_for_render() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "espidf"))]
+pub fn prepare_for_boot() {}
+
+#[cfg(not(target_os = "espidf"))]
+pub fn ensure_ready_for_sdcard() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "espidf"))]
+pub fn recover_sdcard_power() -> bool {
     false
 }
 

@@ -7,13 +7,13 @@ fn spurious_ext1_skips_network_cycle() {
 }
 
 #[test]
-fn key_wake_triggers_manual_sync() {
+fn key_wake_triggers_history_browse() {
     let action = decide_cycle_action(WakeSource::Key);
-    assert_eq!(action, CycleAction::ManualSync);
+    assert_eq!(action, CycleAction::BrowseHistory);
 }
 
 #[test]
-fn boot_wake_triggers_force_refresh() {
+fn boot_wake_triggers_manual_sync() {
     let action = decide_cycle_action(WakeSource::Boot);
-    assert_eq!(action, CycleAction::ForceRefresh);
+    assert_eq!(action, CycleAction::ManualSync);
 }

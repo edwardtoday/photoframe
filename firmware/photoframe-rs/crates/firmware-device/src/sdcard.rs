@@ -184,6 +184,32 @@ fn build_slot_config(candidate: SdCardCandidate) -> sys::sdmmc_slot_config_t {
 }
 
 #[cfg(target_os = "espidf")]
+fn sample_pin_level(pin: i32) -> i32 {
+    unsafe {
+        let _ = sys::gpio_reset_pin(pin);
+        let _ = sys::gpio_set_direction(pin, sys::gpio_mode_t_GPIO_MODE_INPUT);
+        let _ = sys::gpio_pullup_en(pin);
+        sys::gpio_get_level(pin)
+    }
+}
+
+#[cfg(target_os = "espidf")]
+fn log_candidate_levels(candidate: SdCardCandidate, err: &str) {
+    println!(
+        "photoframe-rs: sdcard candidate failed name={} slot={} err={} levels=clk:{} cmd:{} d0:{} d1:{} d2:{} d3:{}",
+        candidate.name,
+        candidate.slot,
+        err,
+        sample_pin_level(candidate.clk),
+        sample_pin_level(candidate.cmd),
+        sample_pin_level(candidate.d0),
+        sample_pin_level(candidate.d1),
+        sample_pin_level(candidate.d2),
+        sample_pin_level(candidate.d3),
+    );
+}
+
+#[cfg(target_os = "espidf")]
 pub(crate) fn mount_if_available() -> Result<bool, String> {
     let mut guard = global_state()
         .lock()
@@ -239,6 +265,7 @@ pub(crate) fn mount_if_available() -> Result<bool, String> {
         unsafe {
             let _ = sys::sdmmc_host_deinit();
         }
+        log_candidate_levels(candidate, &last_error);
     }
     Err(last_error)
 }

@@ -224,6 +224,8 @@ impl Storage for EspIdfStorage {
             config.last_image_sha256 = self.get_string("img_sha256")?.unwrap_or_default();
             config.last_image_etag = self.get_string("img_etag")?.unwrap_or_default();
             config.last_image_last_modified = self.get_string("img_lm")?.unwrap_or_default();
+            config.displayed_image_sha256 = self.get_string("disp_sha")?.unwrap_or_default();
+            config.manual_history_active = self.get_i32("hist_mode")?.unwrap_or(0) != 0;
             config.preferred_image_origin = self.get_string("img_origin")?.unwrap_or_default();
             config.last_success_epoch = self.get_i64("last_ok")?.unwrap_or(0);
             config.last_time_sync_epoch = self.get_i64("time_sync")?.unwrap_or(0);
@@ -266,6 +268,8 @@ impl Storage for EspIdfStorage {
             self.set_string("img_sha256", &config.last_image_sha256)?;
             self.set_string("img_etag", &config.last_image_etag)?;
             self.set_string("img_lm", &config.last_image_last_modified)?;
+            self.set_string("disp_sha", &config.displayed_image_sha256)?;
+            self.set_i32("hist_mode", i32::from(config.manual_history_active))?;
             self.set_string("img_origin", &config.preferred_image_origin)?;
             self.set_i64("last_ok", config.last_success_epoch)?;
             self.set_i64("time_sync", config.last_time_sync_epoch)?;

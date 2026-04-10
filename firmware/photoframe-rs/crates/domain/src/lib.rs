@@ -11,6 +11,7 @@ pub enum WakeSource {
 pub enum CycleAction {
     ScheduledSync,
     ManualSync,
+    BrowseHistory,
     ForceRefresh,
     SleepTimerOnly,
 }
@@ -20,8 +21,8 @@ pub enum CycleAction {
 pub fn decide_cycle_action(wake_source: WakeSource) -> CycleAction {
     match wake_source {
         WakeSource::Timer | WakeSource::Other => CycleAction::ScheduledSync,
-        WakeSource::Key => CycleAction::ManualSync,
-        WakeSource::Boot => CycleAction::ForceRefresh,
+        WakeSource::Key => CycleAction::BrowseHistory,
+        WakeSource::Boot => CycleAction::ManualSync,
         WakeSource::SpuriousExt1 => CycleAction::SleepTimerOnly,
     }
 }
@@ -29,8 +30,8 @@ pub fn decide_cycle_action(wake_source: WakeSource) -> CycleAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LongPressAction {
     None,
-    OpenStaPortalWindow,
-    ClearWifiAndEnterPortal,
+    ShowCurrentPhoto,
+    EnterApPortal,
 }
 
 /// 长按判定遵循当前固件语义：BOOT 优先级高于 KEY，阈值为 3000ms。
@@ -46,11 +47,11 @@ pub fn decide_long_press_action(
     }
 
     if boot_pressed {
-        return LongPressAction::ClearWifiAndEnterPortal;
+        return LongPressAction::EnterApPortal;
     }
 
     if key_pressed {
-        return LongPressAction::OpenStaPortalWindow;
+        return LongPressAction::ShowCurrentPhoto;
     }
 
     LongPressAction::None

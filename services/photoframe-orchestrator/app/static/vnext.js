@@ -144,7 +144,7 @@ function renderTimelineInto(root, events, nowEpoch) {
 }
 
 function renderTimeline(events, nowEpoch) {
-  renderTimelineInto(byId('timeline'), events, nowEpoch);
+  renderTimelineInto(byId('timeline'), events.slice(0, 5), nowEpoch);
 }
 
 function renderEvidence(items) {

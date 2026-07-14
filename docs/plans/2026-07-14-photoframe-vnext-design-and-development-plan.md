@@ -317,7 +317,7 @@ app/
 - [x] 固化产品定义、架构和验收标准。
 - [x] 在 API 文档中记录 v1 路由兼容边界。
 - [x] 建立 vNext 入口与 `/legacy` 回滚入口。
-- [ ] 记录当前线上健康和设备状态基线。
+- [x] 记录当前线上健康和设备状态基线。
 
 验收：文档可直接作为实现和评审清单；现有设备协议无修改。
 
@@ -367,10 +367,10 @@ app/
 
 - [x] 确认零构建前端并接入单容器静态托管。
 - [x] `/` 切换到 vNext，`/legacy` 保留。
-- [ ] 建立干净 commit 构建约束。
-- [ ] 完成本地测试、离线部署和延时 live verification。
+- [x] 建立干净 commit 构建约束。
+- [x] 完成本地测试、离线部署和服务侧延时 live verification。
 - [x] 更新 README 和 API 文档。
-- [ ] 更新部署 runbook 与回滚记录。
+- [x] 更新部署 runbook 与回滚记录。
 
 验收：线上版本可追溯，设备 v1 协议、图片 304 和管理台核心流程全部通过。
 
@@ -428,3 +428,33 @@ vNext 只有同时满足以下条件才算完成：
 3. 整理干净 commit 并构建离线镜像。
 4. 部署到 `tvs675-lan`，验证根入口、Dashboard、设备 v1 API 和图片 304。
 5. 等待真实设备下一次唤醒，核对 next → download → display → checkin 闭环。
+
+## 15. 2026-07-14 发布记录
+
+### 15.1 部署前基线
+
+- 线上镜像版本：`783a0a48-dirty`。
+- 根入口仍为旧控制台，加载 `/static/app.js`。
+- `/api/v2/admin/dashboard` 尚不存在。
+- 设备 `pf-d9369c80` 最近一次真实 checkin 为 `2026-07-10 05:57:49 CST`，部署前已离线约 4 天。
+
+### 15.2 本次发布
+
+- Git commit：`19408e7`，已推送到 `origin/main`。
+- NAS 镜像：`edwardtoday/photoframe-orchestrator:19408e7`。
+- SQLite 备份：`data/orchestrator.db.bak.20260714-191234`。
+- compose 备份：`docker-compose.yml.bak.20260714-191246`。
+- 回滚方式：把 compose `image` 恢复为旧标签或使用上述 compose 备份，然后执行 `docker compose up -d --pull never --force-recreate`。
+
+### 15.3 已通过的线上验收
+
+- `/healthz` 返回 `app_git_sha=19408e7f`。
+- `/` 加载 vNext；`/legacy` 仍加载旧控制台。
+- Dashboard、设备意图、实验室聚合和统一时间线接口均正常。
+- `/public/daily.jpg` 返回 ETag，条件请求命中 `304`。
+- `/api/v1/device/next` 保持兼容，返回 daily 图片 URL、服务端时间和设备时钟状态。
+- 容器状态 `running`，延时检查 `restart=0`。
+
+### 15.4 尚待真实设备确认
+
+服务侧不能远程唤醒深睡设备。由于该设备在发布前已经离线，当前只能确认 `next` 响应兼容，不能把服务端探针冒充真实设备的 download → display → checkin。最终硬件闭环需等待设备恢复供电或下一次真实唤醒后复核 `last_device_checkin_epoch`、`publish_history.status=displayed` 和固件版本。

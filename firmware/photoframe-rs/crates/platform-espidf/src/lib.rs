@@ -1,5 +1,7 @@
 #![cfg_attr(not(target_os = "espidf"), allow(dead_code))]
 
+#[cfg(target_os = "espidf")]
+use photoframe_app::PendingRenderTodo;
 use photoframe_app::{
     Clock, DeviceRuntimeConfig, Display, FirmwareRuntimeStatus, FirmwareUpdater, ImageArtifact,
     ImageFetchOutcome, ImageFetchPlan, ImageFetcher, OrchestratorApi, Storage,
@@ -236,6 +238,35 @@ impl Storage for EspIdfStorage {
             config.ota_target_version = self.get_string("ota_ver")?.unwrap_or_default();
             config.ota_last_error = self.get_string("ota_err")?.unwrap_or_default();
             config.ota_last_attempt_epoch = self.get_i64("ota_try")?.unwrap_or(0);
+            config.last_seen_firmware_version = self.get_string("fw_seen")?.unwrap_or_default();
+            config.pending_render_todo =
+                match self.get_string("render_todo")?.unwrap_or_default().trim() {
+                    "" => None,
+                    raw => match serde_json::from_str::<Option<PendingRenderTodo>>(raw) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            emit_diag_log(
+                                "WARN",
+                                format!("photoframe-rs: invalid render_todo json ignored: {err}"),
+                            );
+                            None
+                        }
+                    },
+                };
+            config.pending_post_render_todos =
+                match self.get_string("post_todos")?.unwrap_or_default().trim() {
+                    "" => Vec::new(),
+                    raw => match serde_json::from_str(raw) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            emit_diag_log(
+                                "WARN",
+                                format!("photoframe-rs: invalid post_todos json ignored: {err}"),
+                            );
+                            Vec::new()
+                        }
+                    },
+                };
 
             Ok(config)
         }
@@ -282,6 +313,17 @@ impl Storage for EspIdfStorage {
             self.set_string("ota_ver", &config.ota_target_version)?;
             self.set_string("ota_err", &config.ota_last_error)?;
             self.set_i64("ota_try", config.ota_last_attempt_epoch)?;
+            self.set_string("fw_seen", &config.last_seen_firmware_version)?;
+            let pending_render_todo = if let Some(todo) = &config.pending_render_todo {
+                serde_json::to_string(&Some(todo))
+                    .map_err(|err| format!("serialize pending render todo failed: {err}"))?
+            } else {
+                String::new()
+            };
+            self.set_string("render_todo", &pending_render_todo)?;
+            let post_todos = serde_json::to_string(&config.pending_post_render_todos)
+                .map_err(|err| format!("serialize post render todos failed: {err}"))?;
+            self.set_string("post_todos", &post_todos)?;
             self.set_i32(
                 "last_wifi_idx",
                 config

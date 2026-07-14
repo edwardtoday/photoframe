@@ -1,8 +1,8 @@
 use photoframe_app::{
     BootContext, Clock, CycleExit, CycleRunner, DeviceRuntimeConfig, Display,
     FirmwareRuntimeStatus, FirmwareUpdater, ImageArtifact, ImageFetchOutcome, ImageFetchPlan,
-    ImageFetcher, ImageFormat, LogUploadProvider, OrchestratorApi, PowerSample, Storage,
-    WifiCredential,
+    ImageFetcher, ImageFormat, LogUploadProvider, OrchestratorApi, PendingRenderTodo,
+    PostRenderTodo, PowerSample, Storage, WifiCredential,
 };
 use photoframe_contracts::{
     DeviceCheckinRequest, DeviceLogUploadRequest, DeviceLogUploadRequestBody, DeviceNextResponse,
@@ -147,7 +147,10 @@ impl ImageFetcher for FakeImageFetcher {
 #[derive(Default)]
 struct FakeDisplay {
     render_calls: usize,
-    queued_results: Vec<Result<(), FailureKind>>,
+    photo_history_calls: usize,
+    photo_history_retry_calls: usize,
+    queued_render_results: Vec<Result<(), FailureKind>>,
+    queued_photo_history_results: Vec<Result<(), String>>,
 }
 fn seeded_config() -> DeviceRuntimeConfig {
     DeviceRuntimeConfig {
@@ -156,6 +159,9 @@ fn seeded_config() -> DeviceRuntimeConfig {
             password: "secret".into(),
         }],
         device_id: "pf-a1b2c3d4".into(),
+        last_seen_firmware_version: DeviceRuntimeConfig::default()
+            .firmware_version()
+            .to_string(),
         ..DeviceRuntimeConfig::default()
     }
 }
@@ -168,8 +174,26 @@ impl Display for FakeDisplay {
         _force_refresh: bool,
     ) -> Result<(), FailureKind> {
         self.render_calls += 1;
-        if !self.queued_results.is_empty() {
-            return self.queued_results.remove(0);
+        if !self.queued_render_results.is_empty() {
+            return self.queued_render_results.remove(0);
+        }
+        Ok(())
+    }
+
+    fn persist_photo_history(
+        &mut self,
+        artifact: Option<&ImageArtifact>,
+        _config: &DeviceRuntimeConfig,
+        _image_sha256: &str,
+        _image_date: Option<&str>,
+        _image_url: Option<&str>,
+    ) -> Result<(), String> {
+        self.photo_history_calls += 1;
+        if artifact.is_none() {
+            self.photo_history_retry_calls += 1;
+        }
+        if !self.queued_photo_history_results.is_empty() {
+            return self.queued_photo_history_results.remove(0);
         }
         Ok(())
     }
@@ -358,6 +382,7 @@ fn not_modified_cycle_skips_render_but_still_succeeds() {
         FakeStorage {
             config: DeviceRuntimeConfig {
                 last_image_sha256: "same".into(),
+                displayed_image_sha256: "same".into(),
                 last_image_etag: "etag-1".into(),
                 ..seeded_config()
             },
@@ -399,6 +424,70 @@ fn not_modified_cycle_skips_render_but_still_succeeds() {
         CycleExit::Sleep {
             seconds: NEXT_BEIJING_SYNC_SLEEP_SECONDS,
             timer_only: false
+        }
+    );
+}
+
+#[test]
+fn display_desync_forces_refetch_and_rerender_even_when_sha_matches() {
+    let mut runner = CycleRunner::new(
+        FakeClock,
+        FakeStorage {
+            config: DeviceRuntimeConfig {
+                last_image_sha256: "same".into(),
+                last_image_date: "2026-03-07".into(),
+                displayed_image_sha256: "older".into(),
+                displayed_image_date: "2026-03-05".into(),
+                last_image_etag: "etag-1".into(),
+                ..seeded_config()
+            },
+            save_count: 0,
+        },
+        FakeOrchestrator::default(),
+        FakeImageFetcher {
+            queued_results: vec![ImageFetchOutcome {
+                ok: true,
+                status_code: 200,
+                error: String::new(),
+                image_changed: true,
+                sha256: "same".into(),
+                etag: Some("etag-2".into()),
+                last_modified: None,
+                artifact: Some(ImageArtifact {
+                    format: ImageFormat::Bmp,
+                    width: 800,
+                    height: 480,
+                    bytes: vec![1, 2, 3],
+                }),
+            }],
+            ..FakeImageFetcher::default()
+        },
+        FakeDisplay::default(),
+    );
+
+    let report = runner
+        .run(BootContext {
+            wake_source: WakeSource::Timer,
+            long_press_action: LongPressAction::None,
+            sta_ip: None,
+            power_sample: PowerSample::default(),
+        })
+        .unwrap();
+
+    assert_eq!(runner.image_fetcher().fetch_calls[0].previous_sha256, "");
+    assert!(
+        runner.image_fetcher().fetch_calls[0]
+            .previous_etag
+            .is_none()
+    );
+    assert_eq!(runner.display().render_calls, 1);
+    assert_eq!(runner.storage_mut().config.displayed_image_sha256, "same");
+    assert!(runner.storage_mut().config.pending_render_todo.is_none());
+    assert_eq!(
+        report.exit,
+        CycleExit::Sleep {
+            seconds: NEXT_BEIJING_SYNC_SLEEP_SECONDS,
+            timer_only: false,
         }
     );
 }
@@ -470,7 +559,8 @@ fn pmic_soft_failure_uses_regular_retry_interval() {
         },
         FakeDisplay {
             render_calls: 0,
-            queued_results: vec![Err(FailureKind::PmicSoftFailure)],
+            queued_render_results: vec![Err(FailureKind::PmicSoftFailure)],
+            ..FakeDisplay::default()
         },
     );
 
@@ -487,6 +577,15 @@ fn pmic_soft_failure_uses_regular_retry_interval() {
     assert_eq!(payload.last_error, "pmic soft failure");
     assert_eq!(
         runner
+            .storage_mut()
+            .config
+            .pending_render_todo
+            .as_ref()
+            .map(|todo| todo.image_sha256.as_str()),
+        Some("new-sha")
+    );
+    assert_eq!(
+        runner
             .orchestrator()
             .debug_stages
             .last()
@@ -500,6 +599,69 @@ fn pmic_soft_failure_uses_regular_retry_interval() {
             timer_only: false,
         }
     );
+}
+
+#[test]
+fn pending_render_todo_forces_retry_after_previous_render_failure() {
+    let mut runner = CycleRunner::new(
+        FakeClock,
+        FakeStorage {
+            config: DeviceRuntimeConfig {
+                last_image_sha256: "same".into(),
+                last_image_date: "2026-03-07".into(),
+                displayed_image_sha256: "older".into(),
+                displayed_image_date: "2026-03-05".into(),
+                pending_render_todo: Some(PendingRenderTodo::new(
+                    "same",
+                    Some("2026-03-07"),
+                    Some("https://cdn.example.com/current.bmp"),
+                    "daily",
+                    200,
+                )),
+                last_image_etag: "\"old-etag\"".into(),
+                ..seeded_config()
+            },
+            save_count: 0,
+        },
+        FakeOrchestrator::default(),
+        FakeImageFetcher {
+            queued_results: vec![ImageFetchOutcome {
+                ok: true,
+                status_code: 200,
+                error: String::new(),
+                image_changed: true,
+                sha256: "same".into(),
+                etag: Some("\"new-etag\"".into()),
+                last_modified: None,
+                artifact: Some(ImageArtifact {
+                    format: ImageFormat::Bmp,
+                    width: 800,
+                    height: 480,
+                    bytes: vec![1, 2, 3],
+                }),
+            }],
+            ..FakeImageFetcher::default()
+        },
+        FakeDisplay::default(),
+    );
+
+    let _ = runner
+        .run(BootContext {
+            wake_source: WakeSource::Timer,
+            long_press_action: LongPressAction::None,
+            sta_ip: None,
+            power_sample: PowerSample::default(),
+        })
+        .unwrap();
+
+    assert_eq!(runner.image_fetcher().fetch_calls[0].previous_sha256, "");
+    assert!(
+        runner.image_fetcher().fetch_calls[0]
+            .previous_etag
+            .is_none()
+    );
+    assert!(runner.storage_mut().config.pending_render_todo.is_none());
+    assert_eq!(runner.storage_mut().config.displayed_image_sha256, "same");
 }
 
 #[test]
@@ -869,10 +1031,129 @@ fn successful_cycle_reports_debug_stages_in_order() {
         vec![
             "before_fetch".to_string(),
             "after_fetch_ok".to_string(),
+            "before_stage_render_target".to_string(),
+            "after_stage_render_target".to_string(),
             "after_render_ok".to_string(),
+            "before_persist_render_todo".to_string(),
+            "after_persist_render_todo".to_string(),
             "after_save_ok".to_string(),
             "before_checkin_ok".to_string(),
+            "after_checkin_ok".to_string(),
+            "before_photo_history_ok".to_string(),
+            "after_photo_history_ok".to_string(),
         ]
+    );
+}
+
+#[test]
+fn photo_history_failure_does_not_block_checkin_and_keeps_todo() {
+    let mut runner = CycleRunner::new(
+        FakeClock,
+        FakeStorage {
+            config: seeded_config(),
+            save_count: 0,
+        },
+        FakeOrchestrator::default(),
+        FakeImageFetcher {
+            queued_results: vec![ImageFetchOutcome {
+                ok: true,
+                status_code: 200,
+                error: String::new(),
+                image_changed: true,
+                sha256: "new-sha".into(),
+                etag: None,
+                last_modified: None,
+                artifact: Some(ImageArtifact {
+                    format: ImageFormat::Bmp,
+                    width: 800,
+                    height: 480,
+                    bytes: vec![1, 2, 3],
+                }),
+            }],
+            ..FakeImageFetcher::default()
+        },
+        FakeDisplay {
+            queued_photo_history_results: vec![Err("tf write failed".into())],
+            ..FakeDisplay::default()
+        },
+    );
+
+    let report = runner
+        .run(BootContext {
+            wake_source: WakeSource::Timer,
+            long_press_action: LongPressAction::None,
+            sta_ip: Some("192.168.1.50".into()),
+            power_sample: PowerSample::default(),
+        })
+        .unwrap();
+
+    assert!(report.checkin_reported);
+    assert_eq!(runner.orchestrator().checkin_calls, 1);
+    assert_eq!(runner.display().photo_history_calls, 1);
+    assert_eq!(
+        runner.storage_mut().config.pending_post_render_todos.len(),
+        1
+    );
+    assert!(runner.storage_mut().config.pending_post_render_todos[0].checkin_done);
+    assert!(!runner.storage_mut().config.pending_post_render_todos[0].photo_history_done);
+}
+
+#[test]
+fn next_wake_retries_pending_post_render_todo_without_new_image() {
+    let mut runner = CycleRunner::new(
+        FakeClock,
+        FakeStorage {
+            config: DeviceRuntimeConfig {
+                pending_post_render_todos: vec![PostRenderTodo {
+                    image_sha256: "old-sha".into(),
+                    image_date: "2026-03-06".into(),
+                    image_url: "https://cdn.example.com/old.jpg".into(),
+                    image_source: "daily".into(),
+                    last_http_status: 200,
+                    image_changed: true,
+                    checkin_done: false,
+                    photo_history_done: false,
+                }],
+                ..seeded_config()
+            },
+            save_count: 0,
+        },
+        FakeOrchestrator::default(),
+        FakeImageFetcher {
+            queued_results: vec![ImageFetchOutcome {
+                ok: true,
+                status_code: 304,
+                error: String::new(),
+                image_changed: false,
+                sha256: "same".into(),
+                etag: None,
+                last_modified: None,
+                artifact: None,
+            }],
+            ..FakeImageFetcher::default()
+        },
+        FakeDisplay::default(),
+    );
+
+    let report = runner
+        .run(BootContext {
+            wake_source: WakeSource::Timer,
+            long_press_action: LongPressAction::None,
+            sta_ip: Some("192.168.1.50".into()),
+            power_sample: PowerSample::default(),
+        })
+        .unwrap();
+
+    assert!(report.checkin_reported);
+    assert_eq!(runner.orchestrator().checkin_calls, 1);
+    assert_eq!(runner.display().photo_history_calls, 1);
+    assert_eq!(runner.display().photo_history_retry_calls, 1);
+    assert!(
+        runner
+            .storage_mut()
+            .config
+            .pending_post_render_todos
+            .is_empty()
     );
 }
 

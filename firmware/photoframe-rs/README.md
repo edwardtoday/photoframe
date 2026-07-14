@@ -57,6 +57,8 @@ scripts/build-photoframe-rs.sh
 - `BOOT` 长按（3 秒）：直接进入 AP 配网入口，不清空已有 Wi‑Fi 配置
 - `KEY` 短按：按日期在“当前 orchestrator 图片 -> 前 1 天 -> 前 2 天 ...”之间循环切换；优先读取 TF 卡 `pfphotos/` 缓存，若目标日期缺图，会临时联网请求 orchestrator `/api/v1/device/history/daily.*` 回源补图并写回 TF
 - `KEY` 长按（3 秒）：回到当前 orchestrator 图片；若 TF 中缺当前日期图片，也会通过 orchestrator 历史补图接口回源拉取
+- 按键一旦被识别并开始执行功能，会立即给出确认反馈：
+  `KEY` 使用高频提示音，`BOOT` 使用低频提示音；短按 `0.2s`、长按 `0.5s`。同时保留板载红/绿灯短闪/长闪作为兜底反馈
 - 定时刷新到点时，若设备正停留在历史图，会强制回到当前 orchestrator 图片
 - 历史图缓存默认写入 TF 卡 `pfphotos/` 目录；若 TF 不可用，按键轮播只会记录告警，无法保留离线历史
 
@@ -77,7 +79,7 @@ scripts/build-photoframe-rs.sh
 - 若宿主工具没有发送上述 resume 标记，设备会在短暂超时后自行继续，避免被 `usb_serial_jtag_is_connected()` 的连接语义卡死
 - USB debug mode 以 `usb_serial_jtag_is_connected()` 为准，不以单纯 `vbus_good` 为准；因此“插着供电线但没有串口主机”的场景仍会按原逻辑进入休眠/USB hold
 - 真机串口验证时，若一轮主周期结束后看到 `usb debug mode active, rerun cycle in 5s`，随后再次出现 `wifi try idx=...`，说明 USB debug mode 已生效
-- OTA 故障注入/验收可用 `scripts/validate-ota-host.py`：支持上传 artifact、创建 rollout、可选请求设备日志、等待 `device-debug-stages` 中的 OTA 阶段并在指定阶段通过 USB 串口触发 reset
+- OTA 故障注入/验收可用 `scripts/validate-ota-host.py`：支持上传 artifact、创建 rollout、可选请求设备日志、等待 `device-debug-stages` 中的 OTA 阶段并在指定阶段通过 USB 串口触发 reset；若带 `--log-reason`，默认会按 `800` 行 / `65536` bytes 创建日志请求，减少 boot/power 诊断被截断
 - 推荐优先参考 `docs/runbooks/ota-hardware-validation.md`，其中已经整理好正向升级、日志采集、reset 注入、`requires_vbus`、低电量、SHA 错配、首启前回滚等真机验证步骤
 
 ## NVS 恢复

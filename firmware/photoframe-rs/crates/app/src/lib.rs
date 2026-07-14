@@ -5,7 +5,8 @@ pub mod url;
 pub use model::{
     ApplyLocalConfigOutcome, ApplyRemoteConfigOutcome, DeviceRuntimeConfig, FirmwareRuntimeStatus,
     ImageArtifact, ImageFetchOutcome, ImageFetchPlan, ImageFormat, LocalConfigPatch,
-    NormalizePowerOutcome, PowerCache, PowerSample, WifiCredential, normalize_power_sample,
+    NormalizePowerOutcome, PendingRenderTodo, PostRenderTodo, PowerCache, PowerSample,
+    WifiCredential, normalize_power_sample,
 };
 pub use runner::{
     BootContext, Clock, CycleExit, CycleReport, CycleRunner, Display, FirmwareUpdater,

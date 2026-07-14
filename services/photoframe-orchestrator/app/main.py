@@ -26,6 +26,18 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
+from app.admin_v2.dashboard import build_admin_dashboard
+from app.admin_v2.photos import (
+    backfill_photo_assets_from_overrides,
+    create_or_update_photo_asset,
+    create_override_record,
+    get_photo_asset,
+    list_photo_assets,
+    record_photo_delivery,
+    update_photo_feedback,
+)
+from app.admin_v2.timeline import load_device_timeline
+
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR.parent / "data"
 ASSET_DIR = DATA_DIR / "assets"
@@ -172,6 +184,7 @@ REPORTED_DEVICE_STRING_FIELDS = {
 OVERRIDE_DITHER_DEFAULT = "none"
 DAILY_DITHER_SETTING_KEY = "daily_dither_algorithm"
 PALETTE_PROFILE_SETTING_KEY = "palette_profile"
+PHOTO_RENDER_EXPERIMENT_ENABLED_SETTING_KEY = "photo_render_experiment_enabled"
 DAILY_DITHER_DEFAULT = os.getenv("DAILY_DITHER_ALGORITHM", "sierra").strip().lower() or "sierra"
 PALETTE_PROFILE_DEFAULT = os.getenv("EPAPER_PALETTE_PROFILE", "reference").strip().lower() or "reference"
 PHOTOFRAME_PALETTE: tuple[tuple[int, int, int], ...] = (
@@ -183,6 +196,14 @@ PHOTOFRAME_PALETTE: tuple[tuple[int, int, int], ...] = (
     (0, 255, 0),
 )
 PHOTOFRAME_PALETTE_WHITE = PHOTOFRAME_PALETTE[1]
+PHOTOFRAME_PALETTE_BY_NAME: dict[str, tuple[int, int, int]] = {
+    "black": PHOTOFRAME_PALETTE[0],
+    "white": PHOTOFRAME_PALETTE[1],
+    "yellow": PHOTOFRAME_PALETTE[2],
+    "red": PHOTOFRAME_PALETTE[3],
+    "blue": PHOTOFRAME_PALETTE[4],
+    "green": PHOTOFRAME_PALETTE[5],
+}
 EPAPER_PALETTE_PROFILES: dict[str, dict[str, Any]] = {
     "reference": {
         "label": "Reference Palette",
@@ -427,6 +448,37 @@ DITHER_ALGORITHM_SPECS: dict[str, dict[str, Any]] = {
         "preprocess": "paper-white",
     },
 }
+PHOTO_RENDER_PRESETS: tuple[dict[str, str], ...] = (
+    {
+        "key": "balanced-sierra",
+        "label": "平衡照片",
+        "description": "Sierra 扩散：层次、颗粒与速度均衡，作为稳定基线。",
+        "algorithm": "sierra",
+        "palette_profile": "reference",
+    },
+    {
+        "key": "natural-tone-lab",
+        "label": "自然色调",
+        "description": "明暗压缩 + Lab/ΔE00：优先保留人像和阴影中的自然层次。",
+        "algorithm": "tone-lab-ciede2000",
+        "palette_profile": "reference",
+    },
+    {
+        "key": "paperwhite-lab",
+        "label": "纸白高光",
+        "description": "纸白补偿 + Lab/ΔE00：优先避免高光死白，适合明亮风景。",
+        "algorithm": "paperwhite-lab-ciede2000",
+        "palette_profile": "reference",
+    },
+    {
+        "key": "fine-detail-blue-noise",
+        "label": "细节蓝噪声",
+        "description": "Blue Noise + Lab/ΔE00：弱化规则纹理，优先看纹理与边缘细节。",
+        "algorithm": "blue-noise-lab-ciede2000",
+        "palette_profile": "reference",
+    },
+)
+PHOTO_RENDER_PRESETS_BY_KEY = {item["key"]: item for item in PHOTO_RENDER_PRESETS}
 DAILY_DITHER_ALGORITHM_KEYS: tuple[str, ...] = tuple(
     key for key in DITHER_ALGORITHM_SPECS.keys() if key != OVERRIDE_DITHER_DEFAULT
 )
@@ -442,12 +494,18 @@ DEVICES_LIGHTWEIGHT_CACHE_TTL_SECONDS = max(1, int(os.getenv("DEVICES_LIGHTWEIGH
 DEVICES_LIGHTWEIGHT_CACHE: dict[str, Any] = {"expire_epoch": 0, "payload": None}
 PREVIEW_FRESH_THROTTLE_SECONDS = max(1, int(os.getenv("PREVIEW_FRESH_THROTTLE_SECONDS", "30")))
 PREVIEW_FRESH_CACHE: dict[str, dict[str, Any]] = {}
+PREVIEW_FRESH_SOURCE_CACHE_LOCK = threading.Lock()
+PREVIEW_FRESH_SOURCE_CACHE: dict[str, dict[str, Any]] = {}
 STALE_CHECKIN_WARNINGS: dict[str, int] = {}
 
 
 def _open_db() -> sqlite3.Connection:
-  conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+  conn = sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
   conn.row_factory = sqlite3.Row
+  conn.execute("PRAGMA busy_timeout = 10000")
+  conn.execute("PRAGMA journal_mode = WAL")
+  conn.execute("PRAGMA synchronous = NORMAL")
+  conn.execute("PRAGMA foreign_keys = ON")
   return conn
 
 
@@ -516,6 +574,44 @@ def _preview_fresh_cache_set(cache_key: str, now_ts: int, payload: bytes, metada
       "payload": bytes(payload),
       "metadata": dict(metadata),
   }
+
+
+def _fresh_daily_source_cache_key(url: str, source_key: str) -> str:
+  return f"{url}|{source_key.strip()}"
+
+
+def _fetch_fresh_daily_source(url: str, now_ts: int, source_key: str | None = None) -> tuple[bytes, dict[str, str]]:
+  normalized_source_key = (source_key or "").strip()
+  if not normalized_source_key:
+    status, source_bytes, cache_headers = _fetch_daily_source(url)
+    if status != 200 or source_bytes is None:
+      raise HTTPException(status_code=502, detail=f"daily upstream status={status}")
+    return source_bytes, cache_headers
+
+  cache_key = _fresh_daily_source_cache_key(url, normalized_source_key)
+  with PREVIEW_FRESH_SOURCE_CACHE_LOCK:
+    expired = [
+        key for key, value in PREVIEW_FRESH_SOURCE_CACHE.items()
+        if int(value.get("expire_epoch") or 0) <= now_ts
+    ]
+    for key in expired:
+      PREVIEW_FRESH_SOURCE_CACHE.pop(key, None)
+    cached = PREVIEW_FRESH_SOURCE_CACHE.get(cache_key)
+    if cached is not None:
+      source_bytes = cached.get("source_bytes")
+      cache_headers = cached.get("cache_headers")
+      if isinstance(source_bytes, bytes) and isinstance(cache_headers, dict):
+        return source_bytes, dict(cache_headers)
+
+    status, source_bytes, cache_headers = _fetch_daily_source(url)
+    if status != 200 or source_bytes is None:
+      raise HTTPException(status_code=502, detail=f"daily upstream status={status}")
+    PREVIEW_FRESH_SOURCE_CACHE[cache_key] = {
+        "expire_epoch": int(now_ts) + PREVIEW_FRESH_THROTTLE_SECONDS,
+        "source_bytes": bytes(source_bytes),
+        "cache_headers": dict(cache_headers),
+    }
+    return source_bytes, cache_headers
 
 
 def _ensure_table_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -675,6 +771,66 @@ def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
       """
       CREATE INDEX IF NOT EXISTS idx_device_debug_stages_device_epoch
         ON device_debug_stages (device_id, stage_epoch DESC, id DESC)
+      """
+  )
+  conn.execute(
+      """
+      CREATE TABLE IF NOT EXISTS photo_assets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_sha256 TEXT NOT NULL UNIQUE,
+        original_asset_name TEXT NOT NULL DEFAULT '',
+        original_filename TEXT NOT NULL DEFAULT '',
+        mime_type TEXT NOT NULL DEFAULT '',
+        source_type TEXT NOT NULL DEFAULT 'upload',
+        note TEXT NOT NULL DEFAULT '',
+        favorite INTEGER NOT NULL DEFAULT 0,
+        hidden INTEGER NOT NULL DEFAULT 0,
+        feedback_json TEXT NOT NULL DEFAULT '{}',
+        created_epoch INTEGER NOT NULL DEFAULT 0,
+        updated_epoch INTEGER NOT NULL DEFAULT 0
+      )
+      """
+  )
+  conn.execute(
+      """
+      CREATE TABLE IF NOT EXISTS photo_render_variants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        photo_asset_id INTEGER NOT NULL,
+        asset_name TEXT NOT NULL,
+        asset_sha256 TEXT NOT NULL,
+        dither_algorithm TEXT NOT NULL DEFAULT 'none',
+        palette_profile TEXT NOT NULL DEFAULT 'reference',
+        width INTEGER NOT NULL DEFAULT 480,
+        height INTEGER NOT NULL DEFAULT 800,
+        created_epoch INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(photo_asset_id, asset_sha256)
+      )
+      """
+  )
+  conn.execute(
+      """
+      CREATE INDEX IF NOT EXISTS idx_photo_render_variants_photo
+        ON photo_render_variants (photo_asset_id, created_epoch DESC)
+      """
+  )
+  conn.execute(
+      """
+      CREATE TABLE IF NOT EXISTS photo_deliveries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        photo_asset_id INTEGER NOT NULL,
+        render_variant_id INTEGER NOT NULL,
+        override_id INTEGER NOT NULL,
+        device_id TEXT NOT NULL,
+        duration_minutes INTEGER NOT NULL DEFAULT 1440,
+        note TEXT NOT NULL DEFAULT '',
+        requested_epoch INTEGER NOT NULL DEFAULT 0
+      )
+      """
+  )
+  conn.execute(
+      """
+      CREATE INDEX IF NOT EXISTS idx_photo_deliveries_photo_epoch
+        ON photo_deliveries (photo_asset_id, requested_epoch DESC)
       """
   )
 
@@ -871,6 +1027,7 @@ def _init_db() -> None:
         """
     )
     _apply_schema_migrations(conn)
+    backfill_photo_assets_from_overrides(conn, _now_epoch())
     conn.execute(
         """
         INSERT INTO service_settings (key, value, updated_at)
@@ -1105,7 +1262,12 @@ def _clear_pending_publish(conn: sqlite3.Connection, device_id: str) -> None:
   )
 
 
-def _record_confirmed_publish(conn: sqlite3.Connection, payload: "DeviceCheckin", server_now: int) -> None:
+def _record_confirmed_publish(
+    conn: sqlite3.Connection,
+    payload: "DeviceCheckin",
+    checkin_epoch: int,
+    server_now: int,
+) -> None:
   if not payload.fetch_ok or not payload.display_applied:
     return
 
@@ -1123,12 +1285,36 @@ def _record_confirmed_publish(conn: sqlite3.Connection, payload: "DeviceCheckin"
     return
 
   history_id = int(row["pending_publish_history_id"] or 0)
-  if history_id <= 0:
+  displayed_url = str(payload.displayed_image_url or "").strip() or str(row["pending_publish_image_url"] or "")
+  displayed_sha256 = str(payload.displayed_image_sha256 or "").strip()
+  device_id = _normalize_device_id(payload.device_id)
+  pending_url = str(row["pending_publish_image_url"] or "").strip()
+  matched_history_id = history_id
+  clear_pending = True
+
+  if displayed_url and displayed_url != pending_url:
+    matched_history_id = 0
+    clear_pending = False
+
+  if matched_history_id <= 0 and displayed_url:
+    matched = conn.execute(
+        """
+        SELECT id
+        FROM publish_history
+        WHERE device_id = ? AND image_url = ? AND status = 'sent'
+        ORDER BY issued_epoch DESC, id DESC
+        LIMIT 1
+        """,
+        (device_id, displayed_url),
+    ).fetchone()
+    if matched is not None:
+      matched_history_id = int(matched["id"] or 0)
+      clear_pending = False
+
+  if matched_history_id <= 0:
     _clear_pending_publish(conn, payload.device_id)
     return
 
-  displayed_url = str(payload.displayed_image_url or "").strip() or str(row["pending_publish_image_url"] or "")
-  displayed_sha256 = str(payload.displayed_image_sha256 or "").strip()
   conn.execute(
       """
       UPDATE publish_history
@@ -1139,14 +1325,15 @@ def _record_confirmed_publish(conn: sqlite3.Connection, payload: "DeviceCheckin"
       WHERE id = ? AND device_id = ?
       """,
       (
-          int(payload.checkin_epoch),
+          int(checkin_epoch),
           displayed_url,
           displayed_sha256,
-          history_id,
-          _normalize_device_id(payload.device_id),
+          matched_history_id,
+          device_id,
       ),
   )
-  _clear_pending_publish(conn, payload.device_id)
+  if clear_pending:
+    _clear_pending_publish(conn, payload.device_id)
 
 
 def _upsert_device_power_sample_from_devices(
@@ -1795,6 +1982,34 @@ def _set_daily_dither_algorithm(value: str) -> str:
     return _set_service_setting(conn, DAILY_DITHER_SETTING_KEY, picked)
 
 
+def _photo_render_experiment_enabled() -> bool:
+  conn = _ensure_db()
+  value = _get_service_setting(conn, PHOTO_RENDER_EXPERIMENT_ENABLED_SETTING_KEY).strip().lower()
+  return value in {"1", "true", "yes", "on"}
+
+
+def _set_photo_render_experiment_enabled(enabled: bool) -> bool:
+  conn = _ensure_db()
+  with DB_LOCK:
+    _set_service_setting(conn, PHOTO_RENDER_EXPERIMENT_ENABLED_SETTING_KEY, "1" if enabled else "0")
+  return enabled
+
+
+def _photo_render_preset_for_date(date_text: str) -> dict[str, str] | None:
+  del date_text
+  # 多版本对照只影响管理台预览。设备始终使用用户保存的默认方案，避免同一张日图
+  # 因实验轮换而在真实相框上不可控地变化，也保持唤醒路径只有一个静态资源。
+  return None
+
+
+def _daily_render_choice(now_ts: int, date_text: str | None = None) -> tuple[str, str, dict[str, str] | None]:
+  normalized_date = date_text or datetime.fromtimestamp(now_ts, LOCAL_TZ).strftime("%Y-%m-%d")
+  preset = _photo_render_preset_for_date(normalized_date)
+  if preset is not None:
+    return preset["algorithm"], preset["palette_profile"], preset
+  return _get_daily_dither_algorithm(), _get_palette_profile(), None
+
+
 def _normalize_palette_profile(raw: str | None) -> str:
   value = (raw or PALETTE_PROFILE_DEFAULT).strip().lower()
   if value in EPAPER_PALETTE_PROFILES:
@@ -2356,6 +2571,7 @@ def _resolve_current_payload_for_device(
     daily_dither_algorithm: str | None = None,
     palette_profile: str | None = None,
     fresh_daily_source: bool = False,
+    fresh_daily_source_key: str | None = None,
 ) -> tuple[bytes, str, str, dict[str, Any]]:
   active = _active_override_for_device(conn, now_ts, target_device)
   if active is not None:
@@ -2369,7 +2585,9 @@ def _resolve_current_payload_for_device(
     return path.read_bytes(), "override", _normalize_override_dither_algorithm(active["dither_algorithm"]), {}
 
   upstream_url = _daily_image_url(now_ts)
-  picked = _normalize_daily_dither_algorithm(daily_dither_algorithm or _get_daily_dither_algorithm())
+  picked, chosen_palette_profile, _preset = _daily_render_choice(now_ts)
+  picked = _normalize_daily_dither_algorithm(daily_dither_algorithm or picked)
+  palette_profile = palette_profile or chosen_palette_profile
   if fresh_daily_source:
     cache_key = _preview_fresh_cache_key(
         target_device,
@@ -2388,6 +2606,7 @@ def _resolve_current_payload_for_device(
         output_format,
         picked,
         palette_profile=palette_profile,
+        fresh_daily_source_key=fresh_daily_source_key,
     )
     _preview_fresh_cache_set(cache_key, now_ts, payload, metadata)
   else:
@@ -2813,8 +3032,9 @@ def _resolve_current_asset_for_device(
     return path, "override", _normalize_override_dither_algorithm(active["dither_algorithm"]), {}
 
   upstream_url = _daily_image_url(now_ts)
-  picked = _normalize_daily_dither_algorithm(daily_dither_algorithm or _get_daily_dither_algorithm())
-  profile_key = _resolve_palette_profile(palette_profile)
+  picked, chosen_palette_profile, _preset = _daily_render_choice(now_ts)
+  picked = _normalize_daily_dither_algorithm(daily_dither_algorithm or picked)
+  profile_key = _resolve_palette_profile(palette_profile or chosen_palette_profile)
   bmp_name, jpg_name = _ensure_daily_assets(now_ts, upstream_url, picked, palette_profile=profile_key)
   target_name = bmp_name if output_format == "bmp" else jpg_name
   metadata = _read_daily_cache_metadata(_daily_cache_metadata_path(jpg_name))
@@ -2846,11 +3066,9 @@ def _render_daily_payload_fresh_with_metadata(
     dither_algorithm: str,
     *,
     palette_profile: str | None = None,
+    fresh_daily_source_key: str | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
-  del now_ts  # 仅用于与缓存版签名对齐；fresh 路径直接基于当前上游字节渲染。
-  status, source_bytes, cache_headers = _fetch_daily_source(url)
-  if status != 200 or source_bytes is None:
-    raise HTTPException(status_code=502, detail=f"daily upstream status={status}")
+  source_bytes, cache_headers = _fetch_fresh_daily_source(url, now_ts, fresh_daily_source_key)
   fitted = _fit_daily_source_image(source_bytes)
   bmp_data, jpg_data = _render_override_assets(
       fitted,
@@ -2873,6 +3091,7 @@ def _render_daily_payload_fresh(
     dither_algorithm: str,
     *,
     palette_profile: str | None = None,
+    fresh_daily_source_key: str | None = None,
 ) -> bytes:
   payload, _metadata = _render_daily_payload_fresh_with_metadata(
       now_ts,
@@ -2880,6 +3099,7 @@ def _render_daily_payload_fresh(
       output_format,
       dither_algorithm,
       palette_profile=palette_profile,
+      fresh_daily_source_key=fresh_daily_source_key,
   )
   return payload
 
@@ -3035,7 +3255,7 @@ def _nearest_palette_color_lab_ciede2000(
     if distance < best_distance:
       best = candidate
       best_distance = distance
-  return best["rgb"]
+  return PHOTOFRAME_PALETTE_BY_NAME[best["name"]]
 
 
 def _quantized_rgb_key(rgb: tuple[float, float, float]) -> tuple[int, int, int]:
@@ -3062,7 +3282,7 @@ def _build_lab_ciede2000_matcher(profile_spec: dict[str, Any]) -> callable:
       if distance < best_distance:
         best = candidate
         best_distance = distance
-    return best["rgb"]
+    return PHOTOFRAME_PALETTE_BY_NAME[best["name"]]
 
   return lambda rgb: match(*_quantized_rgb_key(rgb))
 
@@ -3107,6 +3327,9 @@ BLUE_NOISE_8X8 = _generate_blue_noise_order(8)
 
 
 def _pixel_list(image: Image.Image) -> list[tuple[int, int, int]]:
+  get_flattened_data = getattr(image, "get_flattened_data", None)
+  if callable(get_flattened_data):
+    return list(get_flattened_data())
   return list(image.getdata())
 
 
@@ -3314,6 +3537,22 @@ def _read_and_convert_bmp(
   if not raw:
     raise HTTPException(status_code=400, detail="empty upload file")
 
+  return _convert_image_bytes(
+      raw,
+      dither_algorithm,
+      palette_profile=palette_profile,
+  )
+
+
+def _convert_image_bytes(
+    raw: bytes,
+    dither_algorithm: str,
+    *,
+    palette_profile: str | None = None,
+) -> tuple[str, str]:
+  if not raw:
+    raise HTTPException(status_code=400, detail="empty image bytes")
+
   try:
     with Image.open(io.BytesIO(raw)) as image:
       rgb = image.convert("RGB")
@@ -3475,6 +3714,24 @@ class FirmwareRolloutPublish(BaseModel):
 class DailyRenderConfigPayload(BaseModel):
   daily_dither_algorithm: str = Field(min_length=1, max_length=64)
   palette_profile: str | None = Field(default=None, min_length=1, max_length=64)
+  photo_render_experiment_enabled: bool | None = None
+
+
+class PhotoDeliverPayload(BaseModel):
+  device_id: str = Field(min_length=1, max_length=64)
+  duration_minutes: int = Field(default=1440, ge=15, le=7 * 24 * 60)
+  note: str = Field(default="", max_length=256)
+
+
+class PhotoFeedbackPayload(BaseModel):
+  kind: str = Field(min_length=1, max_length=32)
+  note: str = Field(default="", max_length=256)
+
+
+class DeviceIntentPayload(BaseModel):
+  intent: str = Field(min_length=1, max_length=32)
+  interval_minutes: int | None = Field(default=None, ge=1, le=24 * 60)
+  note: str = Field(default="", max_length=256)
 
 
 @app.on_event("startup")
@@ -3483,8 +3740,28 @@ def _startup() -> None:
 
 
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
-  return (APP_DIR / "static" / "index.html").read_text(encoding="utf-8")
+def index() -> HTMLResponse:
+  html = (APP_DIR / "static" / "vnext.html").read_text(encoding="utf-8")
+  html = html.replace('/static/vnext.js"', f'/static/vnext.js?v={quote(APP_GIT_SHA)}"')
+  return HTMLResponse(
+      html,
+      headers={"Cache-Control": "no-cache"},
+  )
+
+
+@app.get("/legacy", response_class=HTMLResponse)
+def legacy_console() -> HTMLResponse:
+  html = (APP_DIR / "static" / "index.html").read_text(encoding="utf-8")
+  html = html.replace('/static/app.js"', f'/static/app.js?v={quote(APP_GIT_SHA)}"')
+  return HTMLResponse(
+      html,
+      headers={"Cache-Control": "no-cache"},
+  )
+
+
+@app.get("/vnext", response_class=HTMLResponse)
+def vnext_console() -> HTMLResponse:
+  return index()
 
 
 @app.get("/healthz", response_model=None)
@@ -3496,6 +3773,7 @@ def healthz(request: Request = None) -> Any:
       "app_version": APP_VERSION,
       "app_git_sha": APP_GIT_SHA,
       "daily_dither_algorithm": _get_daily_dither_algorithm(),
+      "photo_render_experiment_enabled": _photo_render_experiment_enabled(),
   }
   if request is None:
     return payload
@@ -3523,6 +3801,9 @@ def get_daily_render_config(
           for key, spec in EPAPER_PALETTE_PROFILES.items()
       ],
       "algorithms": _daily_dither_algorithm_specs(),
+      "photo_render_experiment_enabled": _photo_render_experiment_enabled(),
+      "photo_render_presets": list(PHOTO_RENDER_PRESETS),
+      "active_photo_render_preset": _photo_render_preset_for_date(datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")),
   }
   if request is None:
     return payload
@@ -3540,6 +3821,7 @@ def set_daily_render_config(
   _require_token(x_photoframe_token)
   picked = _set_daily_dither_algorithm(payload.daily_dither_algorithm)
   palette_profile = _get_palette_profile() if payload.palette_profile is None else _set_palette_profile(payload.palette_profile)
+  experiment_enabled = _photo_render_experiment_enabled() if payload.photo_render_experiment_enabled is None else _set_photo_render_experiment_enabled(payload.photo_render_experiment_enabled)
   return {
       "ok": True,
       "daily_dither_algorithm": picked,
@@ -3553,6 +3835,9 @@ def set_daily_render_config(
           for key, spec in EPAPER_PALETTE_PROFILES.items()
       ],
       "algorithms": _daily_dither_algorithm_specs(),
+      "photo_render_experiment_enabled": experiment_enabled,
+      "photo_render_presets": list(PHOTO_RENDER_PRESETS),
+      "active_photo_render_preset": _photo_render_preset_for_date(datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")),
   }
 
 
@@ -3666,8 +3951,7 @@ def _device_history_daily_response(
   _require_device_token(device_id, x_photoframe_token)
   now_ts = _now_epoch()
   date_text = _normalize_date_text(date)
-  picked = _get_daily_dither_algorithm()
-  palette_profile = _get_palette_profile()
+  picked, palette_profile, _preset = _daily_render_choice(now_ts, date_text)
   upstream_url = _daily_image_url_for_date(date_text)
   payload, upstream_metadata = _render_daily_payload_with_metadata_for_date(
       now_ts,
@@ -3832,6 +4116,7 @@ def preview_current_bmp(
     daily_dither_algorithm: str | None = Query(default=None, max_length=64),
     palette_profile: str | None = Query(default=None, max_length=64),
     fresh_daily_source: bool = Query(default=False),
+    fresh_daily_source_key: str | None = Query(default=None, max_length=128),
     x_photoframe_token: str | None = Header(default=None),
 ) -> Response:
   now_ts = _now_epoch() if now_epoch is None else now_epoch
@@ -3847,6 +4132,7 @@ def preview_current_bmp(
       daily_dither_algorithm=daily_dither_algorithm,
       palette_profile=palette_profile,
       fresh_daily_source=fresh_daily_source,
+      fresh_daily_source_key=fresh_daily_source_key,
   )
   headers = {
       "Cache-Control": "no-store",
@@ -3870,6 +4156,7 @@ def preview_current_jpg(
     daily_dither_algorithm: str | None = Query(default=None, max_length=64),
     palette_profile: str | None = Query(default=None, max_length=64),
     fresh_daily_source: bool = Query(default=False),
+    fresh_daily_source_key: str | None = Query(default=None, max_length=128),
     x_photoframe_token: str | None = Header(default=None),
 ) -> Response:
   now_ts = _now_epoch() if now_epoch is None else now_epoch
@@ -3885,6 +4172,7 @@ def preview_current_jpg(
       daily_dither_algorithm=daily_dither_algorithm,
       palette_profile=palette_profile,
       fresh_daily_source=fresh_daily_source,
+      fresh_daily_source_key=fresh_daily_source_key,
   )
 
   headers = {
@@ -3971,8 +4259,7 @@ def device_next(
 
   source = "daily"
   valid_until = now_ts + poll_sec
-  active_dither_algorithm = _get_daily_dither_algorithm()
-  active_palette_profile = _get_palette_profile()
+  active_dither_algorithm, active_palette_profile, active_photo_preset = _daily_render_choice(now_ts)
   daily_bmp_name, daily_jpg_name = _ensure_daily_assets(
       now_ts,
       _daily_image_url(now_ts),
@@ -4003,6 +4290,9 @@ def device_next(
     image_url = f"{_public_base(request)}/api/v1/assets/{chosen}{_asset_query(device_id=device_id)}"
     remain = max(1, valid_until - now_ts)
     poll_sec = min(poll_sec, _clamp(remain, 60, 86400))
+
+  if active_photo_preset is not None and active is None:
+    LOGGER.info("daily photo render experiment: date=%s preset=%s algorithm=%s", datetime.fromtimestamp(now_ts, LOCAL_TZ).strftime("%Y-%m-%d"), active_photo_preset["key"], active_dither_algorithm)
 
   if upcoming is not None:
     until_next = max(1, int(upcoming["start_epoch"]) - now_ts)
@@ -4159,7 +4449,7 @@ def device_checkin(
     _devices_lightweight_cache_invalidate()
     # 注意：设备侧在 PMIC/I2C 抽风时可能上报 -1，但服务端 devices 表会“保留上一轮有效值”。
     # 因此这里统一从 devices 表读取“最终有效值”再写入采样，避免曲线断点。
-    _record_confirmed_publish(conn, payload, now_ts)
+    _record_confirmed_publish(conn, payload, checkin_epoch, now_ts)
     _upsert_device_power_sample_from_devices(conn, payload.device_id, checkin_epoch, now_ts)
 
     cutoff = now_ts - POWER_SAMPLE_RETENTION_SECONDS
@@ -5157,6 +5447,403 @@ def devices(
   return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={"ETag": etag})
 
 
+@app.get("/api/v2/admin/dashboard", response_model=None)
+def admin_v2_dashboard(
+    request: Request = None,
+    device_id: str | None = Query(default=None),
+    event_limit: int = Query(default=12, ge=1, le=50),
+    x_photoframe_token: str | None = Header(default=None),
+) -> Any:
+  _require_token(x_photoframe_token)
+  normalized_device = None
+  if device_id is not None and device_id.strip() and device_id.strip() != "*":
+    normalized_device = _normalize_device_id(device_id)
+  device_payload = devices(request=None, lightweight=0, x_photoframe_token=x_photoframe_token)
+  conn = _ensure_db()
+  now_ts = _now_epoch()
+  payload = build_admin_dashboard(
+      conn,
+      devices=list(device_payload.get("devices") or []),
+      requested_device_id=normalized_device,
+      now_epoch=now_ts,
+      event_limit=event_limit,
+      service={
+          "app_version": APP_VERSION,
+          "app_git_sha": APP_GIT_SHA,
+          "timezone": TZ_NAME,
+          "daily_dither_algorithm": _get_daily_dither_algorithm(),
+      },
+  )
+  if request is None:
+    return payload
+  etag = _etag_from_jsonable(payload)
+  if _if_none_match_hit(request, etag):
+    return Response(status_code=304, headers={"ETag": etag})
+  return Response(
+      content=json.dumps(payload, ensure_ascii=False),
+      media_type="application/json",
+      headers={"ETag": etag, "Cache-Control": "no-cache"},
+  )
+
+
+@app.get("/api/v2/admin/devices/{device_id}/timeline", response_model=None)
+def admin_v2_device_timeline(
+    device_id: str,
+    request: Request = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    before_epoch: int | None = Query(default=None, ge=1),
+    x_photoframe_token: str | None = Header(default=None),
+) -> Any:
+  _require_token(x_photoframe_token)
+  normalized_device = _normalize_device_id(device_id)
+  conn = _ensure_db()
+  items = load_device_timeline(
+      conn,
+      normalized_device,
+      limit=limit,
+      before_epoch=before_epoch,
+  )
+  payload = {
+      "now_epoch": _now_epoch(),
+      "device_id": normalized_device,
+      "count": len(items),
+      "items": items,
+  }
+  if request is None:
+    return payload
+  etag = _etag_from_jsonable(payload)
+  if _if_none_match_hit(request, etag):
+    return Response(status_code=304, headers={"ETag": etag})
+  return Response(
+      content=json.dumps(payload, ensure_ascii=False),
+      media_type="application/json",
+      headers={"ETag": etag, "Cache-Control": "no-cache"},
+  )
+
+
+def _device_intent_catalog() -> list[dict[str, Any]]:
+  return [
+      {
+          "key": "normal_update",
+          "label": "正常更新",
+          "description": "每 60 分钟唤醒一次，失败时按常规节奏重试。",
+          "impact": "预计每日电量消耗高于省电模式。",
+      },
+      {
+          "key": "power_saver",
+          "label": "省电模式",
+          "description": "每 4 小时唤醒一次，并降低失败重试频率。",
+          "impact": "照片与配置最多延迟约 4 小时生效。",
+      },
+      {
+          "key": "away_mode",
+          "label": "离家模式",
+          "description": "每天唤醒一次，只维持最低限度更新。",
+          "impact": "照片、配置和诊断请求最多延迟约 24 小时。",
+      },
+      {
+          "key": "custom_interval",
+          "label": "调整刷新频率",
+          "description": "仅修改常规唤醒间隔，不触碰 Wi-Fi、Token 或显示参数。",
+          "impact": "间隔越短，耗电越高。",
+      },
+      {
+          "key": "diagnostics",
+          "label": "请求诊断日志",
+          "description": "设备下一次唤醒时上传最近日志。",
+          "impact": "增加一次小规模网络传输，不会强制唤醒设备。",
+      },
+  ]
+
+
+@app.get("/api/v2/admin/devices/{device_id}/intents")
+def admin_v2_device_intents(
+    device_id: str,
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  target = _normalize_device_id(device_id)
+  if target == "*":
+    raise HTTPException(status_code=400, detail="device_id invalid")
+  device_payload = devices(request=None, lightweight=0, x_photoframe_token=x_photoframe_token)
+  device = next((item for item in device_payload.get("devices", []) if item.get("device_id") == target), None)
+  if device is None:
+    raise HTTPException(status_code=404, detail="device not found")
+  interval = int((device.get("reported_config") or {}).get("interval_minutes") or 0)
+  if interval <= 0:
+    interval = max(1, int(device.get("poll_interval_seconds") or DEFAULT_POLL_SECONDS) // 60)
+  return {
+      "now_epoch": _now_epoch(),
+      "device_id": target,
+      "current_interval_minutes": interval,
+      "config_target_version": int(device.get("config_target_version") or 0),
+      "config_applied_version": int(device.get("config_applied_version") or 0),
+      "items": _device_intent_catalog(),
+  }
+
+
+@app.post("/api/v2/admin/devices/{device_id}/intents")
+def admin_v2_apply_device_intent(
+    device_id: str,
+    payload: DeviceIntentPayload,
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  target = _normalize_device_id(device_id)
+  if target == "*":
+    raise HTTPException(status_code=400, detail="device_id invalid")
+  intent = payload.intent.strip().lower()
+  if intent == "diagnostics":
+    result = device_log_requests_create(
+        DeviceLogUploadRequestPublish(
+            device_id=target,
+            reason=payload.note.strip() or "vNext 手动诊断",
+            max_lines=DEVICE_LOG_REQUEST_DEFAULT_MAX_LINES,
+            max_bytes=DEVICE_LOG_REQUEST_DEFAULT_MAX_BYTES,
+            expires_in_minutes=24 * 60,
+        ),
+        x_photoframe_token=x_photoframe_token,
+    )
+    return {
+        **result,
+        "intent": intent,
+        "ack": "诊断请求已保存，等待设备下一次唤醒上传。",
+    }
+
+  profiles: dict[str, dict[str, int]] = {
+      "normal_update": {
+          "interval_minutes": 60,
+          "retry_base_minutes": 5,
+          "retry_max_minutes": 240,
+          "max_failure_before_long_sleep": 24,
+      },
+      "power_saver": {
+          "interval_minutes": 240,
+          "retry_base_minutes": 15,
+          "retry_max_minutes": 360,
+          "max_failure_before_long_sleep": 8,
+      },
+      "away_mode": {
+          "interval_minutes": 24 * 60,
+          "retry_base_minutes": 30,
+          "retry_max_minutes": 12 * 60,
+          "max_failure_before_long_sleep": 4,
+      },
+  }
+  if intent == "custom_interval":
+    if payload.interval_minutes is None:
+      raise HTTPException(status_code=400, detail="interval_minutes required")
+    config: dict[str, Any] = {"interval_minutes": int(payload.interval_minutes)}
+  elif intent in profiles:
+    config = profiles[intent]
+  else:
+    raise HTTPException(status_code=400, detail="unsupported device intent")
+
+  catalog_item = next(item for item in _device_intent_catalog() if item["key"] == intent)
+  result = device_config_publish(
+      DeviceConfigPublish(
+          device_id=target,
+          config=config,
+          note=payload.note.strip() or f"vNext：{catalog_item['label']}",
+      ),
+      x_photoframe_token=x_photoframe_token,
+  )
+  return {
+      **result,
+      "intent": intent,
+      "ack": "设置已发布，等待设备下一次唤醒查询并应用。",
+  }
+
+
+@app.get("/api/v2/admin/lab")
+def admin_v2_lab(
+    device_id: str | None = Query(default=None),
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  target = None
+  if device_id is not None and device_id.strip() and device_id.strip() != "*":
+    target = _normalize_device_id(device_id)
+  render_config = get_daily_render_config(request=None, x_photoframe_token=x_photoframe_token)
+  artifacts = firmware_artifacts(limit=30, x_photoframe_token=x_photoframe_token)
+  rollouts = firmware_rollouts(device_id=target, limit=30, x_photoframe_token=x_photoframe_token)
+  log_requests = device_log_requests(
+      request=None,
+      device_id=target,
+      status=None,
+      limit=30,
+      x_photoframe_token=x_photoframe_token,
+  )
+  configs = device_configs(
+      request=None,
+      device_id=target,
+      limit=20,
+      x_photoframe_token=x_photoframe_token,
+  )
+  tokens = device_tokens(request=None, pending_only=0, x_photoframe_token=x_photoframe_token)
+  return {
+      "now_epoch": _now_epoch(),
+      "device_id": target,
+      "render_config": render_config,
+      "firmware_artifacts": artifacts.get("items", []),
+      "firmware_rollouts": rollouts.get("items", []),
+      "log_requests": log_requests.get("items", []),
+      "config_plans": configs.get("items", []),
+      "device_tokens": tokens.get("items", []),
+  }
+
+
+@app.get("/api/v2/admin/photos", response_model=None)
+def admin_v2_photos(
+    request: Request = None,
+    limit: int = Query(default=60, ge=1, le=200),
+    include_hidden: bool = Query(default=False),
+    x_photoframe_token: str | None = Header(default=None),
+) -> Any:
+  _require_token(x_photoframe_token)
+  conn = _ensure_db()
+  items = list_photo_assets(conn, limit=limit, include_hidden=include_hidden)
+  payload = {"now_epoch": _now_epoch(), "count": len(items), "items": items}
+  if request is None:
+    return payload
+  etag = _etag_from_jsonable(payload)
+  if _if_none_match_hit(request, etag):
+    return Response(status_code=304, headers={"ETag": etag})
+  return Response(
+      content=json.dumps(payload, ensure_ascii=False),
+      media_type="application/json",
+      headers={"ETag": etag, "Cache-Control": "no-cache"},
+  )
+
+
+@app.post("/api/v2/admin/photos/upload")
+def admin_v2_photo_upload(
+    file: UploadFile = File(...),
+    note: str = Form(default=""),
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  raw = file.file.read()
+  if not raw:
+    raise HTTPException(status_code=400, detail="empty upload file")
+  source_sha256 = hashlib.sha256(raw).hexdigest()
+  suffix = Path(file.filename or "").suffix.lower()
+  if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+    suffix = ".img"
+  original_asset_name = f"original-{source_sha256}{suffix}"
+  original_path = ASSET_DIR / original_asset_name
+  if not original_path.exists():
+    original_path.write_bytes(raw)
+
+  dither_algorithm = _get_daily_dither_algorithm()
+  palette_profile = _get_palette_profile()
+  asset_name, asset_sha256 = _convert_image_bytes(
+      raw,
+      dither_algorithm,
+      palette_profile=palette_profile,
+  )
+  now_ts = _now_epoch()
+  conn = _ensure_db()
+  with DB_LOCK:
+    created = create_or_update_photo_asset(
+        conn,
+        source_sha256=source_sha256,
+        original_asset_name=original_asset_name,
+        original_filename=os.path.basename(file.filename or ""),
+        mime_type=str(file.content_type or ""),
+        note=note.strip(),
+        asset_name=asset_name,
+        asset_sha256=asset_sha256,
+        dither_algorithm=dither_algorithm,
+        palette_profile=palette_profile,
+        now_epoch=now_ts,
+    )
+    conn.commit()
+  item = get_photo_asset(conn, int(created["photo_asset_id"]))
+  return {"ok": True, "item": item}
+
+
+@app.post("/api/v2/admin/photos/{photo_asset_id}/deliver")
+def admin_v2_photo_deliver(
+    photo_asset_id: int,
+    payload: PhotoDeliverPayload,
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  target_device = _normalize_device_id(payload.device_id)
+  if target_device == "*":
+    raise HTTPException(status_code=400, detail="vNext photo delivery requires one device")
+  conn = _ensure_db()
+  photo = get_photo_asset(conn, photo_asset_id)
+  if photo is None or photo.get("render_variant") is None:
+    raise HTTPException(status_code=404, detail="photo asset not found")
+  variant = dict(photo["render_variant"])
+  now_ts = _now_epoch()
+  next_wakeup = _device_next_wakeup(target_device)
+  start_epoch = now_ts if next_wakeup is None else max(now_ts, next_wakeup)
+  end_epoch = start_epoch + payload.duration_minutes * 60
+  note = payload.note.strip() or f"vNext 照片 #{photo_asset_id}"
+  with DB_LOCK:
+    override_id = create_override_record(
+        conn,
+        device_id=target_device,
+        start_epoch=start_epoch,
+        end_epoch=end_epoch,
+        asset_name=str(variant["asset_name"]),
+        asset_sha256=str(variant["asset_sha256"]),
+        note=note,
+        created_epoch=now_ts,
+        dither_algorithm=str(variant["dither_algorithm"]),
+    )
+    delivery_id = record_photo_delivery(
+        conn,
+        photo_asset_id=photo_asset_id,
+        render_variant_id=int(variant["id"]),
+        override_id=override_id,
+        device_id=target_device,
+        duration_minutes=payload.duration_minutes,
+        note=note,
+        requested_epoch=now_ts,
+    )
+    conn.commit()
+  return {
+      "ok": True,
+      "delivery_id": delivery_id,
+      "override_id": override_id,
+      "photo_asset_id": photo_asset_id,
+      "device_id": target_device,
+      "start_epoch": start_epoch,
+      "end_epoch": end_epoch,
+      "expected_effective_epoch": _guess_effective_epoch(target_device, start_epoch),
+      "start_policy": "next_wakeup" if start_epoch > now_ts else "immediate",
+  }
+
+
+@app.post("/api/v2/admin/photos/{photo_asset_id}/feedback")
+def admin_v2_photo_feedback(
+    photo_asset_id: int,
+    payload: PhotoFeedbackPayload,
+    x_photoframe_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+  _require_token(x_photoframe_token)
+  conn = _ensure_db()
+  with DB_LOCK:
+    try:
+      item = update_photo_feedback(
+          conn,
+          photo_asset_id=photo_asset_id,
+          kind=payload.kind.strip(),
+          note=payload.note.strip(),
+          now_epoch=_now_epoch(),
+      )
+    except ValueError as exc:
+      raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if item is None:
+      raise HTTPException(status_code=404, detail="photo asset not found")
+    conn.commit()
+  return {"ok": True, "item": item}
+
+
 @app.get("/api/v1/power-samples")
 def power_samples(
     device_id: str = Query(..., min_length=1, max_length=64),
@@ -5425,26 +6112,17 @@ def override_upload(
   conn = _ensure_db()
 
   with DB_LOCK:
-    cursor = conn.execute(
-        """
-        INSERT INTO overrides (
-          device_id, start_epoch, end_epoch, asset_name, asset_sha256,
-          note, created_epoch, dither_algorithm
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            target_device,
-            start_epoch,
-            end_epoch,
-            asset_name,
-            sha256,
-            note,
-            now_ts,
-            normalized_dither_algorithm,
-        ),
+    override_id = create_override_record(
+        conn,
+        device_id=target_device,
+        start_epoch=start_epoch,
+        end_epoch=end_epoch,
+        asset_name=asset_name,
+        asset_sha256=sha256,
+        note=note,
+        created_epoch=now_ts,
+        dither_algorithm=normalized_dither_algorithm,
     )
-    override_id = int(cursor.lastrowid)
     conn.commit()
 
   expected_effective_epoch = _guess_effective_epoch(target_device, start_epoch)

@@ -713,6 +713,8 @@ dependencies = [
  "chrono",
  "photoframe-contracts",
  "photoframe-domain",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

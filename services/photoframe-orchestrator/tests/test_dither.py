@@ -10,12 +10,16 @@ from PIL import Image
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "app" / "main.py"
+SERVICE_ROOT = MODULE_PATH.parent.parent
+if str(SERVICE_ROOT) not in sys.path:
+  sys.path.insert(0, str(SERVICE_ROOT))
 
 
 class _DummyResponse:
 
-  def __init__(self, *_args, **_kwargs) -> None:
-    pass
+  def __init__(self, content=None, *_args, headers=None, **_kwargs) -> None:
+    self.content = content
+    self.headers = headers or {}
 
 
 class _DummyStaticFiles:
@@ -34,9 +38,10 @@ class _DummyHTTPException(Exception):
 
 class _DummyUploadFile:
 
-  def __init__(self, filename: str, file: io.BytesIO) -> None:
+  def __init__(self, filename: str, file: io.BytesIO, content_type: str = "application/octet-stream") -> None:
     self.filename = filename
     self.file = file
+    self.content_type = content_type
 
 
 class _DummyFastAPI:
@@ -96,7 +101,7 @@ if SPEC is None or SPEC.loader is None:  # pragma: no cover
 ORCH = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ORCH)
 PALETTE = set(ORCH.PHOTOFRAME_PALETTE)
-EPAPER_PALETTE = {tuple(item["rgb"]) for item in ORCH.EPAPER_PALETTE_PROFILES["reference"]["colors"]}
+EPAPER_PALETTE = set(ORCH.PHOTOFRAME_PALETTE)
 HTTPException = ORCH.HTTPException
 UploadFile = ORCH.UploadFile
 
@@ -167,6 +172,101 @@ class _DummyRequest:
 
 class DitherAlgorithmTests(unittest.TestCase):
 
+  def test_photo_render_comparison_keeps_device_daily_default_stable(self) -> None:
+    original_db_path = ORCH.DB_PATH
+    original_db = ORCH.DB
+    try:
+      with tempfile.TemporaryDirectory() as temp_dir:
+        ORCH.DB_PATH = Path(temp_dir) / "orchestrator.db"
+        ORCH.DB = None
+        ORCH._init_db()
+        ORCH._set_photo_render_experiment_enabled(True)
+        self.assertEqual(len(ORCH.PHOTO_RENDER_PRESETS), 4)
+        self.assertIsNone(ORCH._photo_render_preset_for_date("2026-07-11"))
+        picked, palette, chosen = ORCH._daily_render_choice(0, "2026-07-11")
+        self.assertEqual(picked, "sierra")
+        self.assertEqual(palette, "reference")
+        self.assertIsNone(chosen)
+        ORCH._set_photo_render_experiment_enabled(False)
+        self.assertIsNone(ORCH._photo_render_preset_for_date("2026-07-11"))
+    finally:
+      if ORCH.DB is not None:
+        ORCH.DB.close()
+      ORCH.DB = original_db
+      ORCH.DB_PATH = original_db_path
+
+  def test_daily_render_config_exposes_photo_render_experiment(self) -> None:
+    original_token = ORCH.TOKEN
+    original_db_path = ORCH.DB_PATH
+    original_db = ORCH.DB
+    try:
+      with tempfile.TemporaryDirectory() as temp_dir:
+        ORCH.TOKEN = "admin-secret"
+        ORCH.DB_PATH = Path(temp_dir) / "orchestrator.db"
+        ORCH.DB = None
+        ORCH._init_db()
+        updated = ORCH.set_daily_render_config(
+            ORCH.DailyRenderConfigPayload(
+                daily_dither_algorithm="sierra",
+                palette_profile="reference",
+                photo_render_experiment_enabled=True,
+            ),
+            x_photoframe_token="admin-secret",
+        )
+        self.assertTrue(updated["photo_render_experiment_enabled"])
+        self.assertEqual(len(updated["photo_render_presets"]), 4)
+        loaded = ORCH.get_daily_render_config(x_photoframe_token="admin-secret")
+        self.assertTrue(loaded["photo_render_experiment_enabled"])
+    finally:
+      if ORCH.DB is not None:
+        ORCH.DB.close()
+      ORCH.DB = original_db
+      ORCH.DB_PATH = original_db_path
+      ORCH.TOKEN = original_token
+
+  def test_photo_render_presets_render_only_the_six_supported_colors(self) -> None:
+    image = _build_gradient_image((32, 24))
+    for preset in ORCH.PHOTO_RENDER_PRESETS:
+      rendered = ORCH._apply_override_dither(
+          image,
+          preset["algorithm"],
+          palette_profile=preset["palette_profile"],
+      )
+      self.assertTrue(_pixel_set(rendered).issubset(EPAPER_PALETTE))
+
+  def test_database_connections_enable_contention_safety_pragmas(self) -> None:
+    original_db_path = ORCH.DB_PATH
+    try:
+      with tempfile.TemporaryDirectory() as temp_dir:
+        ORCH.DB_PATH = Path(temp_dir) / "orchestrator.db"
+        conn = ORCH._open_db()
+        try:
+          self.assertEqual(conn.execute("PRAGMA busy_timeout").fetchone()[0], 10000)
+          self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+          self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 1)
+          self.assertEqual(conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+        finally:
+          conn.close()
+    finally:
+      ORCH.DB_PATH = original_db_path
+
+  def test_index_disables_stale_html_and_versions_javascript(self) -> None:
+    response = ORCH.index()
+    self.assertEqual(response.headers["Cache-Control"], "no-cache")
+    self.assertIn(f'/static/vnext.js?v={ORCH.APP_GIT_SHA}', response.content)
+    self.assertIn("PhotoFrame Home", response.content)
+
+  def test_legacy_console_keeps_previous_javascript_entry(self) -> None:
+    response = ORCH.legacy_console()
+    self.assertEqual(response.headers["Cache-Control"], "no-cache")
+    self.assertIn(f'/static/app.js?v={ORCH.APP_GIT_SHA}', response.content)
+
+  def test_vnext_console_disables_stale_html_and_versions_javascript(self) -> None:
+    response = ORCH.vnext_console()
+    self.assertEqual(response.headers["Cache-Control"], "no-cache")
+    self.assertIn(f'/static/vnext.js?v={ORCH.APP_GIT_SHA}', response.content)
+    self.assertIn("PhotoFrame Home", response.content)
+
   def test_admin_routes_require_token_when_configured(self) -> None:
     original_token = ORCH.TOKEN
     ORCH.TOKEN = "admin-secret"
@@ -177,6 +277,10 @@ class DitherAlgorithmTests(unittest.TestCase):
         ORCH.devices()
       with self.assertRaises(HTTPException):
         ORCH.overrides()
+      with self.assertRaises(HTTPException):
+        ORCH.admin_v2_dashboard()
+      with self.assertRaises(HTTPException):
+        ORCH.admin_v2_device_timeline("pf-demo")
     finally:
       ORCH.TOKEN = original_token
 
@@ -652,6 +756,37 @@ class DitherAlgorithmTests(unittest.TestCase):
       with Image.open(io.BytesIO(fresh_bytes)) as fresh_image:
         self.assertEqual(fresh_image.getpixel((0, 0)), (0, 0, 255))
 
+  def test_fresh_daily_source_key_reuses_one_source_for_comparison(self) -> None:
+    source = Image.new("RGB", (96, 96), (20, 40, 60))
+    source_jpeg = io.BytesIO()
+    source.save(source_jpeg, format="JPEG", quality=92)
+    original_urlopen = ORCH.urlopen
+    original_cache = ORCH.PREVIEW_FRESH_SOURCE_CACHE
+    fetch_count = 0
+
+    def fake_urlopen(*_args, **_kwargs):
+      nonlocal fetch_count
+      fetch_count += 1
+      return _DummyUrlopenResponse(source_jpeg.getvalue())
+
+    ORCH.urlopen = fake_urlopen
+    ORCH.PREVIEW_FRESH_SOURCE_CACHE = {}
+    try:
+      first_bytes, first_headers = ORCH._fetch_fresh_daily_source(
+          "https://example.com/daily.jpg", 1773910400, "comparison-1"
+      )
+      second_bytes, second_headers = ORCH._fetch_fresh_daily_source(
+          "https://example.com/daily.jpg", 1773910401, "comparison-1"
+      )
+      ORCH._fetch_fresh_daily_source("https://example.com/daily.jpg", 1773910401, "comparison-2")
+    finally:
+      ORCH.urlopen = original_urlopen
+      ORCH.PREVIEW_FRESH_SOURCE_CACHE = original_cache
+
+    self.assertEqual(first_bytes, second_bytes)
+    self.assertEqual(first_headers, second_headers)
+    self.assertEqual(fetch_count, 2)
+
   def test_render_daily_payload_revalidates_with_304_without_rewriting_files(self) -> None:
     source = Image.new("RGB", (96, 96), (255, 0, 0))
     source_jpeg = io.BytesIO()
@@ -1078,6 +1213,105 @@ class DitherAlgorithmTests(unittest.TestCase):
       self.assertEqual(pending["pending_publish_image_url"], response["image_url"])
       self.assertEqual(int(pending["pending_publish_history_id"] or 0), int(history_rows[0]["id"]))
 
+  def test_device_checkin_matches_old_sent_publish_by_displayed_url(self) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_root = Path(tmp_dir)
+      original_data_dir = ORCH.DATA_DIR
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_db_path = ORCH.DB_PATH
+      original_db = ORCH.DB
+      original_ensure_daily_assets = ORCH._ensure_daily_assets
+
+      ORCH.DATA_DIR = tmp_root
+      ORCH.ASSET_DIR = tmp_root / "assets"
+      ORCH.DAILY_CACHE_DIR = ORCH.ASSET_DIR / "daily-cache"
+      ORCH.DB_PATH = tmp_root / "orchestrator.db"
+      ORCH.DB = None
+      try:
+        ORCH._init_db()
+        ORCH.DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        (ORCH.DAILY_CACHE_DIR / "daily-a.bmp").write_bytes(b"BM-a")
+        (ORCH.DAILY_CACHE_DIR / "daily-a.jpg").write_bytes(b"JPG-a")
+        (ORCH.DAILY_CACHE_DIR / "daily-b.bmp").write_bytes(b"BM-b")
+        (ORCH.DAILY_CACHE_DIR / "daily-b.jpg").write_bytes(b"JPG-b")
+        assets = [("daily-a.bmp", "daily-a.jpg"), ("daily-b.bmp", "daily-b.jpg")]
+        ORCH._ensure_daily_assets = lambda *_args, **_kwargs: assets.pop(0)
+
+        first_response = ORCH.device_next(
+            _DummyRequest("http", "127.0.0.1:8081"),
+            device_id="pf-demo",
+            now_epoch=1774200000,
+        )
+        second_response = ORCH.device_next(
+            _DummyRequest("http", "127.0.0.1:8081"),
+            device_id="pf-demo",
+            now_epoch=1774200300,
+        )
+        ORCH.device_checkin(
+            ORCH.DeviceCheckin(
+                device_id="pf-demo",
+                checkin_epoch=1774200360,
+                next_wakeup_epoch=1774203960,
+                sleep_seconds=3600,
+                poll_interval_seconds=3600,
+                failure_count=0,
+                last_http_status=200,
+                fetch_ok=True,
+                image_changed=True,
+                display_applied=True,
+                image_source="daily",
+                displayed_image_url=first_response["image_url"],
+                displayed_image_sha256="sha-old",
+                last_error="",
+                sta_ip="192.168.1.8",
+                battery_mv=4100,
+                battery_percent=80,
+                charging=0,
+                vbus_good=0,
+                reported_config={"firmware_version": "0.1.0+test"},
+            )
+        )
+        conn = ORCH._ensure_db()
+        rows = conn.execute(
+            """
+            SELECT image_url, status, displayed_epoch, displayed_image_url, displayed_image_sha256
+            FROM publish_history
+            WHERE device_id = ?
+            ORDER BY id ASC
+            """,
+            ("pf-demo",),
+        ).fetchall()
+        pending = conn.execute(
+            """
+            SELECT pending_publish_image_url, pending_publish_history_id
+            FROM devices
+            WHERE device_id = ?
+            """,
+            ("pf-demo",),
+        ).fetchone()
+      finally:
+        if ORCH.DB is not None:
+          ORCH.DB.close()
+          ORCH.DB = None
+        ORCH.DATA_DIR = original_data_dir
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.DB_PATH = original_db_path
+        ORCH.DB = original_db
+        ORCH._ensure_daily_assets = original_ensure_daily_assets
+
+      self.assertEqual(len(rows), 2)
+      self.assertEqual(rows[0]["image_url"], first_response["image_url"])
+      self.assertEqual(rows[0]["status"], "displayed")
+      self.assertEqual(rows[0]["displayed_epoch"], 1774200360)
+      self.assertEqual(rows[0]["displayed_image_url"], first_response["image_url"])
+      self.assertEqual(rows[0]["displayed_image_sha256"], "sha-old")
+      self.assertEqual(rows[1]["image_url"], second_response["image_url"])
+      self.assertEqual(rows[1]["status"], "sent")
+      self.assertEqual(pending["pending_publish_image_url"], second_response["image_url"])
+      self.assertGreater(int(pending["pending_publish_history_id"] or 0), 0)
+
   def test_device_log_upload_marks_request_completed(self) -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
       tmp_root = Path(tmp_dir)
@@ -1329,6 +1563,76 @@ class DitherAlgorithmTests(unittest.TestCase):
         self.assertEqual(ORCH._get_palette_profile(), ORCH._normalize_palette_profile(ORCH.PALETTE_PROFILE_DEFAULT))
         self.assertEqual(ORCH._set_palette_profile("reference"), "reference")
         self.assertEqual(ORCH._get_palette_profile(), "reference")
+      finally:
+        if ORCH.DB is not None:
+          ORCH.DB.close()
+          ORCH.DB = None
+        ORCH.DATA_DIR = original_data_dir
+        ORCH.ASSET_DIR = original_asset_dir
+        ORCH.DAILY_CACHE_DIR = original_daily_cache_dir
+        ORCH.DB_PATH = original_db_path
+        ORCH.DB = original_db
+
+  def test_vnext_photo_upload_delivery_and_feedback_roundtrip(self) -> None:
+    source_png = _encode_png(_build_gradient_image(size=(64, 96)))
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_root = Path(tmp_dir)
+      original_data_dir = ORCH.DATA_DIR
+      original_asset_dir = ORCH.ASSET_DIR
+      original_daily_cache_dir = ORCH.DAILY_CACHE_DIR
+      original_db_path = ORCH.DB_PATH
+      original_db = ORCH.DB
+
+      ORCH.DATA_DIR = tmp_root
+      ORCH.ASSET_DIR = tmp_root / "assets"
+      ORCH.DAILY_CACHE_DIR = ORCH.ASSET_DIR / "daily-cache"
+      ORCH.DB_PATH = tmp_root / "orchestrator.db"
+      ORCH.DB = None
+      try:
+        ORCH._init_db()
+        conn = ORCH._ensure_db()
+        expected_wakeup = ORCH._now_epoch() + 3600
+        conn.execute(
+            """
+            INSERT INTO devices (
+              device_id, last_checkin_epoch, next_wakeup_epoch, updated_at
+            ) VALUES ('pf-demo', ?, ?, ?)
+            """,
+            (expected_wakeup - 60, expected_wakeup, expected_wakeup - 60),
+        )
+        conn.commit()
+
+        uploaded = ORCH.admin_v2_photo_upload(
+            file=UploadFile(
+                filename="memory.png",
+                file=io.BytesIO(source_png),
+                content_type="image/png",
+            ),
+            note="family memory",
+        )
+        photo_id = int(uploaded["item"]["id"])
+        self.assertEqual(uploaded["item"]["source_type"], "upload")
+        self.assertTrue(uploaded["item"]["render_variant"]["asset_name"].endswith(".bmp"))
+        self.assertTrue((ORCH.ASSET_DIR / uploaded["item"]["render_variant"]["asset_name"]).exists())
+
+        delivered = ORCH.admin_v2_photo_deliver(
+            photo_id,
+            ORCH.PhotoDeliverPayload(device_id="pf-demo", duration_minutes=1440),
+        )
+        self.assertEqual(delivered["device_id"], "pf-demo")
+        self.assertEqual(delivered["start_epoch"], expected_wakeup)
+        self.assertGreater(delivered["override_id"], 0)
+
+        feedback = ORCH.admin_v2_photo_feedback(
+            photo_id,
+            ORCH.PhotoFeedbackPayload(kind="favorite", note="good crop"),
+        )
+        self.assertTrue(feedback["item"]["favorite"])
+        self.assertIn("favorite", feedback["item"]["feedback"])
+
+        listed = ORCH.admin_v2_photos()
+        self.assertEqual(listed["count"], 1)
+        self.assertEqual(listed["items"][0]["last_delivery"]["override_id"], delivered["override_id"])
       finally:
         if ORCH.DB is not None:
           ORCH.DB.close()

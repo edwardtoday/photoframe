@@ -98,6 +98,38 @@ fn format_label(format: &ImageFormat) -> &'static str {
     }
 }
 
+fn short_name_seed(sha256: &str) -> u32 {
+    // FAT 在当前板级配置下对长文件名支持并不可靠，缓存文件名必须稳定且满足 8.3。
+    let mut hash = 0x811c9dc5u32;
+    for byte in sha256.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+fn short_file_name(
+    entries: &[CachedPhotoEntry],
+    sha256: &str,
+    format: &ImageFormat,
+) -> Result<String, String> {
+    let base = short_name_seed(sha256);
+    for attempt in 0..=u8::MAX {
+        let stem = format!("{:08x}", base ^ u32::from(attempt));
+        let file_name = format!("{stem}.{}", format_ext(format));
+        if let Some(existing) = entries.iter().find(|entry| entry.file_name == file_name) {
+            if existing.sha256 == sha256 {
+                return Ok(file_name);
+            }
+            continue;
+        }
+        return Ok(file_name);
+    }
+    Err(format!(
+        "cannot allocate unique cached photo file name for sha256={sha256}"
+    ))
+}
+
 fn parse_format(label: &str) -> Option<ImageFormat> {
     match label {
         "bmp" => Some(ImageFormat::Bmp),
@@ -141,7 +173,7 @@ pub(crate) fn remember_rendered_photo(
 
     let dir = ensure_history_dir()?;
     let mut index = load_index()?;
-    let file_name = format!("{sha256}.{}", format_ext(&artifact.format));
+    let file_name = short_file_name(&index.entries, sha256, &artifact.format)?;
     let path = dir.join(&file_name);
     fs::write(&path, &artifact.bytes)
         .map_err(|err| format!("write cached photo {} failed: {err}", path.display()))?;
@@ -257,7 +289,7 @@ fn test_lock() -> &'static Mutex<()> {
 mod tests {
     use super::{
         PHOTO_HISTORY_MAX_ENTRIES, entry_for_date, entry_for_sha256, history_dir,
-        load_artifact_by_sha256, next_entry, remember_rendered_photo, test_lock,
+        load_artifact_by_sha256, next_entry, remember_rendered_photo, short_file_name, test_lock,
     };
     use photoframe_app::{ImageArtifact, ImageFormat};
     use std::{
@@ -387,7 +419,31 @@ mod tests {
             entry_for_date("2026-04-09").unwrap().unwrap().sha256,
             "sha-same"
         );
-        assert!(history_dir().join("sha-same.bmp").exists());
+        let cached = entry_for_date("2026-04-10").unwrap().unwrap();
+        assert!(history_dir().join(cached.file_name).exists());
+
+        cleanup_env(guard, env_key, root);
+    }
+
+    #[test]
+    fn cached_photo_file_name_is_fat_8dot3_safe() {
+        let file_name = short_file_name(&[], "sha-with-long-name", &ImageFormat::Bmp).unwrap();
+        let (stem, ext) = file_name.split_once('.').unwrap();
+        assert!(stem.len() <= 8, "stem too long: {stem}");
+        assert!(ext.len() <= 3, "ext too long: {ext}");
+    }
+
+    #[test]
+    fn cached_photo_file_name_avoids_collisions_with_existing_entries() {
+        let entries = vec![super::CachedPhotoEntry {
+            sha256: "other".into(),
+            format: "bmp".into(),
+            created_epoch: 0,
+            file_name: short_file_name(&[], "sha-a", &ImageFormat::Bmp).unwrap(),
+            image_date: String::new(),
+        }];
+        let file_name = short_file_name(&entries, "sha-b", &ImageFormat::Bmp).unwrap();
+        assert_ne!(file_name, entries[0].file_name);
 
         cleanup_env(guard, env_key, root);
     }

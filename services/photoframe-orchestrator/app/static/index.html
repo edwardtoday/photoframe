@@ -315,6 +315,42 @@
       display: none;
     }
 
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+
+    .status-panel {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #f8faff;
+      padding: 10px;
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .status-panel h4 {
+      margin: 0;
+      font-size: 12px;
+      color: #2f3850;
+    }
+
+    .status-value {
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .status-note {
+      font-size: 11px;
+      color: var(--sub);
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
     .tag {
       display: inline-block;
       font-size: 11px;
@@ -383,6 +419,55 @@
       overflow: auto;
       padding-right: 2px;
     }
+
+    .compact-timeline {
+      max-height: none;
+      margin-top: 8px;
+      gap: 6px;
+    }
+
+    .experiment-item {
+      display: grid;
+      grid-template-columns: minmax(92px, auto) minmax(120px, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fafbff;
+      font-size: 12px;
+    }
+
+    .experiment-item.active { border-color: #9eb0fa; background: #eef2ff; }
+
+    .experiment-item p { margin: 0; color: var(--sub); line-height: 1.35; }
+
+    .photo-render-comparison-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .photo-render-card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fff;
+      min-width: 0;
+    }
+
+    .photo-render-card img {
+      display: block;
+      width: 100%;
+      aspect-ratio: 3 / 5;
+      object-fit: contain;
+      background: #f7f8fb;
+    }
+
+    .photo-render-card-body { padding: 8px; display: grid; gap: 6px; }
+    .photo-render-card-body h5 { margin: 0; font-size: 12px; }
+    .photo-render-card-body p { margin: 0; color: var(--sub); font-size: 11px; line-height: 1.4; }
 
     .release-item {
       border: 1px solid var(--line);
@@ -505,6 +590,28 @@
       overflow: hidden;
       background: #fff;
       box-shadow: inset 0 0 0 1px rgba(53, 88, 229, 0.04);
+    }
+
+    .single-preview-stage.is-empty {
+      min-height: 180px;
+      aspect-ratio: auto;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: linear-gradient(145deg, #f8faff, #eef2fa);
+    }
+
+    .preview-empty {
+      margin: 0;
+      max-width: 34rem;
+      color: var(--sub);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .single-preview-stage:not(.is-empty) .preview-empty,
+    .single-preview-stage.is-empty .single-preview-image {
+      display: none;
     }
 
     .single-preview-image {
@@ -679,11 +786,12 @@
     <section class="card topbar">
       <div class="topbar-row">
         <h1 class="topbar-title">PhotoFrame 插播编排控制台</h1>
-        <div id="workspaceTabs" class="workspace-tabs">
-          <button type="button" class="workspace-tab" data-workspace="overview">总览</button>
-          <button type="button" class="workspace-tab" data-workspace="publish">发布</button>
-          <button type="button" class="workspace-tab" data-workspace="config">配置</button>
-          <button type="button" class="workspace-tab" data-workspace="history">历史</button>
+        <div id="workspaceTabs" class="workspace-tabs" role="tablist" aria-label="控制台工作区">
+          <button type="button" class="workspace-tab" role="tab" data-workspace="overview">总览</button>
+          <button type="button" class="workspace-tab" role="tab" data-workspace="publish">发布</button>
+          <button type="button" class="workspace-tab" role="tab" data-workspace="config">配置</button>
+          <button type="button" class="workspace-tab" role="tab" data-workspace="ota">OTA</button>
+          <button type="button" class="workspace-tab" role="tab" data-workspace="history">历史</button>
         </div>
         <div class="pill-row">
           <div class="pill">服务版本：<strong id="appVersion">-</strong></div>
@@ -845,6 +953,62 @@
           </form>
           <p id="deviceLogRequestHint" class="muted">当前设备：-</p>
           <pre id="deviceLogRequestResult"></pre>
+        </div>
+
+        <div class="card" data-workspace="ota">
+          <h3>当前设备 OTA 状态</h3>
+          <p class="help">这里会同时展示“设备自己上报的 OTA 状态”和“服务端仍在等待下发的 rollout”，避免把两者混在同一列里看不清。</p>
+          <p id="otaWorkspaceHint" class="muted">-</p>
+          <div id="otaSummaryBody" class="status-grid"></div>
+        </div>
+
+        <div class="card" data-workspace="ota">
+          <h3>上传固件制品</h3>
+          <p class="help">上传的是应用分区镜像 `app.bin`。版本字符串建议保持唯一，避免和设备当前版本混淆。</p>
+          <form id="firmwareArtifactForm">
+            <div class="row">
+              <label>目标版本
+                <input id="firmwareArtifactVersion" placeholder="例如：0.1.0+20260414-ota1" required />
+              </label>
+              <label>备注
+                <input id="firmwareArtifactNote" placeholder="例如：history cache fix" />
+              </label>
+            </div>
+            <label>固件镜像（app.bin）
+              <input id="firmwareArtifactFile" type="file" accept=".bin,application/octet-stream" required />
+            </label>
+            <button type="submit">上传固件制品</button>
+          </form>
+          <pre id="firmwareArtifactResult"></pre>
+        </div>
+
+        <div class="card" data-workspace="ota">
+          <h3>创建升级任务</h3>
+          <p class="help">只对顶部“当前设备”生效。若当前选中“全部设备(*)”，不会创建 rollout。</p>
+          <form id="firmwareRolloutForm">
+            <div class="row">
+              <label>已上传固件
+                <select id="firmwareArtifactId" required>
+                  <option value="">请选择固件制品</option>
+                </select>
+              </label>
+              <label>最低电量（%）
+                <input id="firmwareMinBatteryPercent" type="number" min="0" max="100" value="50" />
+              </label>
+              <label>需要 VBUS
+                <select id="firmwareRequiresVbus">
+                  <option value="false">否（电池下也可升级）</option>
+                  <option value="true">是（仅接 USB / VBUS 时升级）</option>
+                </select>
+              </label>
+            </div>
+            <label>备注
+              <input id="firmwareRolloutNote" placeholder="例如：tomorrow morning ota" />
+            </label>
+            <button type="submit">创建升级任务</button>
+          </form>
+          <p id="firmwareRolloutCreateHint" class="muted">当前设备：-</p>
+          <pre id="firmwareRolloutResult"></pre>
         </div>
 
         <div class="card" data-workspace="publish">
@@ -1083,8 +1247,9 @@
           </div>
           <p id="overviewPreviewMeta" class="muted">-</p>
           <div class="preview-box">
-            <div class="single-preview-stage">
+            <div id="overviewPreviewStage" class="single-preview-stage is-empty">
               <img id="overviewPreviewImage" class="single-preview-image" alt="当前下发预览" />
+              <p id="overviewPreviewEmpty" class="preview-empty">正在加载当前下发预览…</p>
             </div>
           </div>
         </div>
@@ -1119,6 +1284,12 @@
             <button id="publishPreviewBtn" class="secondary" type="button">刷新算法比较</button>
           </div>
           <p id="dailyDitherHint" class="muted">Daily Dither: -</p>
+          <div class="cfg-block">
+            <h4>每日同图多版本对照</h4>
+            <p class="help">相框继续使用当前默认方案，不会因比较而改变。点击下方“生成今日四版本”，服务端会对同一张日图生成四个候选，方便并排对照。</p>
+            <label class="checkbox-label"><input id="photoRenderExperimentEnabled" type="checkbox" /> 显示每日多版本对照工具</label>
+            <div id="photoRenderExperimentSchedule" class="timeline compact-timeline"></div>
+          </div>
           <p id="publishPreviewMeta" class="muted">-</p>
           <div class="compare-toolbar">
             <label>左侧算法
@@ -1170,6 +1341,7 @@
               <span id="compareRightLabel" class="compare-label right">右侧</span>
             </div>
           </div>
+          <div id="photoRenderComparisonGrid" class="photo-render-comparison-grid"></div>
         </div>
 
         <div class="card" data-workspace="history">
@@ -1184,6 +1356,49 @@
           <p class="help">展示设备已上传的诊断日志正文与接收时间。</p>
           <div id="logUploadHistoryBody" class="timeline"></div>
           <p id="logUploadHistoryHint" class="muted"></p>
+        </div>
+
+        <div class="card" data-workspace="ota">
+          <h3>固件制品库</h3>
+          <div class="table-wrap table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>version</th>
+                  <th>size</th>
+                  <th>sha256</th>
+                  <th>created</th>
+                  <th>note</th>
+                </tr>
+              </thead>
+              <tbody id="firmwareArtifactsBody"></tbody>
+            </table>
+          </div>
+          <p id="firmwareArtifactsHint" class="muted"></p>
+        </div>
+
+        <div class="card" data-workspace="ota">
+          <h3>升级任务</h3>
+          <p class="help">这里展示服务端 rollout。`enabled` 表示仍会在设备下次唤醒时继续尝试下发；若设备已经升级成功，可手动取消。</p>
+          <div class="table-wrap table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>device</th>
+                  <th>state</th>
+                  <th>target</th>
+                  <th>policy</th>
+                  <th>created</th>
+                  <th>note</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="firmwareRolloutsBody"></tbody>
+            </table>
+          </div>
+          <p id="firmwareRolloutsHint" class="muted"></p>
         </div>
       </aside>
     </section>

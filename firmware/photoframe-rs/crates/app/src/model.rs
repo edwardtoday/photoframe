@@ -2,6 +2,7 @@ use photoframe_contracts::{
     DeviceConfigPayload, RemoteConfigPatch, ReportedConfig, ReportedWifiProfile,
 };
 use photoframe_domain::RetryPolicy;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WifiCredential {
@@ -21,6 +22,67 @@ pub struct ImageArtifact {
     pub width: u32,
     pub height: u32,
     pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingRenderTodo {
+    pub image_sha256: String,
+    pub image_date: String,
+    pub image_url: String,
+    pub image_source: String,
+    pub last_http_status: i32,
+}
+
+impl PendingRenderTodo {
+    pub fn new(
+        image_sha256: &str,
+        image_date: Option<&str>,
+        image_url: Option<&str>,
+        image_source: &str,
+        last_http_status: i32,
+    ) -> Self {
+        Self {
+            image_sha256: image_sha256.to_string(),
+            image_date: image_date.unwrap_or_default().to_string(),
+            image_url: image_url.unwrap_or_default().to_string(),
+            image_source: image_source.to_string(),
+            last_http_status,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostRenderTodo {
+    pub image_sha256: String,
+    pub image_date: String,
+    pub image_url: String,
+    pub image_source: String,
+    pub last_http_status: i32,
+    pub image_changed: bool,
+    pub checkin_done: bool,
+    pub photo_history_done: bool,
+}
+
+impl PostRenderTodo {
+    pub fn new(
+        image_sha256: &str,
+        image_date: Option<&str>,
+        image_url: Option<&str>,
+        image_source: &str,
+        last_http_status: i32,
+        image_changed: bool,
+    ) -> Self {
+        Self {
+            image_sha256: image_sha256.to_string(),
+            image_date: image_date.unwrap_or_default().to_string(),
+            image_url: image_url.unwrap_or_default().to_string(),
+            image_source: image_source.to_string(),
+            last_http_status,
+            image_changed,
+            checkin_done: false,
+            photo_history_done: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +248,9 @@ pub struct DeviceRuntimeConfig {
     pub ota_target_version: String,
     pub ota_last_error: String,
     pub ota_last_attempt_epoch: i64,
+    pub last_seen_firmware_version: String,
+    pub pending_render_todo: Option<PendingRenderTodo>,
+    pub pending_post_render_todos: Vec<PostRenderTodo>,
 }
 
 const DEFAULT_IMAGE_URL_TEMPLATE: &str = "http://192.168.58.113:8000/image/480x800?date=%DATE%";
@@ -232,6 +297,9 @@ impl Default for DeviceRuntimeConfig {
             ota_target_version: String::new(),
             ota_last_error: String::new(),
             ota_last_attempt_epoch: 0,
+            last_seen_firmware_version: String::new(),
+            pending_render_todo: None,
+            pending_post_render_todos: Vec::new(),
         }
     }
 }
@@ -298,6 +366,54 @@ impl DeviceRuntimeConfig {
             retry_max_minutes: self.retry_max_minutes,
             max_failure_before_long_sleep: self.max_failure_before_long_sleep,
         }
+    }
+
+    pub fn pending_post_render_todo(&self) -> Option<&PostRenderTodo> {
+        self.pending_post_render_todos.first()
+    }
+
+    pub fn pending_render_todo(&self) -> Option<&PendingRenderTodo> {
+        self.pending_render_todo.as_ref()
+    }
+
+    pub fn set_pending_render_todo(&mut self, todo: PendingRenderTodo) {
+        self.pending_render_todo = Some(todo);
+    }
+
+    pub fn clear_pending_render_todo(&mut self) {
+        self.pending_render_todo = None;
+    }
+
+    pub fn display_needs_resync(&self) -> bool {
+        let last_sha = self.last_image_sha256.trim();
+        let displayed_sha = self.displayed_image_sha256.trim();
+        !last_sha.is_empty() && last_sha != displayed_sha
+    }
+
+    pub fn upsert_pending_post_render_todo(&mut self, todo: PostRenderTodo) {
+        if let Some(existing) = self
+            .pending_post_render_todos
+            .iter_mut()
+            .find(|item| item.image_sha256 == todo.image_sha256)
+        {
+            *existing = todo;
+            return;
+        }
+        self.pending_post_render_todos.push(todo);
+    }
+
+    pub fn pending_post_render_todo_mut(
+        &mut self,
+        image_sha256: &str,
+    ) -> Option<&mut PostRenderTodo> {
+        self.pending_post_render_todos
+            .iter_mut()
+            .find(|item| item.image_sha256 == image_sha256)
+    }
+
+    pub fn remove_completed_post_render_todos(&mut self) {
+        self.pending_post_render_todos
+            .retain(|todo| !(todo.checkin_done && todo.photo_history_done));
     }
 
     pub fn ensure_primary_wifi_in_profiles(&mut self) {
@@ -481,6 +597,7 @@ impl DeviceRuntimeConfig {
             self.displayed_image_sha256.clear();
             self.displayed_image_date.clear();
             self.manual_history_active = false;
+            self.pending_render_todo = None;
         }
 
         ApplyRemoteConfigOutcome {
@@ -577,6 +694,7 @@ impl DeviceRuntimeConfig {
             self.displayed_image_sha256.clear();
             self.displayed_image_date.clear();
             self.manual_history_active = false;
+            self.pending_render_todo = None;
         }
 
         ApplyLocalConfigOutcome {

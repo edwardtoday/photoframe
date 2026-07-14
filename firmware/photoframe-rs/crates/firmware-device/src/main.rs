@@ -1,5 +1,6 @@
 #![cfg_attr(not(target_os = "espidf"), allow(dead_code, unused_imports))]
 mod diag;
+mod feedback;
 mod jpeg;
 mod panel;
 mod photo_history;
@@ -8,9 +9,15 @@ mod power;
 mod render_core;
 mod runtime_bridge;
 mod sdcard;
+mod sound;
 mod wifi;
 
 const _: () = photoframe_firmware_device::LIB_TARGET_PRESENT;
+
+use photoframe_firmware_device::button_logic::{
+    AwakeButtonAction, desired_awake_button_action, feedback_for_awake_action,
+    feedback_for_wake_source, wake_source_from_ext1_state,
+};
 
 #[cfg(target_os = "espidf")]
 use std::{
@@ -92,6 +99,10 @@ const BUTTON_DEBOUNCE_MS: u64 = 40;
 const LONG_PRESS_SECONDS: u64 = 3;
 
 #[cfg(target_os = "espidf")]
+#[unsafe(link_section = ".rtc.data")]
+static mut RTC_SKIP_USB_DUMP_ONCE: u32 = 0;
+
+#[cfg(target_os = "espidf")]
 fn configure_button_gpio() {
     unsafe {
         let cfg = esp_idf_sys::gpio_config_t {
@@ -102,6 +113,22 @@ fn configure_button_gpio() {
             intr_type: esp_idf_sys::gpio_int_type_t_GPIO_INTR_DISABLE,
         };
         let _ = esp_idf_sys::gpio_config(&cfg);
+    }
+}
+
+#[cfg(target_os = "espidf")]
+fn take_skip_usb_dump_once_flag() -> bool {
+    unsafe {
+        let skip = RTC_SKIP_USB_DUMP_ONCE != 0;
+        RTC_SKIP_USB_DUMP_ONCE = 0;
+        skip
+    }
+}
+
+#[cfg(target_os = "espidf")]
+fn mark_skip_usb_dump_once() {
+    unsafe {
+        RTC_SKIP_USB_DUMP_ONCE = 1;
     }
 }
 
@@ -136,24 +163,6 @@ fn detect_long_press_action() -> LongPressAction {
         return LongPressAction::ShowCurrentPhoto;
     }
     LongPressAction::None
-}
-
-fn wake_source_from_ext1_state(
-    boot_pin: bool,
-    key_pin: bool,
-    boot_seen_low: bool,
-    key_seen_low: bool,
-) -> WakeSource {
-    if boot_pin && boot_seen_low {
-        return WakeSource::Boot;
-    }
-    if key_pin && key_seen_low {
-        return WakeSource::Key;
-    }
-    if boot_pin || key_pin {
-        return WakeSource::SpuriousExt1;
-    }
-    WakeSource::Other
 }
 
 #[cfg(target_os = "espidf")]
@@ -302,6 +311,45 @@ fn apply_test_power_override(sample: &mut photoframe_app::PowerSample) {
 }
 
 #[cfg(target_os = "espidf")]
+fn short_sha_label(value: &str) -> &str {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        "-"
+    } else {
+        trimmed.get(..12).unwrap_or(trimmed)
+    }
+}
+
+#[cfg(target_os = "espidf")]
+fn log_runtime_config_snapshot(config: &DeviceRuntimeConfig, stage: &str) {
+    let pending_render = config.pending_render_todo();
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs: config {} fw_seen={} fw_now={} last_sha={} last_date={} disp_sha={} disp_date={} hist_mode={} pending_render={} pending_sha={} pending_date={} post_todos={}",
+        stage,
+        config.last_seen_firmware_version,
+        config.firmware_version(),
+        short_sha_label(&config.last_image_sha256),
+        config.last_image_date,
+        short_sha_label(&config.displayed_image_sha256),
+        config.displayed_image_date,
+        i32::from(config.manual_history_active),
+        i32::from(pending_render.is_some()),
+        short_sha_label(
+            pending_render
+                .as_ref()
+                .map(|todo| todo.image_sha256.as_str())
+                .unwrap_or_default()
+        ),
+        pending_render
+            .as_ref()
+            .map(|todo| todo.image_date.as_str())
+            .unwrap_or_default(),
+        config.pending_post_render_todos.len(),
+    );
+}
+
+#[cfg(target_os = "espidf")]
 fn current_wake_source() -> WakeSource {
     match unsafe { esp_idf_sys::esp_sleep_get_wakeup_cause() } {
         esp_idf_sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_TIMER => {
@@ -367,24 +415,45 @@ impl Display for DeviceDisplay {
         runtime_bridge::EspRuntimeBridge::render_image(artifact, config)
     }
 
-    fn after_render_success(
+    fn persist_photo_history(
         &mut self,
-        artifact: &photoframe_app::ImageArtifact,
-        _config: &photoframe_app::DeviceRuntimeConfig,
+        artifact: Option<&photoframe_app::ImageArtifact>,
+        config: &photoframe_app::DeviceRuntimeConfig,
         image_sha256: &str,
         image_date: Option<&str>,
+        image_url: Option<&str>,
     ) -> Result<(), String> {
-        if let Err(err) = photo_history::remember_rendered_photo(artifact, image_sha256, image_date)
-        {
-            crate::device_log!(
-                "WARN",
-                "photoframe-rs: cache rendered photo failed sha={} date={} err={}",
-                image_sha256,
-                image_date.unwrap_or_default(),
-                err
-            );
+        if let Some(artifact) = artifact {
+            photo_history::remember_rendered_photo(artifact, image_sha256, image_date)?;
+            return Ok(());
         }
-        Ok(())
+
+        let image_url = image_url
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .ok_or_else(|| format!("photo history retry missing image url sha={image_sha256}"))?;
+        let mut fetcher = photoframe_platform_espidf::EspIdfImageFetcher;
+        let result = fetcher.fetch(&ImageFetchPlan {
+            device_id: config.device_id.clone(),
+            url: image_url.to_string(),
+            debug_stage_base_url: config.orchestrator_base_url.clone(),
+            previous_sha256: String::new(),
+            photo_token: config.photo_token.clone(),
+            orchestrator_token: config.orchestrator_token.clone(),
+            previous_etag: None,
+            previous_last_modified: None,
+        });
+        if !result.ok {
+            return Err(format!(
+                "photo history retry fetch failed sha={} status={} err={}",
+                image_sha256, result.status_code, result.error
+            ));
+        }
+        let artifact = result
+            .artifact
+            .as_ref()
+            .ok_or_else(|| format!("photo history retry missing artifact sha={image_sha256}"))?;
+        photo_history::remember_rendered_photo(artifact, image_sha256, image_date)
     }
 }
 
@@ -392,14 +461,6 @@ impl Display for DeviceDisplay {
 enum LocalPhotoOutcome {
     Rendered { image_source: String },
     Unavailable { image_source: String },
-}
-
-#[cfg(target_os = "espidf")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AwakeButtonAction {
-    CycleHistory,
-    ShowCurrentPhoto,
-    EnterApPortal,
 }
 
 #[cfg(target_os = "espidf")]
@@ -779,7 +840,11 @@ fn maybe_handle_local_button_action<S: Storage>(
     wake_source: WakeSource,
     long_press_action: LongPressAction,
 ) -> Result<Option<CycleReport>, String> {
-    if matches!(long_press_action, LongPressAction::EnterApPortal) {
+    let Some(button_action) = desired_awake_button_action(wake_source, long_press_action) else {
+        return Ok(None);
+    };
+    feedback::emit(feedback_for_awake_action(button_action));
+    if matches!(button_action, AwakeButtonAction::EnterApPortal) {
         return Ok(Some(CycleReport {
             exit: CycleExit::EnterApPortal,
             action: CycleAction::ManualSync,
@@ -791,19 +856,14 @@ fn maybe_handle_local_button_action<S: Storage>(
         }));
     }
 
-    let wants_show_current = matches!(long_press_action, LongPressAction::ShowCurrentPhoto);
-    let wants_cycle_history = matches!(wake_source, WakeSource::Key)
-        && matches!(long_press_action, LongPressAction::None);
-    if !wants_show_current && !wants_cycle_history {
-        return Ok(None);
-    }
-
     let mut config = storage.load_config()?;
     let sleep_seconds = regular_sleep_seconds(&config);
-    let outcome = if wants_show_current {
-        show_current_orchestrator_photo(storage, &mut config)?
-    } else {
-        cycle_cached_history_photo(storage, &mut config)?
+    let outcome = match button_action {
+        AwakeButtonAction::CycleHistory => cycle_cached_history_photo(storage, &mut config)?,
+        AwakeButtonAction::ShowCurrentPhoto => {
+            show_current_orchestrator_photo(storage, &mut config)?
+        }
+        AwakeButtonAction::EnterApPortal => unreachable!(),
     };
     storage.save_config(&config)?;
 
@@ -851,6 +911,7 @@ fn run_local_browse_action<S: Storage>(
     storage: &mut S,
     button_action: AwakeButtonAction,
 ) -> Result<CycleReport, String> {
+    feedback::emit(feedback_for_awake_action(button_action));
     if matches!(button_action, AwakeButtonAction::EnterApPortal) {
         return Ok(CycleReport {
             exit: CycleExit::EnterApPortal,
@@ -973,8 +1034,36 @@ fn continue_local_browse_window<S: Storage>(
 }
 
 #[cfg(target_os = "espidf")]
+fn maybe_handle_usb_debug_button_window<S: Storage>(
+    storage: &mut S,
+    planned_sleep_seconds: u64,
+) -> Result<Option<CycleReport>, String> {
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs: usb debug mode active, wait {}s for button before rerun cycle (planned_sleep={}s)",
+        USB_DEBUG_POLL_SECONDS,
+        planned_sleep_seconds
+    );
+
+    let Some(button_action) = poll_awake_button_action(Duration::from_secs(USB_DEBUG_POLL_SECONDS))
+    else {
+        return Ok(None);
+    };
+
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs: usb debug awake action={:?}",
+        button_action
+    );
+    let report = run_local_browse_action(storage, button_action)?;
+    continue_local_browse_window(storage, report).map(Some)
+}
+
+#[cfg(target_os = "espidf")]
 fn main() {
     esp_idf_sys::link_patches();
+    diag::begin_boot_session(false);
+    photoframe_platform_espidf::register_diag_log_sink(diag::append_external);
     power::prepare_for_boot();
     let mut sd_history_ready = false;
     if !power::ensure_ready_for_sdcard() {
@@ -987,6 +1076,7 @@ fn main() {
                     "photoframe-rs: sdcard log storage ready at {}",
                     sdcard::mount_path()
                 );
+                diag::mark_sd_history_ready();
             }
             sd_history_ready = ready;
         }
@@ -1000,6 +1090,7 @@ fn main() {
                                 "photoframe-rs: sdcard log storage ready at {} after power recovery",
                                 sdcard::mount_path()
                             );
+                            diag::mark_sd_history_ready();
                         }
                         sd_history_ready = ready;
                     }
@@ -1014,8 +1105,9 @@ fn main() {
             }
         }
     }
-    diag::begin_boot_session(sd_history_ready);
-    photoframe_platform_espidf::register_diag_log_sink(diag::append_external);
+    if !sd_history_ready {
+        crate::device_log!("WARN", "photoframe-rs: sdcard history not ready this boot");
+    }
 
     use crate::wifi::EspWifiManager;
     use photoframe_platform_espidf::{
@@ -1024,6 +1116,7 @@ fn main() {
     };
 
     configure_button_gpio();
+    feedback::init();
     let reset_reason = photoframe_platform_espidf::current_reset_reason_label();
     crate::device_log!("INFO", "photoframe-rs: reset reason={}", reset_reason);
     let wake_source = current_wake_source();
@@ -1097,6 +1190,32 @@ fn main() {
         println!("photoframe-rs: save bootstrap config failed: {err}");
     }
 
+    if config.last_seen_firmware_version != config.firmware_version() {
+        crate::device_log!(
+            "INFO",
+            "photoframe-rs: firmware version changed from {} to {}, force repaint current photo once",
+            if config.last_seen_firmware_version.is_empty() {
+                "<empty>"
+            } else {
+                config.last_seen_firmware_version.as_str()
+            },
+            config.firmware_version(),
+        );
+        config.last_seen_firmware_version = config.firmware_version().to_string();
+        // USB 直刷/回滚不会经过 OTA 收尾路径，旧的 OTA 目标会残留在 NVS 里。
+        // 这里在检测到运行版本变化时顺手清掉，避免控制台继续显示过时目标版本。
+        config.ota_target_version.clear();
+        config.ota_last_error.clear();
+        config.ota_last_attempt_epoch = 0;
+        config.displayed_image_sha256.clear();
+        config.displayed_image_date.clear();
+        config.manual_history_active = false;
+        if let Err(err) = storage.save_config(&config) {
+            println!("photoframe-rs: save firmware version marker failed: {err}");
+        }
+    }
+    log_runtime_config_snapshot(&config, "boot");
+
     let clock = EspIdfClock;
     let mut runner = CycleRunner::new_with_services(
         clock,
@@ -1108,7 +1227,7 @@ fn main() {
         diag::DeviceLogUploadCollector,
     );
 
-    let mut skip_usb_dump_once = reset_reason == "sw" && is_usb_serial_connected();
+    let mut skip_usb_dump_once = reset_reason == "sw" || take_skip_usb_dump_once_flag();
     if skip_usb_dump_once {
         set_usb_console_suppressed(true);
     }
@@ -1118,6 +1237,12 @@ fn main() {
         wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
             &mut skip_usb_dump_once,
         ));
+        if desired_awake_button_action(cycle_wake_source, cycle_long_press_action).is_none()
+            && let Some(button_feedback) =
+                feedback_for_wake_source(cycle_wake_source, cycle_long_press_action)
+        {
+            feedback::emit(button_feedback);
+        }
         let local_report = match maybe_handle_local_button_action(
             runner.storage_mut(),
             cycle_wake_source,
@@ -1265,19 +1390,53 @@ fn main() {
                 timer_only,
             } => {
                 if is_usb_serial_connected() {
-                    crate::device_log!(
-                        "INFO",
-                        "photoframe-rs: usb debug mode active, rerun cycle in {}s (planned_sleep={}s)",
-                        USB_DEBUG_POLL_SECONDS,
-                        seconds
-                    );
-                    thread::sleep(Duration::from_secs(USB_DEBUG_POLL_SECONDS));
-                    wait_for_usb_resume_after_log_dump(maybe_dump_logs_for_usb_serial_attach(
-                        &mut skip_usb_dump_once,
-                    ));
-                    cycle_wake_source = WakeSource::Other;
-                    cycle_long_press_action = LongPressAction::None;
-                    continue;
+                    match maybe_handle_usb_debug_button_window(runner.storage_mut(), seconds) {
+                        Ok(Some(local_report)) => {
+                            crate::device_log!(
+                                "INFO",
+                                "photoframe-rs: usb debug local action exit={:?} source={} checkin_reported={} logs_uploaded={}",
+                                local_report.exit,
+                                local_report.image_source,
+                                local_report.checkin_reported,
+                                local_report.logs_uploaded
+                            );
+                            match local_report.exit {
+                                CycleExit::EnterApPortal => enter_ap_portal_or_idle(),
+                                CycleExit::RebootForConfig => restart_device(),
+                                CycleExit::RebootForFirmwareUpdate => restart_device(),
+                                CycleExit::Sleep { .. } => {
+                                    wait_for_usb_resume_after_log_dump(
+                                        maybe_dump_logs_for_usb_serial_attach(
+                                            &mut skip_usb_dump_once,
+                                        ),
+                                    );
+                                    cycle_wake_source = WakeSource::Other;
+                                    cycle_long_press_action = LongPressAction::None;
+                                    continue;
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            wait_for_usb_resume_after_log_dump(
+                                maybe_dump_logs_for_usb_serial_attach(&mut skip_usb_dump_once),
+                            );
+                            cycle_wake_source = WakeSource::Other;
+                            cycle_long_press_action = LongPressAction::None;
+                            continue;
+                        }
+                        Err(err) => {
+                            crate::device_log!(
+                                "ERROR",
+                                "photoframe-rs: usb debug button window failed: {err}"
+                            );
+                            wait_for_usb_resume_after_log_dump(
+                                maybe_dump_logs_for_usb_serial_attach(&mut skip_usb_dump_once),
+                            );
+                            cycle_wake_source = WakeSource::Other;
+                            cycle_long_press_action = LongPressAction::None;
+                            continue;
+                        }
+                    }
                 }
                 let hold_mode = if matches!(report.action, CycleAction::ManualSync) {
                     PreSleepHoldMode::ManualSyncSerialGrace {
@@ -1563,6 +1722,7 @@ fn wait_for_usb_resume_after_log_dump(dumped: bool) {
         "INFO",
         "photoframe-rs: usb dump handshake complete, reboot before wifi cycle"
     );
+    mark_skip_usb_dump_once();
     restart_device();
 }
 
@@ -1603,6 +1763,13 @@ fn hold_awake_before_sleep(
             );
         }
         PreSleepHoldMode::ManualSyncSerialGrace { wait_seconds } => {
+            if !usb_serial_connected && !usb_power_present {
+                crate::device_log!(
+                    "INFO",
+                    "photoframe-rs: manual sync complete, no usb/vbus, skip serial grace"
+                );
+                return;
+            }
             crate::device_log!(
                 "INFO",
                 "photoframe-rs: manual sync complete, keep awake {}s for usb serial attach",
@@ -1639,6 +1806,8 @@ fn hold_awake_before_sleep(
             PreSleepHoldMode::ManualSyncSerialGrace { .. } => {
                 if usb_serial_connected {
                     // 串口调试已接入时持续保持唤醒，直到用户断开。
+                } else if power_sample.vbus_good == 0 {
+                    break;
                 } else if serial_seen {
                     break;
                 } else if let Some(deadline) = grace_deadline
@@ -1760,49 +1929,4 @@ fn idle_forever() -> ! {
 #[cfg(not(target_os = "espidf"))]
 fn idle_forever() -> ! {
     panic!("host stub")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        should_hold_awake_for_usb_or_serial, startup_message, wake_source_from_ext1_state,
-    };
-    use photoframe_domain::WakeSource;
-
-    #[test]
-    fn host_message_mentions_espidf_target() {
-        let message = startup_message();
-        assert!(message.contains("espidf"));
-        assert!(message.contains("photoframe-rs"));
-    }
-
-    #[test]
-    fn ext1_boot_press_maps_to_boot_wakeup() {
-        assert_eq!(
-            wake_source_from_ext1_state(true, false, true, false),
-            WakeSource::Boot
-        );
-    }
-
-    #[test]
-    fn ext1_key_press_maps_to_key_wakeup() {
-        assert_eq!(
-            wake_source_from_ext1_state(false, true, false, true),
-            WakeSource::Key
-        );
-    }
-
-    #[test]
-    fn ext1_without_observed_press_is_spurious() {
-        assert_eq!(
-            wake_source_from_ext1_state(true, true, false, false),
-            WakeSource::SpuriousExt1
-        );
-    }
-
-    #[test]
-    fn usb_hold_requires_real_serial_connection() {
-        assert!(should_hold_awake_for_usb_or_serial(true));
-        assert!(!should_hold_awake_for_usb_or_serial(false));
-    }
 }

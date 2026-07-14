@@ -22,6 +22,8 @@ sdkconfig.old
 __pycache__/
 .venv-host-tools/
 .vscode/
+services/photoframe-orchestrator/data/*.db
+tmp-*.png
 firmware/photoframe-rs/target/
 firmware/photoframe-rs/dist/
 firmware/photoframe-rs/**/.embuild/

@@ -8,8 +8,8 @@ use photoframe_domain::{
 };
 
 use crate::{
-    DeviceRuntimeConfig, ImageArtifact, ImageFetchOutcome, ImageFetchPlan,
-    build_checkin_base_url_candidates, build_dated_url, build_fetch_url_candidates,
+    DeviceRuntimeConfig, ImageArtifact, ImageFetchOutcome, ImageFetchPlan, PendingRenderTodo,
+    PostRenderTodo, build_checkin_base_url_candidates, build_dated_url, build_fetch_url_candidates,
     extract_date_from_url,
     model::{FirmwareRuntimeStatus, PowerSample},
     split_url_origin_and_rest,
@@ -131,12 +131,13 @@ pub trait Display {
         force_refresh: bool,
     ) -> Result<(), FailureKind>;
 
-    fn after_render_success(
+    fn persist_photo_history(
         &mut self,
-        _artifact: &ImageArtifact,
+        _artifact: Option<&ImageArtifact>,
         _config: &DeviceRuntimeConfig,
         _image_sha256: &str,
         _image_date: Option<&str>,
+        _image_url: Option<&str>,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -295,6 +296,9 @@ where
     /// 单轮编排只处理“策略与状态转换”，不依赖硬件细节，便于宿主机验证。
     pub fn run(&mut self, boot: BootContext) -> Result<CycleReport, String> {
         let mut config = self.storage.load_config()?;
+        if let Err(err) = self.firmware_updater.confirm_running_firmware(&config) {
+            println!("photoframe-rs/ota: confirm running firmware failed: {err}");
+        }
         let action = decide_cycle_action(boot.wake_source);
         let portal_window_opened = false;
         let now_epoch = self.clock.now_epoch();
@@ -451,8 +455,27 @@ where
             }
         }
 
-        let force_refresh =
-            matches!(action, CycleAction::ForceRefresh) || config.manual_history_active;
+        let display_desynced = config.display_needs_resync();
+        let pending_render = config.pending_render_todo().cloned();
+        let force_refresh = matches!(action, CycleAction::ForceRefresh)
+            || config.manual_history_active
+            || display_desynced
+            || pending_render.is_some();
+        println!(
+            "photoframe-rs/reconcile: force_refresh={} manual_history={} display_desynced={} pending_render={} last_sha={} disp_sha={} pending_sha={}",
+            i32::from(force_refresh),
+            i32::from(config.manual_history_active),
+            i32::from(display_desynced),
+            i32::from(pending_render.is_some()),
+            short_sha(&config.last_image_sha256),
+            short_sha(&config.displayed_image_sha256),
+            short_sha(
+                pending_render
+                    .as_ref()
+                    .map(|todo| todo.image_sha256.as_str())
+                    .unwrap_or_default()
+            ),
+        );
         let previous_sha256 = if force_refresh {
             String::new()
         } else {
@@ -545,24 +568,60 @@ where
         let should_refresh = force_refresh || fetch.image_changed;
         let mut render_failure = None;
         let mut last_error = String::new();
+        let rendered_image_date = fetch_url_used.as_deref().and_then(extract_date_from_url);
+        println!(
+            "photoframe-rs/reconcile: fetch_ok={} changed={} should_refresh={} fetched_sha={} url={}",
+            i32::from(fetch.ok),
+            i32::from(fetch.image_changed),
+            i32::from(should_refresh),
+            short_sha(&fetch.sha256),
+            fetch_url_used.as_deref().unwrap_or_default(),
+        );
+
+        if fetch.ok && should_refresh {
+            let _ = self
+                .orchestrator
+                .report_debug_stage(&config, "before_stage_render_target");
+            config.set_pending_render_todo(PendingRenderTodo::new(
+                &fetch.sha256,
+                rendered_image_date.as_deref(),
+                fetch_url_used.as_deref(),
+                &image_source,
+                fetch.status_code,
+            ));
+            config.last_image_sha256 = fetch.sha256.clone();
+            config.last_image_date = rendered_image_date.clone().unwrap_or_default();
+            if let Some(value) = &fetch.etag {
+                config.last_image_etag = value.clone();
+            }
+            if let Some(value) = &fetch.last_modified {
+                config.last_image_last_modified = value.clone();
+            }
+            if let Some(url) = &fetch_url_used
+                && let Some((origin, _)) = crate::split_url_origin_and_rest(url)
+            {
+                config.preferred_image_origin = origin;
+            }
+            self.storage.save_config(&config)?;
+            let _ = self
+                .orchestrator
+                .report_debug_stage(&config, "after_stage_render_target");
+            println!(
+                "photoframe-rs/reconcile: staged render target sha={} date={} url={}",
+                short_sha(&fetch.sha256),
+                rendered_image_date.as_deref().unwrap_or_default(),
+                fetch_url_used.as_deref().unwrap_or_default(),
+            );
+        }
 
         if fetch.ok && should_refresh {
             if let Some(artifact) = fetch.artifact.as_ref() {
-                let rendered_image_date = fetch_url_used.as_deref().and_then(extract_date_from_url);
                 if let Err(kind) = self.display.render(artifact, &config, force_refresh) {
                     render_failure = Some(kind);
                     last_error = match kind {
                         FailureKind::PmicSoftFailure => "pmic soft failure".into(),
                         _ => "render failed".into(),
                     };
-                } else if let Err(err) = self.display.after_render_success(
-                    artifact,
-                    &config,
-                    &fetch.sha256,
-                    rendered_image_date.as_deref(),
-                ) {
-                    render_failure = Some(FailureKind::GeneralFailure);
-                    last_error = format!("persist rendered photo failed: {err}");
                 }
             } else {
                 render_failure = Some(FailureKind::GeneralFailure);
@@ -579,25 +638,37 @@ where
                 .report_debug_stage(&config, "after_render_ok");
             config.failure_count = 0;
             if should_refresh {
-                config.last_image_sha256 = fetch.sha256.clone();
-                config.last_image_date = fetch_url_used
-                    .as_deref()
-                    .and_then(extract_date_from_url)
-                    .unwrap_or_default();
+                let _ = self
+                    .orchestrator
+                    .report_debug_stage(&config, "before_persist_render_todo");
+                config.upsert_pending_post_render_todo(PostRenderTodo::new(
+                    &fetch.sha256,
+                    rendered_image_date.as_deref(),
+                    fetch_url_used.as_deref(),
+                    &image_source,
+                    fetch.status_code,
+                    fetch.image_changed,
+                ));
+                let _ = self
+                    .orchestrator
+                    .report_debug_stage(&config, "after_persist_render_todo");
                 config.displayed_image_sha256 = fetch.sha256.clone();
                 config.displayed_image_date = config.last_image_date.clone();
                 config.manual_history_active = false;
+                config.clear_pending_render_todo();
             }
-            if let Some(value) = &fetch.etag {
-                config.last_image_etag = value.clone();
-            }
-            if let Some(value) = &fetch.last_modified {
-                config.last_image_last_modified = value.clone();
-            }
-            if let Some(url) = &fetch_url_used
-                && let Some((origin, _)) = crate::split_url_origin_and_rest(url)
-            {
-                config.preferred_image_origin = origin;
+            if !should_refresh {
+                if let Some(value) = &fetch.etag {
+                    config.last_image_etag = value.clone();
+                }
+                if let Some(value) = &fetch.last_modified {
+                    config.last_image_last_modified = value.clone();
+                }
+                if let Some(url) = &fetch_url_used
+                    && let Some((origin, _)) = crate::split_url_origin_and_rest(url)
+                {
+                    config.preferred_image_origin = origin;
+                }
             }
             config.last_success_epoch = now_epoch;
             self.storage.save_config(&config)?;
@@ -605,31 +676,37 @@ where
                 .orchestrator
                 .report_debug_stage(&config, "after_save_ok");
             let _ = self.firmware_updater.confirm_running_firmware(&config);
-            if config.ota_target_version == config.firmware_version()
-                && !config.ota_last_error.is_empty()
-            {
+            if config.ota_target_version == config.firmware_version() {
+                config.ota_target_version.clear();
                 config.ota_last_error.clear();
+                config.ota_last_attempt_epoch = 0;
                 self.storage.save_config(&config)?;
             }
 
             let next_wakeup_epoch = now_epoch + success_sleep_seconds as i64;
-            let _ = self
-                .orchestrator
-                .report_debug_stage(&config, "before_checkin_ok");
-            let checkin_reported = self
-                .report_checkin(
+            let current_todo_sha = should_refresh.then(|| fetch.sha256.clone());
+            let retried_checkin_reported = self.retry_pending_post_render_todos(
+                &mut config,
+                &boot,
+                next_wakeup_epoch,
+                success_sleep_seconds,
+                &fallback_url,
+                current_todo_sha.as_deref(),
+            )?;
+            let mut checkin_reported = retried_checkin_reported;
+            if should_refresh {
+                let _ = self
+                    .orchestrator
+                    .report_debug_stage(&config, "before_checkin_ok");
+                match self.report_checkin(
                     &config,
                     fetch.status_code,
                     true,
                     fetch.image_changed,
-                    should_refresh,
+                    true,
                     &image_source,
-                    if should_refresh {
-                        fetch_url_used.as_deref().unwrap_or_default()
-                    } else {
-                        ""
-                    },
-                    if should_refresh { &fetch.sha256 } else { "" },
+                    fetch_url_used.as_deref().unwrap_or_default(),
+                    &fetch.sha256,
                     "",
                     boot.sta_ip.clone(),
                     boot.power_sample,
@@ -637,8 +714,89 @@ where
                     success_sleep_seconds,
                     fetch_url_used.as_deref().unwrap_or_default(),
                     &fallback_url,
-                )
-                .unwrap_or(false);
+                ) {
+                    Ok(true) => {
+                        checkin_reported = true;
+                        self.update_post_render_todo_state(
+                            &mut config,
+                            &fetch.sha256,
+                            Some(true),
+                            None,
+                        )?;
+                        let _ = self
+                            .orchestrator
+                            .report_debug_stage(&config, "after_checkin_ok");
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        let _ = self
+                            .orchestrator
+                            .report_debug_stage(&config, "checkin_ok_failed");
+                        println!(
+                            "photoframe-rs/post-render: checkin pending image_sha={} err={}",
+                            fetch.sha256, err
+                        );
+                    }
+                }
+                let _ = self
+                    .orchestrator
+                    .report_debug_stage(&config, "before_photo_history_ok");
+                match self.display.persist_photo_history(
+                    fetch.artifact.as_ref(),
+                    &config,
+                    &fetch.sha256,
+                    rendered_image_date.as_deref(),
+                    fetch_url_used.as_deref(),
+                ) {
+                    Ok(()) => {
+                        self.update_post_render_todo_state(
+                            &mut config,
+                            &fetch.sha256,
+                            None,
+                            Some(true),
+                        )?;
+                        let _ = self
+                            .orchestrator
+                            .report_debug_stage(&config, "after_photo_history_ok");
+                    }
+                    Err(err) => {
+                        let _ = self
+                            .orchestrator
+                            .report_debug_stage(&config, "photo_history_ok_failed");
+                        println!(
+                            "photoframe-rs/post-render: photo history pending image_sha={} err={}",
+                            fetch.sha256, err
+                        );
+                    }
+                }
+            } else if !checkin_reported {
+                let _ = self
+                    .orchestrator
+                    .report_debug_stage(&config, "before_checkin_ok");
+                checkin_reported = self
+                    .report_checkin(
+                        &config,
+                        fetch.status_code,
+                        true,
+                        fetch.image_changed,
+                        should_refresh,
+                        &image_source,
+                        if should_refresh {
+                            fetch_url_used.as_deref().unwrap_or_default()
+                        } else {
+                            ""
+                        },
+                        if should_refresh { &fetch.sha256 } else { "" },
+                        "",
+                        boot.sta_ip.clone(),
+                        boot.power_sample,
+                        next_wakeup_epoch,
+                        success_sleep_seconds,
+                        fetch_url_used.as_deref().unwrap_or_default(),
+                        &fallback_url,
+                    )
+                    .unwrap_or(false);
+            }
             let logs_uploaded = self
                 .upload_logs_if_requested(&config, log_upload_request.as_ref(), now_epoch)
                 .unwrap_or(false);
@@ -662,6 +820,14 @@ where
         let decision =
             apply_cycle_outcome(&config.retry_policy(), config.failure_count, failure_kind);
         let failure_sleep_seconds = decision.sleep_seconds;
+        let _ = self.retry_pending_post_render_todos(
+            &mut config,
+            &boot,
+            now_epoch + failure_sleep_seconds as i64,
+            failure_sleep_seconds,
+            &fallback_url,
+            None,
+        );
         let _ = self.orchestrator.report_debug_stage(
             &config,
             if render_failure.is_some() {
@@ -720,6 +886,145 @@ where
             portal_window_opened,
             logs_uploaded,
         })
+    }
+
+    fn retry_pending_post_render_todos(
+        &mut self,
+        config: &mut DeviceRuntimeConfig,
+        boot: &BootContext,
+        next_wakeup_epoch: i64,
+        sleep_seconds: u64,
+        fallback_url: &str,
+        skip_image_sha: Option<&str>,
+    ) -> Result<bool, String> {
+        let mut checkin_reported = false;
+        for todo in config.pending_post_render_todos.clone() {
+            if skip_image_sha == Some(todo.image_sha256.as_str()) {
+                continue;
+            }
+
+            if !todo.checkin_done {
+                let _ = self
+                    .orchestrator
+                    .report_debug_stage(config, "before_retry_checkin");
+                match self.report_checkin(
+                    config,
+                    todo.last_http_status,
+                    true,
+                    todo.image_changed,
+                    true,
+                    if todo.image_source.is_empty() {
+                        "daily"
+                    } else {
+                        todo.image_source.as_str()
+                    },
+                    todo.image_url.as_str(),
+                    todo.image_sha256.as_str(),
+                    "",
+                    boot.sta_ip.clone(),
+                    boot.power_sample,
+                    next_wakeup_epoch,
+                    sleep_seconds,
+                    todo.image_url.as_str(),
+                    fallback_url,
+                ) {
+                    Ok(true) => {
+                        checkin_reported = true;
+                        self.update_post_render_todo_state(
+                            config,
+                            &todo.image_sha256,
+                            Some(true),
+                            None,
+                        )?;
+                        let _ = self
+                            .orchestrator
+                            .report_debug_stage(config, "after_retry_checkin");
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        let _ = self
+                            .orchestrator
+                            .report_debug_stage(config, "retry_checkin_failed");
+                        println!(
+                            "photoframe-rs/post-render: retry checkin pending image_sha={} err={}",
+                            todo.image_sha256, err
+                        );
+                    }
+                }
+            }
+
+            let Some(current_todo) = config
+                .pending_post_render_todos
+                .iter()
+                .find(|item| item.image_sha256 == todo.image_sha256)
+                .cloned()
+            else {
+                continue;
+            };
+
+            if !current_todo.photo_history_done {
+                let _ = self
+                    .orchestrator
+                    .report_debug_stage(config, "before_retry_photo_history");
+                match self.display.persist_photo_history(
+                    None,
+                    config,
+                    current_todo.image_sha256.as_str(),
+                    if current_todo.image_date.is_empty() {
+                        None
+                    } else {
+                        Some(current_todo.image_date.as_str())
+                    },
+                    if current_todo.image_url.is_empty() {
+                        None
+                    } else {
+                        Some(current_todo.image_url.as_str())
+                    },
+                ) {
+                    Ok(()) => {
+                        self.update_post_render_todo_state(
+                            config,
+                            &current_todo.image_sha256,
+                            None,
+                            Some(true),
+                        )?;
+                        let _ = self
+                            .orchestrator
+                            .report_debug_stage(config, "after_retry_photo_history");
+                    }
+                    Err(err) => {
+                        let _ = self
+                            .orchestrator
+                            .report_debug_stage(config, "retry_photo_history_failed");
+                        println!(
+                            "photoframe-rs/post-render: retry photo history pending image_sha={} err={}",
+                            current_todo.image_sha256, err
+                        );
+                    }
+                }
+            }
+        }
+        Ok(checkin_reported)
+    }
+
+    fn update_post_render_todo_state(
+        &mut self,
+        config: &mut DeviceRuntimeConfig,
+        image_sha256: &str,
+        checkin_done: Option<bool>,
+        photo_history_done: Option<bool>,
+    ) -> Result<(), String> {
+        let Some(todo) = config.pending_post_render_todo_mut(image_sha256) else {
+            return Ok(());
+        };
+        if let Some(value) = checkin_done {
+            todo.checkin_done = value;
+        }
+        if let Some(value) = photo_history_done {
+            todo.photo_history_done = value;
+        }
+        config.remove_completed_post_render_todos();
+        self.storage.save_config(config)
     }
 
     fn should_attempt_firmware_update(
@@ -872,6 +1177,15 @@ fn orchestrator_token_for_url(
         return config.orchestrator_token.clone();
     }
     String::new()
+}
+
+fn short_sha(value: &str) -> &str {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        "-"
+    } else {
+        trimmed.get(..12).unwrap_or(trimmed)
+    }
 }
 
 fn append_unique_urls(out: &mut Vec<String>, candidates: impl Iterator<Item = String>) {

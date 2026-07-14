@@ -23,6 +23,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+DEFAULT_LOG_REQUEST_MAX_LINES = 800
+DEFAULT_LOG_REQUEST_MAX_BYTES = 65536
+
 
 def _build_context(insecure: bool) -> ssl.SSLContext | None:
     if not insecure:
@@ -165,8 +168,8 @@ def parse_args() -> argparse.Namespace:
         help="配合 --expect-stage 使用，要求设备版本与分区保持初始状态",
     )
     parser.add_argument("--log-reason", default="", help="同时创建日志采集请求")
-    parser.add_argument("--log-max-lines", type=int, default=120)
-    parser.add_argument("--log-max-bytes", type=int, default=8192)
+    parser.add_argument("--log-max-lines", type=int, default=DEFAULT_LOG_REQUEST_MAX_LINES)
+    parser.add_argument("--log-max-bytes", type=int, default=DEFAULT_LOG_REQUEST_MAX_BYTES)
     parser.add_argument("--log-expires-minutes", type=int, default=1440)
     parser.add_argument(
         "--esptool-python",

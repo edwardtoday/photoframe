@@ -32,7 +32,12 @@
   - 若上游是 `immich-featured-today`，预览响应会透传 `X-IFT-*` 元数据（asset/layout/crop/display_score），控制台可直接看到当前成片来自哪张图、用的什么构图策略
 - 公网日图代理：`GET /public/daily.bmp` / `GET /public/daily.jpg`（token 保护，且优先返回当前生效插播）
 - 历史补图接口会按显式 `date=YYYY-MM-DD` 使用与 daily 相同的裁剪 / dither / 缓存链路，供设备在本地 TF 缺少某天图片时按需回源补齐
-- Web 管理页：`GET /`（含图片发布历史 + 设备配置发布历史 + 当前下发预览 + 设备 token 审批）
+- vNext Web 管理页：`GET /` 或 `GET /vnext`
+  - “今日”聚合健康结论、当前画面、下一次唤醒和最近事件
+  - “照片”提供资产库、快速换图和显示反馈
+  - “设备”提供完整时间线和正常/省电/离家/自定义间隔/诊断等意图化操作
+  - “实验室”集中 Dither 对比、OTA、日志、原始配置和设备 Token 审批
+- 旧版专家控制台：`GET /legacy`（保留一个发布周期作为回滚入口）
 - 设备状态页会直接显示设备最近一次 checkin 上报的 `firmware_version`
 - 设备状态页会给出电源告警：区分 `USB debug mode` 导致的连续高频活跃，与“电池下平均电流偏高”的待机底流异常
 - 控制台顶部会显示 orchestrator 自身的服务版本与 git sha，便于确认当前部署的是哪次构建
@@ -118,6 +123,7 @@ ENABLE_REBASE_FALLBACK=0 scripts/release-orchestrator-image.sh
 访问：`http://<NAS_IP>:18081/`
 
 管理页里的 `PHOTOFRAME_TOKEN` 输入框会保存在浏览器本地（localStorage），避免每次刷新重复输入。
+默认根入口为 vNext；需要旧版原始表格和高级调试时访问 `/legacy`。
 
 ## 环境变量
 

@@ -68,6 +68,11 @@ let powerResizeTimer = null;
 let currentDailyDitherAlgorithm = 'sierra';
 let currentPaletteProfile = 'reference';
 let deviceRowCache = new Map();
+let firmwareArtifactsCache = [];
+let firmwareRolloutsCache = [];
+let preferredFirmwareArtifactId = '';
+let photoRenderExperimentEnabled = false;
+let photoRenderPresets = [];
 
 const TOKEN_STORAGE_KEY = 'photoframe.console.token';
 const TOKEN_COOKIE_KEY = 'photoframe_console_token';
@@ -89,14 +94,13 @@ let lastFullRefreshEpochMs = 0;
 let lastSecondaryRefreshEpochMs = 0;
 
 const AUTO_REFRESH_FOREGROUND_MS = 60000;
-const AUTO_REFRESH_BACKGROUND_MS = 10 * 60 * 1000;
 const SECONDARY_REFRESH_FOREGROUND_MS = 5 * 60 * 1000;
-const SECONDARY_REFRESH_BACKGROUND_MS = 30 * 60 * 1000;
 
 const WORKSPACE_HINTS = {
   overview: '总览：设备在线状态、供电趋势、当前下发预览',
   publish: '发布：创建插播、查看插播列表与图片发布记录',
   config: '配置：设备配对审批、连接设置、参数与 Wi‑Fi 管理',
+  ota: 'OTA：上传固件、创建升级任务、区分服务端 rollout 与设备上报状态',
   history: '历史：图片 sent/displayed 状态与配置下发历史',
 };
 const DITHER_ALGORITHM_LABELS = {
@@ -176,7 +180,7 @@ function persistConsoleToken() {
 }
 
 function normalizeWorkspace(raw) {
-  if (raw === 'overview' || raw === 'publish' || raw === 'config' || raw === 'history') {
+  if (raw === 'overview' || raw === 'publish' || raw === 'config' || raw === 'ota' || raw === 'history') {
     return raw;
   }
   return 'overview';
@@ -194,7 +198,10 @@ function applyWorkspaceFilter() {
   const tabs = document.querySelectorAll('#workspaceTabs .workspace-tab');
   for (const tab of tabs) {
     const ws = tab.getAttribute('data-workspace') || '';
-    tab.classList.toggle('active', ws === currentWorkspace);
+    const active = ws === currentWorkspace;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+    tab.tabIndex = active ? 0 : -1;
   }
 
   const grid = document.getElementById('workspaceGrid');
@@ -246,11 +253,28 @@ function persistWorkspace() {
 function initWorkspaceTabs() {
   const tabRoot = document.getElementById('workspaceTabs');
   if (!tabRoot) return;
-  for (const btn of tabRoot.querySelectorAll('.workspace-tab')) {
+  const tabs = Array.from(tabRoot.querySelectorAll('.workspace-tab'));
+  const activateTab = (btn) => {
+    currentWorkspace = normalizeWorkspace(btn.getAttribute('data-workspace') || 'overview');
+    persistWorkspace();
+    applyWorkspaceFilter();
+  };
+  for (const btn of tabs) {
     btn.addEventListener('click', () => {
-      currentWorkspace = normalizeWorkspace(btn.getAttribute('data-workspace') || 'overview');
-      persistWorkspace();
-      applyWorkspaceFilter();
+      activateTab(btn);
+    });
+    btn.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const currentIndex = tabs.indexOf(btn);
+      let nextIndex = currentIndex;
+      if (event.key === 'Home') nextIndex = 0;
+      if (event.key === 'End') nextIndex = tabs.length - 1;
+      if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+      if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length;
+      const nextTab = tabs[nextIndex];
+      activateTab(nextTab);
+      nextTab.focus();
     });
   }
   loadStoredWorkspace();
@@ -1171,6 +1195,16 @@ function setImageBlob(id, blobUrl) {
   el.dataset.blobUrl = blobUrl;
 }
 
+function setOverviewPreviewError(error) {
+  const message = explainAdminLoadError(error);
+  const image = document.getElementById('overviewPreviewImage');
+  const stage = document.getElementById('overviewPreviewStage');
+  if (image) image.removeAttribute('src');
+  if (stage) stage.classList.add('is-empty');
+  setText('overviewPreviewEmpty', `当前无法生成预览。请检查日图上游连接后重试。\n${message}`);
+  setText('overviewPreviewMeta', `预览失败: ${message}`);
+}
+
 function setTableMessage(bodyId, colspan, text) {
   const el = document.getElementById(bodyId);
   if (el) {
@@ -1189,6 +1223,15 @@ function setPlaceholder(id, text) {
   const el = document.getElementById(id);
   if (el) {
     el.placeholder = text;
+  }
+}
+
+function invalidateJsonCache(prefixes) {
+  const list = Array.isArray(prefixes) ? prefixes : [prefixes];
+  for (const key of Array.from(jsonResponseCache.keys())) {
+    if (list.some((prefix) => typeof prefix === 'string' && key.startsWith(prefix))) {
+      jsonResponseCache.delete(key);
+    }
   }
 }
 
@@ -1302,11 +1345,103 @@ function updateDailyDitherHint(savedAlgorithm = currentDailyDitherAlgorithm) {
   const selected = selectedDailyDitherAlgorithm();
   const savedText = ditherAlgorithmLabel(savedAlgorithm || currentDailyDitherAlgorithm);
   const previewText = ditherAlgorithmLabel(selected);
-  document.getElementById('dailyDitherHint').textContent = `Daily Dither: 当前保存 ${savedText} · 预览使用 ${previewText} · Palette ${selectedPaletteProfile()}`;
+  const experiment = photoRenderExperimentEnabled ? '同图多版本对照已启用：设备仍使用当前保存方案' : '同图多版本对照未启用：设备使用当前保存方案';
+  document.getElementById('dailyDitherHint').textContent = `Daily Dither: 当前保存 ${savedText} · 预览使用 ${previewText} · Palette ${selectedPaletteProfile()} · ${experiment}`;
 }
 
-function currentPreviewCacheKey(selectedDevice, paletteProfile, algorithm, nowEpoch = '', fresh = false) {
-  return `${selectedDevice}|${paletteProfile}|${algorithm}|${nowEpoch}|${fresh ? 'fresh' : 'cached'}`;
+function renderPhotoRenderExperimentSchedule() {
+  const root = document.getElementById('photoRenderExperimentSchedule');
+  const grid = document.getElementById('photoRenderComparisonGrid');
+  if (!root) return;
+  if (!photoRenderExperimentEnabled) {
+    root.innerHTML = '<p class="muted">对照工具未启用。启用并保存后，可按需生成今天同一张日图的四种版本。</p>';
+    if (grid) grid.innerHTML = '';
+    return;
+  }
+  root.innerHTML = `<div class="experiment-item active">
+    <strong>今日同图</strong>
+    <p>将同一张日图按四种候选渲染；只在你点击时生成，设备显示不会变化。</p>
+    <button id="generatePhotoRenderComparison" class="secondary" type="button">生成今日四版本</button>
+  </div>`;
+  document.getElementById('generatePhotoRenderComparison')?.addEventListener('click', () => {
+    loadPhotoRenderComparison(true).catch((err) => {
+      document.getElementById('publishPreviewMeta').textContent = `生成同图多版本失败: ${err.message}`;
+    });
+  });
+  if (grid) {
+    grid.innerHTML = '<p class="muted">点击“生成今日四版本”开始对照。</p>';
+  }
+}
+
+async function loadPhotoRenderComparison(force = false) {
+  if (!photoRenderExperimentEnabled || photoRenderPresets.length === 0) return;
+  const grid = document.getElementById('photoRenderComparisonGrid');
+  if (!grid) return;
+  const selectedDevice = document.getElementById('deviceId').value || '*';
+  const freshDailySourceKey = `comparison-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  grid.innerHTML = photoRenderPresets.map((preset) => `<article class="photo-render-card" data-preset-key="${escapeHtml(preset.key)}">
+    <div class="photo-render-card-body">
+      <h5>${escapeHtml(preset.label)}</h5>
+      <p>${escapeHtml(preset.description)}</p>
+      <p class="muted">正在基于同一张今日源图生成…</p>
+    </div>
+  </article>`).join('');
+  await Promise.all(photoRenderPresets.map(async (preset) => {
+    const card = grid.querySelector(`[data-preset-key="${preset.key}"]`);
+    if (!card) return;
+    try {
+      const preview = await fetchCurrentPreviewForAlgorithm(selectedDevice, preset.algorithm, preset.palette_profile, {
+        force,
+        freshDailySource: true,
+        freshDailySourceKey,
+      });
+      card.innerHTML = `<img src="${escapeHtml(preview.blobUrl)}" alt="${escapeHtml(preset.label)} 同图版本" />
+        <div class="photo-render-card-body">
+          <h5>${escapeHtml(preset.label)}</h5>
+          <p>${escapeHtml(preset.description)}</p>
+          <button class="secondary experiment-use-default" data-algorithm="${escapeHtml(preset.algorithm)}" data-palette="${escapeHtml(preset.palette_profile)}" type="button">选为默认</button>
+        </div>`;
+      card.querySelector('.experiment-use-default')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        if (!(button instanceof HTMLButtonElement)) return;
+        try {
+          const data = await fetchJson('/api/v1/daily-render-config', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              daily_dither_algorithm: button.dataset.algorithm,
+              palette_profile: button.dataset.palette,
+              photo_render_experiment_enabled: photoRenderExperimentEnabled,
+            }),
+          });
+          applyDailyRenderConfig(data);
+          document.getElementById('publishPreviewMeta').textContent = '已固化为默认；设备后续日图将持续使用此方案。';
+          await loadOverviewPreview(true);
+        } catch (err) {
+          document.getElementById('publishPreviewMeta').textContent = `保存默认方案失败: ${err.message}`;
+        }
+      });
+    } catch (err) {
+      card.innerHTML = `<div class="photo-render-card-body">
+        <h5>${escapeHtml(preset.label)}</h5>
+        <p>${escapeHtml(preset.description)}</p>
+        <p class="muted">生成失败：${escapeHtml(err.message || '未知错误')}</p>
+      </div>`;
+    }
+  }));
+}
+
+function applyDailyRenderConfig(data) {
+  currentDailyDitherAlgorithm = data.daily_dither_algorithm || currentDailyDitherAlgorithm;
+  currentPaletteProfile = data.palette_profile || currentPaletteProfile;
+  photoRenderExperimentEnabled = Boolean(data.photo_render_experiment_enabled);
+  photoRenderPresets = Array.isArray(data.photo_render_presets) ? data.photo_render_presets : [];
+  const experimentToggle = document.getElementById('photoRenderExperimentEnabled');
+  if (experimentToggle) experimentToggle.checked = photoRenderExperimentEnabled;
+  renderPhotoRenderExperimentSchedule();
+}
+
+function currentPreviewCacheKey(selectedDevice, paletteProfile, algorithm, nowEpoch = '', fresh = false, freshSourceKey = '') {
+  return `${selectedDevice}|${paletteProfile}|${algorithm}|${nowEpoch}|${fresh ? 'fresh' : 'cached'}|${freshSourceKey}`;
 }
 
 async function fetchCurrentPreviewForAlgorithm(
@@ -1317,6 +1452,7 @@ async function fetchCurrentPreviewForAlgorithm(
     force = false,
     nowEpoch = null,
     freshDailySource = false,
+    freshDailySourceKey = null,
   } = {},
 ) {
   const cacheKey = currentPreviewCacheKey(
@@ -1325,6 +1461,7 @@ async function fetchCurrentPreviewForAlgorithm(
     algorithm,
     nowEpoch == null ? '' : String(nowEpoch),
     freshDailySource,
+    freshDailySourceKey,
   );
   if (!force && !freshDailySource && previewResponseCache.has(cacheKey)) {
     return previewResponseCache.get(cacheKey);
@@ -1341,6 +1478,9 @@ async function fetchCurrentPreviewForAlgorithm(
   }
   if (freshDailySource) {
     query.set('fresh_daily_source', '1');
+  }
+  if (freshDailySourceKey) {
+    query.set('fresh_daily_source_key', freshDailySourceKey);
   }
   const resp = await fetch(
     `/api/v1/preview/current.bmp?${query.toString()}`,
@@ -1384,8 +1524,7 @@ async function fetchCurrentPreviewForAlgorithm(
 
 async function loadDailyRenderConfig() {
   const data = await fetchJson('/api/v1/daily-render-config');
-  currentDailyDitherAlgorithm = data.daily_dither_algorithm || currentDailyDitherAlgorithm;
-  currentPaletteProfile = data.palette_profile || currentPaletteProfile;
+  applyDailyRenderConfig(data);
   const select = document.getElementById('dailyDitherAlgorithm');
   if (select) {
     select.value = currentDailyDitherAlgorithm;
@@ -1639,6 +1778,171 @@ function otaStatusText(device) {
   if (attempted && attempted !== '-') parts.push(`@ ${attempted}`);
   if (error) parts.push(`err: ${shorten(error, 32)}`);
   return parts.length > 0 ? parts.join(' ') : '-';
+}
+
+function shortSha256(value, maxLen = 16) {
+  const text = String(value || '').trim();
+  if (!text) return '-';
+  return shorten(text, maxLen);
+}
+
+function firmwareRolloutPolicyText(rollout) {
+  if (!rollout || typeof rollout !== 'object') {
+    return '-';
+  }
+  return `电量≥${Math.max(0, Number(rollout.min_battery_percent || 0))}% · ${rollout.requires_vbus ? '需 VBUS' : '无需 VBUS'}`;
+}
+
+function firmwareRolloutStateInfo(rollout) {
+  if (!rollout || typeof rollout !== 'object') {
+    return { label: '-', className: '', detail: '暂无 rollout' };
+  }
+
+  const device = deviceMap.get(rollout.device_id);
+  const currentVersion = firmwareVersionForDevice(device);
+  if (!rollout.enabled) {
+    return {
+      label: 'disabled',
+      className: '',
+      detail: `已停用 · target ${rollout.version || '-'}`,
+    };
+  }
+  if (!device) {
+    return {
+      label: 'enabled',
+      className: 'warn',
+      detail: `设备当前未出现在设备列表，target ${rollout.version || '-'}`,
+    };
+  }
+  if (currentVersion === rollout.version) {
+    return {
+      label: 'reached',
+      className: 'active',
+      detail: `设备已到目标版本 ${currentVersion}`,
+    };
+  }
+  return {
+    label: 'pending',
+    className: 'warn',
+    detail: `当前 ${currentVersion || '-'} · 待下发 ${rollout.version || '-'}`,
+  };
+}
+
+function activeFirmwareRolloutForSelectedDevice() {
+  const deviceId = selectedConcreteDeviceId();
+  if (!deviceId) return null;
+  return firmwareRolloutsCache.find((item) => item.enabled && item.device_id === deviceId) || null;
+}
+
+function syncFirmwareArtifactOptions(items) {
+  const select = document.getElementById('firmwareArtifactId');
+  if (!select) return;
+
+  const selectedBefore = select.value;
+  const nextOptions = new Map();
+  nextOptions.set('', '请选择固件制品');
+  items.forEach((item) => {
+    nextOptions.set(String(item.id), `#${item.id} · ${item.version} · ${fmtBytes(item.size_bytes)}`);
+  });
+
+  Array.from(select.options).forEach((option) => {
+    if (!nextOptions.has(option.value)) {
+      option.remove();
+    }
+  });
+
+  Array.from(nextOptions.entries()).forEach(([value, label], index) => {
+    const option = select.options[index];
+    if (!option || option.value !== value) {
+      const nextOption = document.createElement('option');
+      nextOption.value = value;
+      nextOption.textContent = label;
+      select.insertBefore(nextOption, select.options[index] || null);
+    } else if (option.textContent !== label) {
+      option.textContent = label;
+    }
+  });
+
+  const ids = new Set(items.map((item) => String(item.id)));
+  if (preferredFirmwareArtifactId && ids.has(preferredFirmwareArtifactId)) {
+    select.value = preferredFirmwareArtifactId;
+  } else if (selectedBefore && ids.has(selectedBefore)) {
+    select.value = selectedBefore;
+  } else {
+    select.value = '';
+  }
+}
+
+function updateFirmwareRolloutCreateHint() {
+  const hint = document.getElementById('firmwareRolloutCreateHint');
+  if (!hint) return;
+  const deviceId = selectedConcreteDeviceId();
+  if (!deviceId) {
+    hint.textContent = '当前设备：请先在顶部选择具体设备，不能对“全部设备(*)”创建 rollout';
+    return;
+  }
+  const activeRollout = activeFirmwareRolloutForSelectedDevice();
+  if (activeRollout) {
+    hint.textContent = `当前设备：${deviceId} · active rollout #${activeRollout.id} -> ${activeRollout.version}`;
+    return;
+  }
+  hint.textContent = `当前设备：${deviceId} · 当前没有 active rollout`;
+}
+
+function renderOtaSummary() {
+  const body = document.getElementById('otaSummaryBody');
+  if (!body) return;
+
+  const deviceId = selectedConcreteDeviceId();
+  if (!deviceId) {
+    body.innerHTML = '<p class="muted">请选择具体设备后查看“设备上报状态”和“服务端待下发 rollout”的差异。</p>';
+    setText('otaWorkspaceHint', `当前作用域：全部设备 · rollout 列表展示 ${firmwareRolloutsCache.length} 条`);
+    updateFirmwareRolloutCreateHint();
+    return;
+  }
+
+  const device = deviceMap.get(deviceId);
+  if (!device) {
+    body.innerHTML = '<p class="muted">设备状态尚未加载完成。</p>';
+    setText('otaWorkspaceHint', `当前设备：${deviceId} · 正在等待设备状态`);
+    updateFirmwareRolloutCreateHint();
+    return;
+  }
+
+  const activeRollout = activeFirmwareRolloutForSelectedDevice();
+  const rolloutInfo = firmwareRolloutStateInfo(activeRollout);
+  const otaAttempt = fmtEpoch(device.ota_last_attempt_epoch);
+  const deviceError = device.ota_last_error ? escapeHtml(shorten(device.ota_last_error, 120)) : '无';
+  const rolloutNote = activeRollout?.note ? escapeHtml(activeRollout.note) : '无';
+  const rolloutCreated = activeRollout ? fmtEpoch(activeRollout.created_epoch) : '-';
+  const nextWake = fmtEpoch(device.next_wakeup_epoch);
+  const currentVersion = escapeHtml(firmwareVersionForDevice(device));
+  const partition = escapeHtml(device.running_partition || '-');
+
+  body.innerHTML = `
+    <article class="status-panel">
+      <h4>设备上报状态</h4>
+      <div class="status-value">${escapeHtml(device.ota_state || '未上报')} · ${currentVersion}</div>
+      <div class="status-note">分区 ${partition} · ota_target ${escapeHtml(device.ota_target_version || '-')} · 最后尝试 ${escapeHtml(otaAttempt)} · 错误 ${deviceError}</div>
+    </article>
+    <article class="status-panel">
+      <h4>服务端 rollout</h4>
+      <div class="status-value"><span class="tag ${escapeHtml(rolloutInfo.className)}">${escapeHtml(rolloutInfo.label)}</span> ${escapeHtml(activeRollout?.version || '无 active rollout')}</div>
+      <div class="status-note">${escapeHtml(rolloutInfo.detail)} · ${escapeHtml(firmwareRolloutPolicyText(activeRollout))} · 创建于 ${escapeHtml(rolloutCreated)} · 备注 ${rolloutNote}</div>
+    </article>
+    <article class="status-panel">
+      <h4>下次唤醒</h4>
+      <div class="status-value">${escapeHtml(nextWake)}</div>
+      <div class="status-note">当前电量 ${escapeHtml(batteryStatusText(device))} · 供电 ${escapeHtml(powerSourceText(device))}</div>
+    </article>
+  `;
+  setText('otaWorkspaceHint', `当前设备：${deviceId} · 服务端 rollout ${activeRollout ? `#${activeRollout.id}` : '无'} · 设备状态 ${device.ota_state || '未上报'}`);
+  updateFirmwareRolloutCreateHint();
+}
+
+function renderFirmwareRolloutStateTag(rollout) {
+  const info = firmwareRolloutStateInfo(rollout);
+  return `<span class="tag ${escapeHtml(info.className)}" title="${escapeHtml(info.detail)}">${escapeHtml(info.label)}</span>`;
 }
 
 function getReportedWifiProfiles(device) {
@@ -1945,6 +2249,8 @@ async function loadDevices(lightweight = false) {
   updateConfigHints();
   updateDeviceLogRequestHint();
   updateDeviceContextBanner();
+  updateFirmwareRolloutCreateHint();
+  renderOtaSummary();
   if (!powerAutoLoaded) {
     powerAutoLoaded = true;
     loadPowerSamplesSafe();
@@ -2268,6 +2574,7 @@ async function loadOverviewPreview(force = false) {
   const preview = await fetchCurrentPreviewForAlgorithm(selectedDevice, algorithm, paletteProfile, { force });
 
   setImageBlob('overviewPreviewImage', preview.blobUrl);
+  document.getElementById('overviewPreviewStage')?.classList.remove('is-empty');
   const upstreamBits = [];
   if (preview.upstreamAssetId) upstreamBits.push(`asset ${preview.upstreamAssetId}`);
   if (preview.upstreamLayoutMode) upstreamBits.push(`layout ${preview.upstreamLayoutMode}`);
@@ -2351,6 +2658,150 @@ async function loadDeviceConfigs() {
 
   const scope = selectedDevice === '*' ? '全部设备' : selectedDevice;
   document.getElementById('configHistoryHint').textContent = `${scope} · 最近 ${items.length} 条`;
+}
+
+async function loadFirmwareArtifacts() {
+  const data = await fetchJson('/api/v1/firmware-artifacts?limit=100');
+  const items = Array.isArray(data.items) ? data.items : [];
+  firmwareArtifactsCache = items;
+
+  const body = document.getElementById('firmwareArtifactsBody');
+  if (items.length === 0) {
+    setTableMessage('firmwareArtifactsBody', 6, '暂无固件制品。');
+  } else if (body) {
+    body.innerHTML = items.map((item) => `
+      <tr>
+        <td>${escapeHtml(item.id)}</td>
+        <td title="${escapeHtml(item.version)}">${escapeHtml(shorten(item.version, 32))}</td>
+        <td>${escapeHtml(fmtBytes(item.size_bytes))}</td>
+        <td title="${escapeHtml(item.asset_sha256)}">${escapeHtml(shortSha256(item.asset_sha256, 20))}</td>
+        <td>${escapeHtml(fmtEpoch(item.created_epoch))}</td>
+        <td title="${escapeHtml(item.note || '')}">${escapeHtml(shorten(item.note || '-', 48))}</td>
+      </tr>
+    `).join('');
+  }
+
+  syncFirmwareArtifactOptions(items);
+  setText('firmwareArtifactsHint', `最近 ${items.length} 条固件制品`);
+}
+
+async function loadFirmwareRollouts() {
+  const selectedDevice = document.getElementById('deviceId')?.value || '*';
+  const query = selectedDevice !== '*'
+    ? `?device_id=${encodeURIComponent(selectedDevice)}&limit=100`
+    : '?limit=100';
+  const data = await fetchJson(`/api/v1/firmware-rollouts${query}`);
+  const items = Array.isArray(data.items) ? data.items : [];
+  firmwareRolloutsCache = items;
+
+  const body = document.getElementById('firmwareRolloutsBody');
+  if (items.length === 0) {
+    setTableMessage('firmwareRolloutsBody', 8, '暂无升级任务。');
+  } else if (body) {
+    body.innerHTML = items.map((item) => `
+      <tr>
+        <td>${escapeHtml(item.id)}</td>
+        <td><span class="tag">${escapeHtml(item.device_id)}</span></td>
+        <td>${renderFirmwareRolloutStateTag(item)}</td>
+        <td title="${escapeHtml(item.version)}">${escapeHtml(shorten(item.version, 30))}</td>
+        <td>${escapeHtml(firmwareRolloutPolicyText(item))}</td>
+        <td>${escapeHtml(fmtEpoch(item.created_epoch))}</td>
+        <td title="${escapeHtml(item.note || '')}">${escapeHtml(shorten(item.note || '-', 44))}</td>
+        <td>${item.enabled ? `<button type="button" class="secondary danger firmwareRolloutDeleteBtn" data-rollout-id="${escapeHtml(item.id)}">取消</button>` : '<span class="muted">-</span>'}</td>
+      </tr>
+    `).join('');
+  }
+
+  document.querySelectorAll('.firmwareRolloutDeleteBtn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const rolloutId = btn.getAttribute('data-rollout-id');
+      if (!rolloutId) return;
+      if (!confirm(`确认取消升级任务 #${rolloutId} ?`)) return;
+      try {
+        await fetchJson(`/api/v1/firmware-rollouts/${encodeURIComponent(rolloutId)}`, { method: 'DELETE' });
+        invalidateJsonCache(['/api/v1/firmware-rollouts']);
+        await refreshAll();
+      } catch (err) {
+        alert(`取消升级任务失败: ${err.message}`);
+      }
+    });
+  });
+
+  const scope = selectedDevice === '*' ? '全部设备' : selectedDevice;
+  setText('firmwareRolloutsHint', `${scope} · 最近 ${items.length} 条 rollout`);
+  renderOtaSummary();
+}
+
+async function submitFirmwareArtifact(ev) {
+  ev.preventDefault();
+  const version = document.getElementById('firmwareArtifactVersion')?.value.trim() || '';
+  const note = document.getElementById('firmwareArtifactNote')?.value || '';
+  const fileInput = document.getElementById('firmwareArtifactFile');
+  if (!version) {
+    throw new Error('请填写目标版本');
+  }
+  if (!fileInput?.files || fileInput.files.length === 0) {
+    throw new Error('请先选择 app.bin');
+  }
+
+  const fd = new FormData();
+  fd.append('file', fileInput.files[0]);
+  fd.append('version', version);
+  fd.append('note', note);
+
+  const resp = await fetch('/api/v1/firmware-artifacts/upload', {
+    method: 'POST',
+    headers: authHeaders(),
+    body: fd,
+  });
+  const text = await resp.text();
+  let data = null;
+  try {
+    data = JSON.parse(text);
+  } catch (_) {
+    data = { raw: text };
+  }
+  if (!resp.ok) {
+    const msg = (data && (data.detail || data.error || data.raw)) || `HTTP ${resp.status}`;
+    throw new Error(msg);
+  }
+
+  preferredFirmwareArtifactId = String(data.id || '');
+  document.getElementById('firmwareArtifactResult').textContent = JSON.stringify(data, null, 2);
+  fileInput.value = '';
+  invalidateJsonCache(['/api/v1/firmware-artifacts']);
+  await refreshAll();
+}
+
+async function submitFirmwareRollout(ev) {
+  ev.preventDefault();
+  const deviceId = selectedConcreteDeviceId();
+  if (!deviceId) {
+    throw new Error('请先在顶部选择具体设备');
+  }
+  const artifactId = Number(document.getElementById('firmwareArtifactId')?.value || '');
+  if (!Number.isInteger(artifactId) || artifactId <= 0) {
+    throw new Error('请选择已上传固件');
+  }
+  const minBatteryPercent = Math.max(0, Math.min(100, Number(document.getElementById('firmwareMinBatteryPercent')?.value || 0)));
+  const requiresVbus = (document.getElementById('firmwareRequiresVbus')?.value || 'false') === 'true';
+  const note = document.getElementById('firmwareRolloutNote')?.value || '';
+
+  const data = await fetchJson('/api/v1/firmware-rollouts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      device_id: deviceId,
+      firmware_artifact_id: artifactId,
+      min_battery_percent: minBatteryPercent,
+      requires_vbus: requiresVbus,
+      note,
+    }),
+  });
+
+  document.getElementById('firmwareRolloutResult').textContent = JSON.stringify(data, null, 2);
+  invalidateJsonCache(['/api/v1/firmware-rollouts']);
+  await refreshAll();
 }
 
 async function submitOverrideFromForm({
@@ -2479,13 +2930,25 @@ async function refreshAll() {
     setTimelineMessage('logRequestHistoryBody', `日志采集请求加载失败: ${message}`);
     setText('logRequestHistoryHint', `日志采集请求加载失败: ${message}`);
   });
+  await runSection(loadFirmwareArtifacts, (err) => {
+    const message = explainAdminLoadError(err);
+    setTableMessage('firmwareArtifactsBody', 6, `固件制品加载失败: ${message}`);
+    setText('firmwareArtifactsHint', `固件制品加载失败: ${message}`);
+  });
+  await runSection(loadFirmwareRollouts, (err) => {
+    const message = explainAdminLoadError(err);
+    setTableMessage('firmwareRolloutsBody', 8, `升级任务加载失败: ${message}`);
+    setText('firmwareRolloutsHint', `升级任务加载失败: ${message}`);
+    setText('otaWorkspaceHint', `OTA 状态加载失败: ${message}`);
+    setTimelineMessage('otaSummaryBody', `OTA 状态加载失败: ${message}`);
+  });
   await runSection(loadDeviceLogUploads, (err) => {
     const message = explainAdminLoadError(err);
     setTimelineMessage('logUploadHistoryBody', `日志上传记录加载失败: ${message}`);
     setText('logUploadHistoryHint', `日志上传记录加载失败: ${message}`);
   });
   await runSection(() => loadOverviewPreview(true), (err) => {
-    setText('overviewPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);
+    setOverviewPreviewError(err);
   });
   await runSection(() => loadPublishPreview(true), (err) => {
     setText('publishPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);
@@ -2501,11 +2964,11 @@ async function refreshAll() {
 }
 
 function autoRefreshIntervalMs() {
-  return document.hidden ? AUTO_REFRESH_BACKGROUND_MS : AUTO_REFRESH_FOREGROUND_MS;
+  return AUTO_REFRESH_FOREGROUND_MS;
 }
 
 function secondaryRefreshIntervalMs() {
-  return document.hidden ? SECONDARY_REFRESH_BACKGROUND_MS : SECONDARY_REFRESH_FOREGROUND_MS;
+  return SECONDARY_REFRESH_FOREGROUND_MS;
 }
 
 async function refreshPrimarySections() {
@@ -2515,7 +2978,7 @@ async function refreshPrimarySections() {
     setText('powerSummary', `电池曲线加载失败: ${explainAdminLoadError(err)}`);
   });
   await runSection(() => loadOverviewPreview(false), (err) => {
-    setText('overviewPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);
+    setOverviewPreviewError(err);
   });
   document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString();
   lastFullRefreshEpochMs = Date.now();
@@ -2542,6 +3005,18 @@ async function refreshSecondarySections() {
     const message = explainAdminLoadError(err);
     setTimelineMessage('logRequestHistoryBody', `日志采集请求加载失败: ${message}`);
     setText('logRequestHistoryHint', `日志采集请求加载失败: ${message}`);
+  });
+  await runSection(loadFirmwareArtifacts, (err) => {
+    const message = explainAdminLoadError(err);
+    setTableMessage('firmwareArtifactsBody', 6, `固件制品加载失败: ${message}`);
+    setText('firmwareArtifactsHint', `固件制品加载失败: ${message}`);
+  });
+  await runSection(loadFirmwareRollouts, (err) => {
+    const message = explainAdminLoadError(err);
+    setTableMessage('firmwareRolloutsBody', 8, `升级任务加载失败: ${message}`);
+    setText('firmwareRolloutsHint', `升级任务加载失败: ${message}`);
+    setText('otaWorkspaceHint', `OTA 状态加载失败: ${message}`);
+    setTimelineMessage('otaSummaryBody', `OTA 状态加载失败: ${message}`);
   });
   await runSection(loadDeviceLogUploads, (err) => {
     const message = explainAdminLoadError(err);
@@ -2626,7 +3101,9 @@ async function refreshSecondaryManaged({ force = false } = {}) {
 function scheduleAutoRefresh() {
   if (autoRefreshTimer) {
     clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
   }
+  if (document.hidden) return;
   autoRefreshTimer = setInterval(() => {
     refreshPrimaryManaged()
       .then(() => refreshSecondaryManaged())
@@ -2666,6 +3143,22 @@ document.getElementById('deviceLogRequestForm').addEventListener('submit', async
   }
 });
 
+document.getElementById('firmwareArtifactForm').addEventListener('submit', async (ev) => {
+  try {
+    await submitFirmwareArtifact(ev);
+  } catch (err) {
+    document.getElementById('firmwareArtifactResult').textContent = `上传失败: ${err.message}`;
+  }
+});
+
+document.getElementById('firmwareRolloutForm').addEventListener('submit', async (ev) => {
+  try {
+    await submitFirmwareRollout(ev);
+  } catch (err) {
+    document.getElementById('firmwareRolloutResult').textContent = `创建失败: ${err.message}`;
+  }
+});
+
 document.getElementById('refreshBtn').addEventListener('click', async () => {
   persistConsoleToken();
   try {
@@ -2679,7 +3172,7 @@ document.getElementById('overviewPreviewBtn').addEventListener('click', async ()
   try {
     await loadOverviewPreview(true);
   } catch (err) {
-    document.getElementById('overviewPreviewMeta').textContent = `预览失败: ${err.message}`;
+    setOverviewPreviewError(err);
   }
 });
 
@@ -2710,20 +3203,26 @@ document.getElementById('saveDailyDitherBtn').addEventListener('click', async ()
       body: JSON.stringify({
         daily_dither_algorithm: selectedDailyDitherAlgorithm(),
         palette_profile: selectedPaletteProfile(),
+        photo_render_experiment_enabled: document.getElementById('photoRenderExperimentEnabled').checked,
       }),
     });
-    currentDailyDitherAlgorithm = data.daily_dither_algorithm || currentDailyDitherAlgorithm;
-    currentPaletteProfile = data.palette_profile || currentPaletteProfile;
+    applyDailyRenderConfig(data);
     document.getElementById('dailyDitherAlgorithm').value = currentDailyDitherAlgorithm;
     document.getElementById('paletteProfile').value = currentPaletteProfile;
     document.getElementById('compareLeftAlgorithm').value = currentDailyDitherAlgorithm;
     syncCompareSelectors();
     updateDailyDitherHint(currentDailyDitherAlgorithm);
     await loadOverviewPreview(true);
-    document.getElementById('publishPreviewMeta').textContent = 'Daily Dither 已保存，点击“刷新对比预览”后查看新的对比结果。';
+    document.getElementById('publishPreviewMeta').textContent = photoRenderExperimentEnabled
+      ? 'Daily Dither 已保存；可点击“生成今日四版本”进行同图对照。'
+      : 'Daily Dither 已保存，点击“刷新对比预览”后查看新的对比结果。';
   } catch (err) {
     document.getElementById('dailyDitherHint').textContent = `Daily Dither 保存失败: ${err.message}`;
   }
+});
+
+document.getElementById('photoRenderExperimentEnabled').addEventListener('change', () => {
+  document.getElementById('dailyDitherHint').textContent = '对照工具开关已变更；保存后仅控制管理台对照入口，设备仍使用当前保存方案。';
 });
 
 async function loadPowerSamplesSafe() {
@@ -2788,13 +3287,20 @@ document.getElementById('deviceId').addEventListener('change', async () => {
     setTimelineMessage('logRequestHistoryBody', `日志采集请求加载失败: ${message}`);
     setText('logRequestHistoryHint', `日志采集请求加载失败: ${message}`);
   });
+  await runSection(loadFirmwareRollouts, (err) => {
+    const message = explainAdminLoadError(err);
+    setTableMessage('firmwareRolloutsBody', 8, `升级任务加载失败: ${message}`);
+    setText('firmwareRolloutsHint', `升级任务加载失败: ${message}`);
+    setText('otaWorkspaceHint', `OTA 状态加载失败: ${message}`);
+    setTimelineMessage('otaSummaryBody', `OTA 状态加载失败: ${message}`);
+  });
   await runSection(loadDeviceLogUploads, (err) => {
     const message = explainAdminLoadError(err);
     setTimelineMessage('logUploadHistoryBody', `日志上传记录加载失败: ${message}`);
     setText('logUploadHistoryHint', `日志上传记录加载失败: ${message}`);
   });
   await runSection(() => loadOverviewPreview(true), (err) => {
-    setText('overviewPreviewMeta', `预览失败: ${explainAdminLoadError(err)}`);
+    setOverviewPreviewError(err);
   });
   await runSection(loadDeviceConfigs, (err) => {
     const message = explainAdminLoadError(err);

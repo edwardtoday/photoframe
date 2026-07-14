@@ -71,7 +71,16 @@ if compgen -G "${ESP_IDF_SYS_BUILD_GLOB}" >/dev/null; then
   rm -rf ${ESP_IDF_SYS_BUILD_GLOB}
 fi
 
+fix_docker_output_ownership() {
+  local uid gid
+  uid="$(id -u)"
+  gid="$(id -g)"
+  "${SCRIPT_DIR}/rust-idf-docker.sh" \
+    "chown -R ${uid}:${gid} /work/firmware/photoframe-rs/target /work/firmware/photoframe-rs/dist"
+}
+
 "${SCRIPT_DIR}/rust-idf-docker.sh" "${BUILD_CMD}"
+fix_docker_output_ownership
 
 if [[ ! -f "${ELF_ABS}" ]]; then
   echo "[error] 未找到 ELF 产物: ${ELF_ABS}" >&2
@@ -98,10 +107,12 @@ if [[ -n "${OTADATA_SRC}" ]]; then
 fi
 
 "${SCRIPT_DIR}/rust-idf-docker.sh" "espflash save-image --chip esp32s3 --flash-mode dio --flash-size 16mb --flash-freq 80mhz ${ELF_REL} /work/firmware/photoframe-rs/dist/photoframe-rs-app.bin"
+fix_docker_output_ownership
 
 BOOTLOADER_REL="$("${SCRIPT_DIR}/rust-idf-docker.sh" "find /work/firmware/photoframe-rs/target/xtensa-esp32s3-espidf/release/build -path '*/out/build/bootloader/bootloader.bin' | head -n 1" | tail -n 1)"
 if [[ -n "${BOOTLOADER_REL}" ]]; then
   "${SCRIPT_DIR}/rust-idf-docker.sh" "espflash save-image --chip esp32s3 --merge --flash-mode dio --flash-size 16mb --flash-freq 80mhz --bootloader ${BOOTLOADER_REL} --partition-table ${PARTITIONS_CSV} --target-app-partition ota_0 ${ELF_REL} /work/firmware/photoframe-rs/dist/photoframe-rs-fullchip.bin"
+  fix_docker_output_ownership
   echo "[info] 整片镜像已生成: ${FULL_BIN_ABS}"
   echo "[warn] 整片镜像会覆盖 NVS；仅限 A/B 分区迁移或空片首刷，不要用于现场 OTA 升级"
 else

@@ -30,7 +30,6 @@ const PIN_RST: i32 = 12;
 #[cfg(target_os = "espidf")]
 const PIN_BUSY: i32 = 13;
 #[cfg(target_os = "espidf")]
-#[cfg(target_os = "espidf")]
 const FLUSH_MAX_RETRIES: usize = 3;
 #[cfg(target_os = "espidf")]
 const FLUSH_RETRY_DELAY_MS: u64 = 500;
@@ -39,6 +38,11 @@ const DEBUG_PANEL_WRITE_CHUNK_BYTES: usize = 256;
 #[cfg(target_os = "espidf")]
 const DEBUG_PANEL_WRITE_CHUNK_DELAY_MS: u64 = 1;
 #[cfg(target_os = "espidf")]
+const PANEL_SPI_CLOCK_HZ: i32 = 10 * 1000 * 1000;
+#[cfg(target_os = "espidf")]
+const PANEL_BUSY_POLL_MS: u64 = 10;
+#[cfg(target_os = "espidf")]
+const PANEL_BUSY_TIMEOUT_MS: i32 = 45_000;
 #[cfg(target_os = "espidf")]
 struct PanelRuntime {
     spi_handle: sys::spi_device_handle_t,
@@ -72,6 +76,13 @@ fn sleep_ms(ms: u64) {
 }
 
 #[cfg(target_os = "espidf")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BusyWaitOutcome {
+    Ready,
+    TimedOut,
+}
+
+#[cfg(target_os = "espidf")]
 fn init_bus(state: &mut PanelRuntime) -> Result<(), String> {
     let mut bus_cfg = sys::spi_bus_config_t::default();
     bus_cfg.__bindgen_anon_1 = sys::spi_bus_config_t__bindgen_ty_1 {
@@ -96,7 +107,7 @@ fn init_bus(state: &mut PanelRuntime) -> Result<(), String> {
 
     let mut dev_cfg = sys::spi_device_interface_config_t::default();
     dev_cfg.spics_io_num = -1;
-    dev_cfg.clock_speed_hz = 40 * 1000 * 1000;
+    dev_cfg.clock_speed_hz = PANEL_SPI_CLOCK_HZ;
     dev_cfg.mode = 0;
     dev_cfg.queue_size = 7;
     dev_cfg.flags = sys::SPI_DEVICE_HALFDUPLEX;
@@ -157,22 +168,41 @@ fn reset() {
 }
 
 #[cfg(target_os = "espidf")]
-fn wait_busy(stage: &str, timeout_ms: i32) -> Result<(), String> {
+fn busy_level() -> i32 {
+    unsafe { sys::gpio_get_level(PIN_BUSY) }
+}
+
+#[cfg(target_os = "espidf")]
+fn wait_busy(stage: &str, timeout_ms: i32) -> BusyWaitOutcome {
     let start_us = unsafe { sys::esp_timer_get_time() };
+    let initial_level = busy_level();
     let mut waited_ms = 0;
-    while unsafe { sys::gpio_get_level(PIN_BUSY) } == 0 {
-        sleep_ms(10);
-        waited_ms += 10;
+    while busy_level() == 0 {
+        sleep_ms(PANEL_BUSY_POLL_MS);
+        waited_ms += PANEL_BUSY_POLL_MS as i32;
         if waited_ms >= timeout_ms {
-            println!(
-                "photoframe-rs/panel: busy timeout tolerated stage={stage} waited={waited_ms}ms"
+            let final_level = busy_level();
+            crate::device_log!(
+                "WARN",
+                "photoframe-rs/panel: busy timeout stage={} waited={}ms initial={} final={} continue=1",
+                stage,
+                waited_ms,
+                initial_level,
+                final_level
             );
-            break;
+            return BusyWaitOutcome::TimedOut;
         }
     }
     let cost_ms = (unsafe { sys::esp_timer_get_time() } - start_us) / 1000;
-    println!("photoframe-rs/timing: panel_busy stage={stage} cost={cost_ms}ms");
-    Ok(())
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs/timing: panel_busy stage={} cost={}ms initial={} final={}",
+        stage,
+        cost_ms,
+        initial_level,
+        busy_level()
+    );
+    BusyWaitOutcome::Ready
 }
 
 #[cfg(target_os = "espidf")]
@@ -254,8 +284,13 @@ fn write_buffer(spi_handle: sys::spi_device_handle_t, data: &[u8]) -> Result<(),
 #[cfg(target_os = "espidf")]
 fn turn_on_display(spi_handle: sys::spi_device_handle_t) -> Result<(), String> {
     crate::runtime_bridge::record_render_trace(22);
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs/panel: turn_on cmd=0x04 busy_before={}",
+        busy_level()
+    );
     write_command(spi_handle, 0x04)?;
-    wait_busy("turn_on/0x04", 45_000)?;
+    let busy_04 = wait_busy("turn_on/0x04", PANEL_BUSY_TIMEOUT_MS);
 
     write_command(spi_handle, 0x06)?;
     for value in [0x6F, 0x1F, 0x17, 0x49] {
@@ -263,20 +298,58 @@ fn turn_on_display(spi_handle: sys::spi_device_handle_t) -> Result<(), String> {
     }
 
     crate::runtime_bridge::record_render_trace(23);
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs/panel: turn_on cmd=0x12 busy_before={} power_on_timeout={}",
+        busy_level(),
+        matches!(busy_04, BusyWaitOutcome::TimedOut)
+    );
     write_command(spi_handle, 0x12)?;
     write_data(spi_handle, 0x00)?;
-    wait_busy("turn_on/0x12", 45_000)?;
+    let busy_12 = wait_busy("turn_on/0x12", PANEL_BUSY_TIMEOUT_MS);
 
     crate::runtime_bridge::record_render_trace(24);
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs/panel: turn_on cmd=0x02 busy_before={} refresh_timeout={}",
+        busy_level(),
+        matches!(busy_12, BusyWaitOutcome::TimedOut)
+    );
     write_command(spi_handle, 0x02)?;
     write_data(spi_handle, 0x00)?;
-    wait_busy("turn_on/0x02", 45_000)?;
+    let busy_02 = wait_busy("turn_on/0x02", PANEL_BUSY_TIMEOUT_MS);
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs/panel: turn_on done timeout04={} timeout12={} timeout02={} busy_after={}",
+        matches!(busy_04, BusyWaitOutcome::TimedOut),
+        matches!(busy_12, BusyWaitOutcome::TimedOut),
+        matches!(busy_02, BusyWaitOutcome::TimedOut),
+        busy_level()
+    );
+    if matches!(busy_04, BusyWaitOutcome::TimedOut)
+        || matches!(busy_12, BusyWaitOutcome::TimedOut)
+        || matches!(busy_02, BusyWaitOutcome::TimedOut)
+    {
+        return Err(format!(
+            "panel busy timeout timeout04={} timeout12={} timeout02={} busy_after={}",
+            i32::from(matches!(busy_04, BusyWaitOutcome::TimedOut)),
+            i32::from(matches!(busy_12, BusyWaitOutcome::TimedOut)),
+            i32::from(matches!(busy_02, BusyWaitOutcome::TimedOut)),
+            busy_level()
+        ));
+    }
     Ok(())
 }
 
 #[cfg(target_os = "espidf")]
 fn flush_raw(spi_handle: sys::spi_device_handle_t, data: &[u8]) -> Result<(), String> {
     let start = Instant::now();
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs/panel: flush start bytes={} busy_before={}",
+        data.len(),
+        busy_level()
+    );
     write_command(spi_handle, 0x10)?;
     let transfer_start = Instant::now();
     write_buffer(spi_handle, data)?;
@@ -284,12 +357,14 @@ fn flush_raw(spi_handle: sys::spi_device_handle_t, data: &[u8]) -> Result<(), St
     let trigger_start = Instant::now();
     turn_on_display(spi_handle)?;
     let trigger_ms = trigger_start.elapsed().as_millis();
-    println!(
-        "photoframe-rs/timing: panel_flush transfer={}ms trigger={}ms total={}ms bytes={}",
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs/timing: panel_flush transfer={}ms trigger={}ms total={}ms bytes={} busy_after={}",
         transfer_ms,
         trigger_ms,
         start.elapsed().as_millis(),
-        data.len()
+        data.len(),
+        busy_level()
     );
     Ok(())
 }
@@ -298,7 +373,12 @@ fn flush_raw(spi_handle: sys::spi_device_handle_t, data: &[u8]) -> Result<(), St
 fn apply_panel_init_sequence(spi_handle: sys::spi_device_handle_t) -> Result<(), String> {
     crate::runtime_bridge::record_render_trace(20);
     reset();
-    wait_busy("panel_init/reset", 45_000)?;
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs/panel: init reset busy_after={}",
+        busy_level()
+    );
+    let reset_busy = wait_busy("panel_init/reset", PANEL_BUSY_TIMEOUT_MS);
     sleep_ms(50);
 
     write_command(spi_handle, 0xAA)?;
@@ -343,6 +423,21 @@ fn apply_panel_init_sequence(spi_handle: sys::spi_device_handle_t) -> Result<(),
     write_data(spi_handle, 0x01)?;
     write_command(spi_handle, 0xE3)?;
     write_data(spi_handle, 0x2F)?;
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs/panel: init cmd=0x04 busy_before={} reset_timeout={}",
+        busy_level(),
+        matches!(reset_busy, BusyWaitOutcome::TimedOut)
+    );
+    write_command(spi_handle, 0x04)?;
+    let init_power_on = wait_busy("panel_init/0x04", PANEL_BUSY_TIMEOUT_MS);
+    crate::device_log!(
+        "INFO",
+        "photoframe-rs/panel: init done reset_timeout={} init_power_timeout={} busy_after={}",
+        matches!(reset_busy, BusyWaitOutcome::TimedOut),
+        matches!(init_power_on, BusyWaitOutcome::TimedOut),
+        busy_level()
+    );
     crate::runtime_bridge::record_render_trace(21);
     Ok(())
 }
@@ -366,13 +461,21 @@ fn reset_runtime_after_failure(state: &mut PanelRuntime) {
     if !state.spi_handle.is_null() {
         let err = unsafe { sys::spi_bus_remove_device(state.spi_handle) };
         if err != 0 {
-            println!("photoframe-rs/panel: spi_bus_remove_device failed: {err}");
+            crate::device_log!(
+                "WARN",
+                "photoframe-rs/panel: spi_bus_remove_device failed err={}",
+                err
+            );
         }
         state.spi_handle = ptr::null_mut();
     }
     let err = unsafe { sys::spi_bus_free(sys::spi_host_device_t_SPI3_HOST) };
     if err != 0 && err != sys::ESP_ERR_INVALID_STATE {
-        println!("photoframe-rs/panel: spi_bus_free failed: {err}");
+        crate::device_log!(
+            "WARN",
+            "photoframe-rs/panel: spi_bus_free failed err={}",
+            err
+        );
     }
 }
 
@@ -393,7 +496,8 @@ pub fn flush_packed_image(data: &[u8]) -> Result<(), String> {
         }
         if let Err(err) = ensure_initialized_locked(&mut state) {
             last_error = format!("panel init failed: {err}");
-            println!(
+            crate::device_log!(
+                "WARN",
                 "photoframe-rs/panel: init attempt={}/{} err={}",
                 attempt + 1,
                 FLUSH_MAX_RETRIES,
@@ -407,7 +511,8 @@ pub fn flush_packed_image(data: &[u8]) -> Result<(), String> {
             Ok(()) => return Ok(()),
             Err(err) => {
                 last_error = format!("flush attempt {} failed: {err}", attempt + 1);
-                println!(
+                crate::device_log!(
+                    "WARN",
                     "photoframe-rs/panel: flush attempt={}/{} err={}",
                     attempt + 1,
                     FLUSH_MAX_RETRIES,

@@ -94,6 +94,7 @@ struct LogBuffer {
     total_bytes: usize,
     restored_prefix_lines: usize,
     current_boot_truncated: bool,
+    sd_history_ready: bool,
     lines: VecDeque<String>,
 }
 
@@ -118,6 +119,7 @@ impl LogBuffer {
         self.total_bytes = 0;
         self.restored_prefix_lines = 0;
         self.current_boot_truncated = false;
+        self.sd_history_ready = false;
         self.lines.clear();
         if let Some(snapshot) = restored {
             for line in snapshot.lines.iter() {
@@ -206,6 +208,12 @@ impl LogBuffer {
 
     fn all_lines(&self) -> Vec<String> {
         self.lines.iter().cloned().collect()
+    }
+
+    fn mark_sd_history_ready(&mut self) -> bool {
+        let was_ready = self.sd_history_ready;
+        self.sd_history_ready = true;
+        !was_ready
     }
 }
 
@@ -765,6 +773,7 @@ pub(crate) fn begin_boot_session(sd_history_ready: bool) {
             .map(|snapshot| snapshot.boot_id.wrapping_add(1))
             .unwrap_or(history_next_boot_id);
         guard.start_boot(next_boot_id, restored.as_ref());
+        guard.sd_history_ready = sd_history_ready;
     }
     if let Some(snapshot) = restored {
         append(
@@ -790,6 +799,29 @@ pub(crate) fn begin_boot_session(sd_history_ready: bool) {
             ),
         );
     }
+}
+
+pub(crate) fn mark_sd_history_ready() {
+    let already_ready = if let Ok(mut guard) = global_log_buffer().lock() {
+        !guard.mark_sd_history_ready()
+    } else {
+        true
+    };
+    if already_ready {
+        return;
+    }
+    let blocks = load_tf_blocks().unwrap_or_default();
+    let total_lines = blocks.iter().map(|block| block.line_count).sum::<usize>();
+    let last_boot_id = blocks.last().map(|block| block.boot_id).unwrap_or(0);
+    append(
+        "INFO",
+        &format!(
+            "photoframe-rs: tf history ready late blocks={} total_lines={} last_boot_id={}",
+            blocks.len(),
+            total_lines,
+            last_boot_id
+        ),
+    );
 }
 
 pub(crate) fn append(level: &str, message: &str) {

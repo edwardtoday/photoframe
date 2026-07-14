@@ -18,6 +18,121 @@
   - 管理端通过 `POST /api/v1/device-tokens/{device_id}/approve` 信任后放行；
   - 兼容旧配置：当设备仍使用 `PHOTOFRAME_TOKEN` 时可继续访问。
 
+## Admin API v2（vNext 管理台）
+
+Admin API v2 是面向 vNext 管理台的聚合与意图操作接口，不供固件调用，不改变现有 `/api/v1/device/*` 协议。
+
+所有 v2 接口使用管理端请求头：
+
+```http
+X-PhotoFrame-Token: <PHOTOFRAME_TOKEN>
+```
+
+### Dashboard 聚合
+
+`GET /api/v2/admin/dashboard`
+
+Query：
+
+- `device_id`：可选；未指定时选择最近活动设备。
+- `event_limit`：最近事件数量，默认 12，范围 1~50。
+
+一次返回 vNext 今日页需要的设备快照、健康判定、最近图片状态、活动 OTA、统一事件和服务版本：
+
+```json
+{
+  "now_epoch": 1784020000,
+  "device": {
+    "device_id": "pf-a1b2c3d4",
+    "last_seen_epoch": 1784019900,
+    "next_wakeup_epoch": 1784023500,
+    "battery_percent": 82
+  },
+  "health": {
+    "status": "sleeping",
+    "code": "sleeping_as_expected",
+    "title": "设备正在按计划休眠",
+    "summary": "预计 58 分钟后唤醒。",
+    "evidence": [],
+    "actions": []
+  },
+  "current_delivery": {
+    "status": "displayed",
+    "is_confirmed_displayed": true,
+    "image_reference": "/api/v1/assets/example.bmp"
+  },
+  "recent_events": [],
+  "available_devices": [],
+  "service": {
+    "app_version": "0.2.8",
+    "app_git_sha": "0123abcd",
+    "timezone": "Asia/Shanghai"
+  }
+}
+```
+
+安全约束：`image_reference` 只返回资源路径，不返回历史 URL 中可能存在的 query token。
+
+### 设备统一时间线
+
+`GET /api/v2/admin/devices/{device_id}/timeline`
+
+Query：
+
+- `limit`：默认 50，范围 1~200。
+- `before_epoch`：可选，用于向前翻页。
+
+事件来源包括照片显示安排、图片发布、屏幕刷新确认、配置发布、诊断日志请求、固件 rollout 和设备调试阶段。每条事件包含：
+
+- `kind`
+- `severity`
+- `title`
+- `detail`
+- `source`
+- `metadata`
+
+### 设备意图操作
+
+`GET /api/v2/admin/devices/{device_id}/intents`
+
+返回设备当前刷新间隔、配置目标/已应用版本，以及管理台可展示的意图操作：
+
+- `normal_update`：60 分钟常规更新。
+- `power_saver`：4 小时省电更新。
+- `away_mode`：24 小时最低频率更新。
+- `custom_interval`：自定义 1~1440 分钟。
+- `diagnostics`：请求设备下一次唤醒上传日志。
+
+`POST /api/v2/admin/devices/{device_id}/intents`
+
+```json
+{
+  "intent": "power_saver",
+  "note": "出门一周"
+}
+```
+
+自定义间隔时额外传 `interval_minutes`。配置类操作返回配置计划 ID；诊断操作返回日志请求 ID。所有操作只保存计划，不会远程强制唤醒设备。
+
+### 照片工作区
+
+- `GET /api/v2/admin/photos`：列出照片资产、最新渲染版本、反馈和最近投送。
+- `POST /api/v2/admin/photos/upload`：上传原图并生成当前默认 Dither / Palette 的 480×800 设备版本。
+- `POST /api/v2/admin/photos/{photo_id}/deliver`：为指定设备安排下一次唤醒显示。
+- `POST /api/v2/admin/photos/{photo_id}/feedback`：记录 `favorite`、`neutral`、`hide`、`crop_issue` 或 `color_issue`。
+
+### 实验室聚合
+
+`GET /api/v2/admin/lab?device_id=<device_id>`
+
+一次返回当前 Dither / Palette 配置、固件制品、OTA rollout、诊断日志请求、原始配置计划和设备 Token 审批状态。响应不包含 Token 或 Token 哈希。
+
+## 管理台入口
+
+- `/`：vNext 默认管理台，按“今日 / 照片 / 设备 / 实验室”组织。
+- `/vnext`：vNext 兼容别名。
+- `/legacy`：旧版专家控制台，作为一个发布周期内的回滚入口。
+
 ## 1) 设备拉取当前任务
 
 `GET /api/v1/device/next`

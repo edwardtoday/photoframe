@@ -10,3 +10,5 @@ path = "src/lib.rs"
 chrono = "0.4"
 photoframe-contracts = { path = "../contracts" }
 photoframe-domain = { path = "../domain" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

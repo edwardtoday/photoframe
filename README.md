@@ -120,6 +120,6 @@ scripts/release-orchestrator-image.sh
 scripts/release-orchestrator-image.sh 0.1.0
 ```
 
-- NAS Web：`http://<NAS_IP>:18081/`
+- NAS Web：`http://<NAS_IP>:18081/`（vNext 默认入口；旧控制台位于 `/legacy`）
 - API：见 `docs/orchestrator-api.md`
 - 服务说明：`services/photoframe-orchestrator/README.md`

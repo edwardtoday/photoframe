@@ -1360,8 +1360,8 @@ function renderPhotoRenderExperimentSchedule() {
   }
   root.innerHTML = `<div class="experiment-item active">
     <strong>今日同图</strong>
-    <p>将同一张日图按四种候选渲染；只在你点击时生成，设备显示不会变化。</p>
-    <button id="generatePhotoRenderComparison" class="secondary" type="button">生成今日四版本</button>
+    <p>将同一张日图按五种候选渲染；只在你点击时生成，设备显示不会变化。</p>
+    <button id="generatePhotoRenderComparison" class="secondary" type="button">生成今日多版本</button>
   </div>`;
   document.getElementById('generatePhotoRenderComparison')?.addEventListener('click', () => {
     loadPhotoRenderComparison(true).catch((err) => {
@@ -1369,7 +1369,7 @@ function renderPhotoRenderExperimentSchedule() {
     });
   });
   if (grid) {
-    grid.innerHTML = '<p class="muted">点击“生成今日四版本”开始对照。</p>';
+    grid.innerHTML = '<p class="muted">点击“生成今日多版本”开始对照。</p>';
   }
 }
 
@@ -3214,7 +3214,7 @@ document.getElementById('saveDailyDitherBtn').addEventListener('click', async ()
     updateDailyDitherHint(currentDailyDitherAlgorithm);
     await loadOverviewPreview(true);
     document.getElementById('publishPreviewMeta').textContent = photoRenderExperimentEnabled
-      ? 'Daily Dither 已保存；可点击“生成今日四版本”进行同图对照。'
+      ? 'Daily Dither 已保存；可点击“生成今日多版本”进行同图对照。'
       : 'Daily Dither 已保存，点击“刷新对比预览”后查看新的对比结果。';
   } catch (err) {
     document.getElementById('dailyDitherHint').textContent = `Daily Dither 保存失败: ${err.message}`;

@@ -447,6 +447,19 @@ DITHER_ALGORITHM_SPECS: dict[str, dict[str, Any]] = {
         "matcher": "lab-ciede2000",
         "preprocess": "paper-white",
     },
+    "eink-luma-guard": {
+        "label": "E-ink Luma Guard",
+        "description": "低饱和区域沿用 Kindle 式亮度误差扩散，只在彩色主体使用六色匹配，减少白墙与天空的彩色噪点",
+        "kind": "luma-guard",
+        "kernel": (
+            (1, 0, 7 / 16),
+            (-1, 1, 3 / 16),
+            (0, 1, 5 / 16),
+            (1, 1, 1 / 16),
+        ),
+        "matcher": "lab-ciede2000",
+        "serpentine": True,
+    },
 }
 PHOTO_RENDER_PRESETS: tuple[dict[str, str], ...] = (
     {
@@ -475,6 +488,13 @@ PHOTO_RENDER_PRESETS: tuple[dict[str, str], ...] = (
         "label": "细节蓝噪声",
         "description": "Blue Noise + Lab/ΔE00：弱化规则纹理，优先看纹理与边缘细节。",
         "algorithm": "blue-noise-lab-ciede2000",
+        "palette_profile": "reference",
+    },
+    {
+        "key": "eink-luma-guard",
+        "label": "墨水灰阶守护",
+        "description": "借鉴 Kindle 16 阶灰度扩散：低饱和背景保持黑白层次，彩色主体仍使用六色电子纸。",
+        "algorithm": "eink-luma-guard",
         "palette_profile": "reference",
     },
 )
@@ -3461,6 +3481,68 @@ def _apply_error_diffusion(
   return rendered
 
 
+def _apply_eink_luma_guard(
+    image: Image.Image,
+    kernel: tuple[tuple[int, int, float], ...],
+    matcher: callable,
+    *,
+    saturation_threshold: float = 0.18,
+    serpentine: bool = True,
+) -> Image.Image:
+  """保留低饱和画面的灰阶层次，避免六色量化在中性色上制造彩色噪点。"""
+  width, height = image.size
+  source_pixels = _pixel_list(image)
+  max_dy = max(dy for _, dy, _ in kernel)
+  color_error_rows = [_new_error_row(width) for _ in range(max_dy + 1)]
+  luma_error_rows = [[0.0] * width for _ in range(max_dy + 1)]
+  output: list[tuple[int, int, int]] = [PHOTOFRAME_PALETTE_WHITE] * (width * height)
+
+  for y in range(height):
+    row_offset = y * width
+    reverse = serpentine and (y % 2 == 1)
+    x_iter = range(width - 1, -1, -1) if reverse else range(width)
+    current_color_errors = color_error_rows[0]
+    current_luma_errors = luma_error_rows[0]
+    for x in x_iter:
+      source_r, source_g, source_b = source_pixels[row_offset + x]
+      saturation = (max(source_r, source_g, source_b) - min(source_r, source_g, source_b)) / max(1, max(source_r, source_g, source_b))
+      if saturation < saturation_threshold:
+        luma = _clamp_channel((77 * source_r + 150 * source_g + 29 * source_b) / 256 + current_luma_errors[x])
+        quantized = PHOTOFRAME_PALETTE[0] if luma < 128 else PHOTOFRAME_PALETTE_WHITE
+        luma_error = luma - quantized[0]
+        for dx, dy, weight in kernel:
+          nx = x + (-dx if reverse else dx)
+          if 0 <= nx < width and y + dy < height:
+            luma_error_rows[dy][nx] += luma_error * weight
+      else:
+        base = x * 3
+        r = _clamp_channel(source_r + current_color_errors[base])
+        g = _clamp_channel(source_g + current_color_errors[base + 1])
+        b = _clamp_channel(source_b + current_color_errors[base + 2])
+        quantized = matcher((r, g, b))
+        err_r = r - quantized[0]
+        err_g = g - quantized[1]
+        err_b = b - quantized[2]
+        for dx, dy, weight in kernel:
+          nx = x + (-dx if reverse else dx)
+          if 0 <= nx < width and y + dy < height:
+            target_base = nx * 3
+            target_row = color_error_rows[dy]
+            target_row[target_base] += err_r * weight
+            target_row[target_base + 1] += err_g * weight
+            target_row[target_base + 2] += err_b * weight
+      output[row_offset + x] = quantized
+
+    color_error_rows.pop(0)
+    color_error_rows.append(_new_error_row(width))
+    luma_error_rows.pop(0)
+    luma_error_rows.append([0.0] * width)
+
+  rendered = Image.new("RGB", image.size)
+  rendered.putdata(output)
+  return rendered
+
+
 def _apply_override_dither(
     image: Image.Image,
     dither_algorithm: str,
@@ -3500,6 +3582,16 @@ def _apply_override_dither(
         else _nearest_palette_color
     )
     return _apply_error_diffusion(image, kernel, matcher=matcher, serpentine=bool(spec.get("serpentine")))
+  if kind == "luma-guard":
+    kernel = spec.get("kernel")
+    if not isinstance(kernel, tuple):
+      raise RuntimeError(f"kernel missing for dither algorithm: {normalized}")
+    matcher = (
+        _build_lab_ciede2000_matcher(palette_profile_spec)
+        if matcher_name == "lab-ciede2000"
+        else _nearest_palette_color
+    )
+    return _apply_eink_luma_guard(image, kernel, matcher, serpentine=bool(spec.get("serpentine")))
   raise RuntimeError(f"unsupported dither algorithm kind: {kind}")
 
 

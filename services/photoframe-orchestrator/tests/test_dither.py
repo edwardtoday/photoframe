@@ -181,7 +181,7 @@ class DitherAlgorithmTests(unittest.TestCase):
         ORCH.DB = None
         ORCH._init_db()
         ORCH._set_photo_render_experiment_enabled(True)
-        self.assertEqual(len(ORCH.PHOTO_RENDER_PRESETS), 4)
+        self.assertEqual(len(ORCH.PHOTO_RENDER_PRESETS), 5)
         self.assertIsNone(ORCH._photo_render_preset_for_date("2026-07-11"))
         picked, palette, chosen = ORCH._daily_render_choice(0, "2026-07-11")
         self.assertEqual(picked, "sierra")
@@ -214,7 +214,7 @@ class DitherAlgorithmTests(unittest.TestCase):
             x_photoframe_token="admin-secret",
         )
         self.assertTrue(updated["photo_render_experiment_enabled"])
-        self.assertEqual(len(updated["photo_render_presets"]), 4)
+        self.assertEqual(len(updated["photo_render_presets"]), 5)
         loaded = ORCH.get_daily_render_config(x_photoframe_token="admin-secret")
         self.assertTrue(loaded["photo_render_experiment_enabled"])
     finally:
@@ -578,6 +578,15 @@ class DitherAlgorithmTests(unittest.TestCase):
   def test_paperwhite_lab_ciede2000_output_only_issue_palette(self) -> None:
     image = _build_gradient_image()
     rendered = ORCH._apply_override_dither(image, "paperwhite-lab-ciede2000")
+    self.assertTrue(_pixel_set(rendered).issubset(EPAPER_PALETTE))
+
+  def test_eink_luma_guard_keeps_neutral_gradient_monochrome(self) -> None:
+    image = Image.linear_gradient("L").resize((64, 32)).convert("RGB")
+    rendered = ORCH._apply_override_dither(image, "eink-luma-guard")
+    self.assertTrue(_pixel_set(rendered).issubset({(0, 0, 0), (255, 255, 255)}))
+
+  def test_eink_luma_guard_outputs_only_issue_palette_for_color_photo(self) -> None:
+    rendered = ORCH._apply_override_dither(_build_gradient_image(), "eink-luma-guard")
     self.assertTrue(_pixel_set(rendered).issubset(EPAPER_PALETTE))
 
   def test_stucki_serpentine_changes_output(self) -> None:

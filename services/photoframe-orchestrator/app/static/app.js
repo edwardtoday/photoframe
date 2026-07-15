@@ -1354,7 +1354,7 @@ function renderPhotoRenderExperimentSchedule() {
   const grid = document.getElementById('photoRenderComparisonGrid');
   if (!root) return;
   if (!photoRenderExperimentEnabled) {
-    root.innerHTML = '<p class="muted">对照工具未启用。启用并保存后，可按需生成今天同一张日图的四种版本。</p>';
+    root.innerHTML = '<p class="muted">对照工具未启用。启用并保存后，可按需生成今天同一张日图的五种版本。</p>';
     if (grid) grid.innerHTML = '';
     return;
   }
